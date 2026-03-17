@@ -53,4 +53,6 @@ def compute_size(
 
     # Apply cap
     f = min(f, max_position_pct)
-    return round(f * bankroll, 2)
+    size = round(f * bankroll, 2)
+    # Polymarket minimum order size is $1
+    return size if size >= 1.0 else 0.0

@@ -117,10 +117,15 @@ def api_data():
 
     # Per-asset window counts
     asset_windows = {}
+    asset_windows_15m = {}
     for w in windows:
         a = w.get("asset", {})
         asset = a.get("S", "BTC") if isinstance(a, dict) else str(a) if a else "BTC"
-        asset_windows[asset] = asset_windows.get(asset, 0) + 1
+        slug = w.get("slug", "") or ""
+        if "15m" in slug:
+            asset_windows_15m[asset] = asset_windows_15m.get(asset, 0) + 1
+        else:
+            asset_windows[asset] = asset_windows.get(asset, 0) + 1
 
     # Per-strategy P&L
     strategy_pnl = {}
@@ -148,6 +153,7 @@ def api_data():
             "open_trades": open_trades,
             "total_resolved": wins + losses,
             "asset_windows": asset_windows,
+            "asset_windows_15m": asset_windows_15m,
             "strategy_pnl": strategy_pnl,
         },
     }
@@ -196,12 +202,12 @@ async def api_balance():
             address = Account.from_key(settings.polymarket_private_key).address
 
         if not address:
-            return {"clob_usdc": 0.0, "polymarket_value": 0.0, "polygon_usdc": 0.0, "error": "no_address"}
+            return {"polymarket_value": 0.0, "polygon_usdc": 0.0, "error": "no_address"}
 
         checker = BalanceChecker()
         return await checker.check(address)
     except Exception as e:
-        return {"clob_usdc": 0.0, "polymarket_value": 0.0, "polygon_usdc": 0.0, "error": str(e)}
+        return {"polymarket_value": 0.0, "polygon_usdc": 0.0, "error": str(e)}
 
 
 HTML = r"""<!DOCTYPE html>
@@ -669,17 +675,17 @@ HTML = r"""<!DOCTYPE html>
     <div class="stat-card">
       <div class="stat-label">BTC Windows</div>
       <div class="stat-value" id="s-btc">—</div>
-      <div class="stat-sub">5-min cycles</div>
+      <div class="stat-sub" id="s-btc-sub">5m + 15m</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">ETH Windows</div>
       <div class="stat-value" id="s-eth">—</div>
-      <div class="stat-sub">5-min cycles</div>
+      <div class="stat-sub" id="s-eth-sub">5m + 15m</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">SOL Windows</div>
       <div class="stat-value" id="s-sol">—</div>
-      <div class="stat-sub">5-min cycles</div>
+      <div class="stat-sub" id="s-sol-sub">5m + 15m</div>
     </div>
   </div>
 
@@ -876,12 +882,11 @@ async function refreshBalance() {
     const resp = await fetch('/api/balance');
     const d = await resp.json();
     const polygon = d.polygon_usdc || 0;
-    const clob = d.clob_usdc || 0;
     const pmval = d.polymarket_value || 0;
-    const total = polygon + clob + pmval;
+    const total = polygon + pmval;
     document.getElementById('s-balance').textContent = '$' + total.toFixed(2);
     document.getElementById('s-balance-sub').textContent =
-      'USDC $' + (polygon||clob).toFixed(2) + ' + positions $' + pmval.toFixed(2);
+      'USDC $' + polygon.toFixed(2) + ' + positions $' + pmval.toFixed(2);
   } catch(e) { /* non-fatal */ }
 }
 
@@ -936,9 +941,13 @@ async function refresh() {
 
     document.getElementById('s-wl').textContent   = s.wins + ' / ' + s.losses;
     document.getElementById('s-open').textContent = s.open_trades;
-    document.getElementById('s-btc').textContent  = (s.asset_windows.BTC || 0);
-    document.getElementById('s-eth').textContent  = (s.asset_windows.ETH || 0);
-    document.getElementById('s-sol').textContent  = (s.asset_windows.SOL || 0);
+    const w15 = s.asset_windows_15m || {};
+    document.getElementById('s-btc').textContent = (s.asset_windows.BTC || 0);
+    document.getElementById('s-eth').textContent = (s.asset_windows.ETH || 0);
+    document.getElementById('s-sol').textContent = (s.asset_windows.SOL || 0);
+    document.getElementById('s-btc-sub').textContent = `5m: ${s.asset_windows.BTC||0}  15m: ${w15.BTC||0}`;
+    document.getElementById('s-eth-sub').textContent = `5m: ${s.asset_windows.ETH||0}  15m: ${w15.ETH||0}`;
+    document.getElementById('s-sol-sub').textContent = `5m: ${s.asset_windows.SOL||0}  15m: ${w15.SOL||0}`;
 
     // Strategy cards
     const strats = s.strategy_pnl || {};

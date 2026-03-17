@@ -1,4 +1,10 @@
-"""Balance checker — queries CLOB, data-api, and on-chain Polygon USDC."""
+"""Balance checker — on-chain Polygon USDC and Polymarket portfolio value.
+
+Note: The CLOB /balance endpoint always returns 0 for proxy wallets, so we
+skip it entirely. The two reliable sources are:
+  - polygon_usdc  : on-chain bridged USDC balance (the actual deposit)
+  - polymarket_value : data-api portfolio value (cash + open positions)
+"""
 
 from __future__ import annotations
 
@@ -27,32 +33,14 @@ def _encode_balance_of(address: str) -> str:
 
 
 class BalanceChecker:
-    """Check wallet balances across CLOB API, data API, and Polygon on-chain."""
+    """Check wallet balances via Polymarket data-api and Polygon on-chain."""
 
     async def check(self, address: str) -> dict:
-        """Return balance dict with clob_usdc, polymarket_value, polygon_usdc."""
-        results = {"clob_usdc": 0.0, "polymarket_value": 0.0, "polygon_usdc": 0.0}
+        """Return balance dict with polymarket_value and polygon_usdc."""
+        results = {"polymarket_value": 0.0, "polygon_usdc": 0.0}
 
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # 1. CLOB balance (py-clob-client compatible endpoint)
-            try:
-                resp = await client.get(
-                    f"https://clob.polymarket.com/balance",
-                    params={"address": address},
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    # Response may be a float/string or {"balance": ...}
-                    if isinstance(data, (int, float)):
-                        results["clob_usdc"] = float(data)
-                    elif isinstance(data, dict):
-                        results["clob_usdc"] = float(
-                            data.get("balance", data.get("usdc", 0)) or 0
-                        )
-            except Exception as e:
-                logger.warning("balance_clob_failed", error=str(e))
-
-            # 2. Polymarket data-api — portfolio value (open positions + cash)
+            # 1. Polymarket data-api — portfolio value (open positions + cash)
             try:
                 resp = await client.get(
                     "https://data-api.polymarket.com/value",
@@ -70,7 +58,7 @@ class BalanceChecker:
             except Exception as e:
                 logger.warning("balance_data_api_failed", error=str(e))
 
-            # 3. On-chain Polygon USDC balance (bridged USDC = what Polymarket uses)
+            # 2. On-chain Polygon USDC balance (bridged USDC = what Polymarket uses)
             call_data = _encode_balance_of(address)
             payload = {
                 "jsonrpc": "2.0",

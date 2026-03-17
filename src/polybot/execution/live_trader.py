@@ -182,6 +182,8 @@ class LiveTrader:
     async def resolve_window(self, window_slug: str, went_up: bool):
         """Record resolution of a window's positions (P&L calculation)."""
         trades = await self.db.get_trades(window_slug=window_slug)
+        if not trades:
+            return  # No positions in this window — nothing to resolve
         for t in trades:
             if t["resolved"]:
                 continue

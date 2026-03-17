@@ -278,8 +278,7 @@ class TradingLoop:
             )
             if signal and self.risk.can_trade():
                 result = await self._execute(signal, state)
-                if result:
-                    state.traded_this_window = True
+                state.traded_this_window = True  # Don't retry regardless of fill
 
         # === STRATEGY 2: Classic arb — YES+NO < 1.0 ===
         if window_state in (WindowState.OPEN, WindowState.ENTRY_ZONE) and not state.traded_this_window:
