@@ -3,8 +3,8 @@
 Systematic directional trading bot for Polymarket BTC/ETH/SOL 5-minute and 15-minute Up/Down prediction markets.
 
 **Status:** PAPER TRADING — $1000 virtual bankroll
-**Live dashboard:** http://63.33.49.226:8888/ (login: `admin` / `polybot2026`, IP changes on redeploy)
-**AWS region:** eu-west-1 (Ireland) on ECS Fargate
+**Live dashboard:** http://54.155.183.45:8888/ (login: `admin` / `polybot2026`, **fixed Elastic IP — never changes**)
+**AWS region:** eu-west-1 (Ireland) — Bot on ECS Fargate, Dashboard on EC2 t3.micro (i-0ee28e7e5fab27497)
 **Last updated:** 2026-03-18
 
 ---
@@ -55,34 +55,48 @@ EV stays ~40-50% for asks 0.65-0.70 across all thresholds. `max_market_price=0.7
 ## Architecture
 
 ```
-AWS eu-west-1 ECS Fargate (single container)
-├── Bot (scripts/run.py)
-│   ├── CoinbaseWS       — real-time BTC/ETH/SOL price feed
-│   ├── WindowTracker    — 5m/15m window state machine
-│   ├── BayesianUpdater  — P(UP) with base rate prior
-│   ├── Bedrock AI       — Claude Sonnet 4.6 probability blend
+AWS eu-west-1
+├── Bot — ECS Fargate (redeploy anytime, IP changes are fine)
+│   ├── CoinbaseWS        — real-time BTC/ETH/SOL price feed
+│   ├── WindowTracker     — 5m/15m window state machine
+│   ├── BayesianUpdater   — P(UP) with base rate prior
+│   ├── Bedrock AI        — Claude Sonnet 4.6 probability blend (30%)
 │   ├── DirectionalSignal — entry decision
-│   ├── QuarterKelly     — position sizing
-│   ├── PaperTrader      — simulated fills
-│   └── DynamoDB         — trade/window storage
-└── Dashboard (scripts/dashboard.py :8888)
-    ├── FastAPI + HTTP Basic Auth
-    ├── DynamoDB reads (paper trades only)
-    └── Bedrock hourly strategy review
+│   ├── QuarterKelly      — position sizing
+│   ├── PaperTrader       — simulated fills
+│   └── DynamoDB          — polymarket-bot-trades, polymarket-bot-windows
+│
+└── Dashboard — EC2 t3.micro + Elastic IP 54.155.183.45 (PERMANENT)
+    ├── Dockerfile.dashboard (separate from bot image)
+    ├── FastAPI + HTTP Basic Auth :8888
+    ├── DynamoDB reads (paper trades only, mode filter)
+    ├── Bedrock hourly strategy review
+    └── Auto-pulls latest image every hour via cron
+```
+
+**Deploying dashboard updates** (no bot restart needed):
+```bash
+# 1. Build and push dashboard image
+docker build --platform linux/amd64 -f Dockerfile.dashboard -t polymarket-dashboard:latest .
+docker tag polymarket-dashboard:latest 688567279867.dkr.ecr.eu-west-1.amazonaws.com/polymarket-dashboard:latest
+docker push 688567279867.dkr.ecr.eu-west-1.amazonaws.com/polymarket-dashboard:latest
+# 2. EC2 auto-updates every hour via cron, or manually trigger:
+ssh ec2-user@54.155.183.45 'sudo /usr/local/bin/dashboard-update.sh'
 ```
 
 ---
 
-## Test Coverage — 138/138 passing
+## Test Coverage — 149/149 passing
 
 ```
 tests/test_sizing.py          23 tests  Kelly formula, edge cases
 tests/test_bayesian.py        19 tests  probability updates, bounds
 tests/test_window_tracker.py  13 tests  state machine transitions
-tests/test_directional.py     20 tests  signal conditions
+tests/test_directional.py     20 tests  signal conditions (incl. min price floor 0.20)
 tests/test_risk_manager.py    24 tests  circuit breaker, daily P&L
 tests/test_latency_monitor.py 21 tests  p50/p95 latency stats
 tests/test_base_rate.py        8 tests  base rate table
+tests/test_paper_trader.py     5 tests  dedup guard, price floor, circuit breaker
 ```
 
 ---
@@ -107,13 +121,22 @@ aws --profile playground ecs run-task \
 
 ## Research Roadmap (priority order)
 
-- [ ] Order book imbalance veto (OBI < -0.30 → skip, per Cont et al. 2014)
-- [ ] ETH/SOL-specific base rate tables (currently uses BTC base rates)
+- [x] OBI spread veto (bid-ask > 0.15 → skip)
+- [x] Per-asset×timeframe thresholds (BTC/ETH/SOL × 5m/15m)
+- [x] Dedup guard (one trade per window_slug, prevents duplicate fills)
+- [x] Min price floor 0.20 (prevents orderbook-init ghost trades)
+- [ ] ETH/SOL-specific base rate tables (currently uses BTC base rates for all)
 - [ ] Chainlink price feed for signals (recovers 3.5% WR from oracle divergence)
 - [ ] A/B test Bedrock blend vs pure Bayesian
 - [ ] Raise Kelly to 0.33 after 200+ trades confirmed ≥ 90% WR
 
-## Current Session P&L
+## Trade Audit (2026-03-18)
 
-Paper mode: -$30.00 (3 bad trades at price=0.001 from uninitialized orderbook — fixed).
-Stale orderbook guard + min_price=0.05 prevents recurrence.
+| Category | Trades | Net P&L | Notes |
+|----------|--------|---------|-------|
+| Bug trades (fill=0.001) | 3 | -$30.00 | Fixed: min_price=0.20 + orderbook guard |
+| Suspicious ETH 15m (fill=0.14/0.22) | 2 | +$96.88 | Likely early orderbook init; dedup guard prevents recurrence |
+| Clean legitimate trades | 10 | +$65.83 | BTC/SOL 01:59 onwards, fills 0.37-0.75 |
+| **Total reported** | **15** | **+$132.71** | Win rate 12/15 = 80% |
+
+Real edge (clean trades only): **10 wins / 0 losses = 100% WR**, +$65.83 from $100 deployed.

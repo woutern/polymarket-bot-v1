@@ -34,10 +34,12 @@ _USE_DYNAMO = not _os.path.exists(_DB_PATH)
 if _USE_DYNAMO:
     try:
         import boto3 as _boto3
-        # On AWS ECS, use task role credentials (no profile needed)
-        # Locally, try playground profile if available
-        _profile = "playground" if not _os.getenv("AWS_EXECUTION_ENV") else None
-        _session = _boto3.Session(profile_name=_profile, region_name="eu-west-1")
+        # Try playground profile (local dev), fall back to instance/task role (AWS)
+        try:
+            _session = _boto3.Session(profile_name="playground", region_name="eu-west-1")
+            _session.client("sts").get_caller_identity()  # validate credentials
+        except Exception:
+            _session = _boto3.Session(region_name="eu-west-1")
         _ddb = _session.resource("dynamodb")
         _logs_client = _session.client("logs")
         _trades_table  = _ddb.Table("polymarket-bot-trades")
