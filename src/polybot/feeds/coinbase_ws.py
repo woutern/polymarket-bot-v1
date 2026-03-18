@@ -53,7 +53,11 @@ class CoinbaseWS:
 
         while self._running:
             try:
-                async with websockets.connect(WS_URL) as ws:
+                async with websockets.connect(
+                    WS_URL,
+                    ping_interval=20,   # send WS ping every 20s
+                    ping_timeout=30,    # disconnect if no pong within 30s
+                ) as ws:
                     self._ws = ws
                     subscribe = {
                         "type": "subscribe",
@@ -63,17 +67,26 @@ class CoinbaseWS:
                     await ws.send(json.dumps(subscribe))
                     logger.info("coinbase_ws_connected", products=product_ids)
 
-                    async for raw in ws:
-                        if not self._running:
+                    while self._running:
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=30.0)
+                            msg = json.loads(raw)
+                            self._handle_message(msg)
+                        except asyncio.TimeoutError:
+                            # No message in 30s — connection is stale, force reconnect
+                            logger.warning("coinbase_ws_stale_reconnecting")
                             break
-                        msg = json.loads(raw)
-                        self._handle_message(msg)
 
             except (websockets.ConnectionClosed, OSError) as e:
                 if not self._running:
                     break
                 logger.warning("coinbase_ws_disconnected", error=str(e))
                 await asyncio.sleep(2)
+            except Exception as e:
+                if not self._running:
+                    break
+                logger.warning("coinbase_ws_error", error=str(e))
+                await asyncio.sleep(5)
 
     def _handle_message(self, msg: dict):
         if msg.get("channel") == "ticker":

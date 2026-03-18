@@ -209,15 +209,26 @@ class TradingLoop:
             if p > 0:
                 logger.info("price_feed_ready", key=key, asset=state.asset, price=p)
 
+        _last_price_log = time.time()
+
         while self._running:
+            any_price = False
             for key, state in self.asset_states.items():
                 price = self.coinbase.get_price(state.asset)
                 if price <= 0:
                     continue
+                any_price = True
                 try:
                     await self._tick_asset(state, price)
                 except Exception as e:
                     logger.error("tick_asset_error", key=key, error=str(e), exc_info=True)
+
+            # Warn if all prices have been zero for > 60 seconds
+            if any_price:
+                _last_price_log = time.time()
+            elif time.time() - _last_price_log > 60:
+                logger.warning("price_feed_stale_all_zero", seconds=round(time.time() - _last_price_log))
+                _last_price_log = time.time()  # reset so we don't spam
 
             await asyncio.sleep(0.25)
 
