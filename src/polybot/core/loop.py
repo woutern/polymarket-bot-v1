@@ -333,7 +333,7 @@ class TradingLoop:
         min_move = self.settings.min_move_for(state.asset, state.tracker.window_seconds)
 
         t_signal_start = time.time()
-        signal = generate_directional_signal(
+        evaluation = generate_directional_signal(
             bayesian=state.bayesian,
             orderbook=state.orderbook,
             current_price=price,
@@ -345,6 +345,32 @@ class TradingLoop:
             window_slug=window.slug,
             asset=state.asset,
         )
+        signal = evaluation.signal
+
+        # Log every evaluation to DynamoDB (throttle: 1 per window per asset)
+        if not state.traded_this_window:
+            try:
+                self.dynamo.put_signal({
+                    "window_slug": evaluation.window_slug,
+                    "timestamp": time.time(),
+                    "asset": evaluation.asset,
+                    "timeframe": evaluation.timeframe,
+                    "outcome": evaluation.outcome,
+                    "rejection_reason": evaluation.rejection_reason or "",
+                    "direction": evaluation.direction or "",
+                    "pct_move": round(evaluation.pct_move, 6),
+                    "model_prob": round(evaluation.model_prob, 4) if evaluation.model_prob else 0,
+                    "market_price": round(evaluation.market_price, 4) if evaluation.market_price else 0,
+                    "ev": round(evaluation.ev, 4) if evaluation.ev else 0,
+                    "p_bayesian": round(evaluation.p_bayesian, 4) if evaluation.p_bayesian else 0,
+                    "seconds_remaining": round(remaining, 1),
+                    "yes_ask": round(evaluation.yes_ask, 4),
+                    "no_ask": round(evaluation.no_ask, 4),
+                    "current_price": round(price, 2),
+                    "open_price": round(window.open_price, 2) if window.open_price else 0,
+                })
+            except Exception:
+                pass  # signal logging is best-effort
 
         # Only execute if orderbook was fetched recently (< 30s old) — stale = don't trade
         orderbook_fresh = (time.time() - state.orderbook_age) < 30.0

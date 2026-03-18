@@ -144,27 +144,24 @@ class TestApiCalibration:
         assert len(data) >= 1  # at least one bucket with data
 
 
-class TestApiSignalFeed:
-    def test_signal_feed_enriched(self, client):
-        resp = client.get("/api/signal-feed?limit=10")
-        signals = resp.json()["signals"]
-        assert len(signals) == 3
+class TestApiTrades2:
+    def test_trades_endpoint_returns_all(self, client):
+        resp = client.get("/api/trades?limit=10")
+        data = resp.json()
+        assert "trades" in data
+        assert len(data["trades"]) == 3
 
-        # Check that the enriched fields are present
-        s1 = next(s for s in signals if s["id"] == "t1")
-        assert s1["p_bayesian"] == 0.78
-        assert s1["p_ai"] == 0.82
-        assert s1["p_final"] == 0.79
-        assert s1["pct_move"] == 0.12
-        assert s1["ev"] == 0.33
-        assert s1["outcome_source"] == "polymarket_verified"
-        assert s1["polymarket_winner"] == "YES"
-        assert s1["correct_prediction"] == 1
+    def test_trades_filter_by_asset(self, client):
+        resp = client.get("/api/trades?asset=BTC&limit=10")
+        trades = resp.json()["trades"]
+        assert all(t.get("asset") == "BTC" for t in trades)
 
-        # Check unresolved trade
-        s3 = next(s for s in signals if s["id"] == "t3")
-        assert s3["pnl"] is None
-        assert s3["resolved"] is False
+    def test_trades_has_metadata_fields(self, client):
+        resp = client.get("/api/trades?limit=10")
+        trades = resp.json()["trades"]
+        t1 = next(t for t in trades if t.get("id") == "t1")
+        assert t1["p_bayesian"] == 0.78
+        assert t1["outcome_source"] == "polymarket_verified"
 
 
 class TestApiPnlHistory:

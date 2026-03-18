@@ -59,7 +59,7 @@ class TestGuardConditions:
             open_price=0.0,
             seconds_remaining=30,
         )
-        assert result is None
+        assert result.signal is None
 
     def test_open_price_negative_returns_none(self):
         b = _make_bayesian()
@@ -71,7 +71,7 @@ class TestGuardConditions:
             open_price=-100.0,
             seconds_remaining=30,
         )
-        assert result is None
+        assert result.signal is None
 
     def test_move_below_min_threshold_returns_none(self):
         """A 0.01% move is below the default 0.08% threshold."""
@@ -85,7 +85,7 @@ class TestGuardConditions:
             seconds_remaining=30,
             min_move_pct=0.08,
         )
-        assert result is None
+        assert result.signal is None
 
     def test_move_exactly_at_threshold_does_not_fire(self):
         """abs(pct_move) < min_move_pct — equal is NOT enough."""
@@ -102,7 +102,7 @@ class TestGuardConditions:
             seconds_remaining=30,
             min_move_pct=0.08,
         )
-        assert result is None
+        assert result.signal is None
 
     def test_market_already_priced_in_returns_none(self):
         """Ask > max_market_price means market already priced in the move."""
@@ -117,7 +117,7 @@ class TestGuardConditions:
             min_move_pct=0.08,
             max_market_price=0.75,
         )
-        assert result is None
+        assert result.signal is None
 
     def test_market_price_below_floor_returns_none(self):
         """market_price < 0.20 triggers the floor guard (uninitialized orderbook)."""
@@ -132,7 +132,7 @@ class TestGuardConditions:
             min_move_pct=0.08,
             max_market_price=0.75,
         )
-        assert result is None
+        assert result.signal is None
 
     def test_market_price_one_returns_none(self):
         """market_price=1 triggers the guard (market_price >= 1)."""
@@ -147,7 +147,7 @@ class TestGuardConditions:
             min_move_pct=0.08,
             max_market_price=0.75,
         )
-        assert result is None
+        assert result.signal is None
 
     def test_ev_below_threshold_returns_none(self):
         """EV too low: model_prob ≈ market_price → ev ≈ 0."""
@@ -163,7 +163,7 @@ class TestGuardConditions:
             min_ev_threshold=0.06,
             max_market_price=0.75,
         )
-        assert result is None
+        assert result.signal is None
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +185,9 @@ class TestSignalFiresUp:
             min_ev_threshold=0.06,
             max_market_price=0.75,
         )
-        assert result is not None
-        assert result.direction == Direction.UP
-        assert result.source == SignalSource.DIRECTIONAL
+        assert result.signal is not None
+        assert result.signal.direction == Direction.UP
+        assert result.signal.source == SignalSource.DIRECTIONAL
 
     def test_up_signal_ev_calculated_correctly(self):
         b = _make_bayesian(0.80)
@@ -200,8 +200,8 @@ class TestSignalFiresUp:
             seconds_remaining=30,
         )
         # ev = (model_prob - market_price) / market_price
-        expected_ev = (result.model_prob - 0.50) / 0.50
-        assert abs(result.ev - expected_ev) < 1e-9
+        expected_ev = (result.signal.model_prob - 0.50) / 0.50
+        assert abs(result.signal.ev - expected_ev) < 1e-9
 
     def test_up_signal_model_prob_matches_bayesian(self):
         """model_prob in signal equals bayesian.probability for UP."""
@@ -214,8 +214,8 @@ class TestSignalFiresUp:
             open_price=100.0,
             seconds_remaining=30,
         )
-        assert result is not None
-        assert abs(result.model_prob - b.probability) < 1e-9
+        assert result.signal is not None
+        assert abs(result.signal.model_prob - b.probability) < 1e-9
 
     def test_up_signal_uses_yes_best_ask(self):
         b = _make_bayesian(0.80)
@@ -227,8 +227,8 @@ class TestSignalFiresUp:
             open_price=100.0,
             seconds_remaining=30,
         )
-        assert result is not None
-        assert result.market_price == 0.45
+        assert result.signal is not None
+        assert result.signal.market_price ==0.45
 
     def test_up_signal_slug_and_asset_passed_through(self):
         b = _make_bayesian(0.80)
@@ -242,9 +242,9 @@ class TestSignalFiresUp:
             window_slug="btc-updown-5m-123",
             asset="BTC",
         )
-        assert result is not None
-        assert result.window_slug == "btc-updown-5m-123"
-        assert result.asset == "BTC"
+        assert result.signal is not None
+        assert result.signal.window_slug =="btc-updown-5m-123"
+        assert result.signal.asset =="BTC"
 
 
 # ---------------------------------------------------------------------------
@@ -268,8 +268,8 @@ class TestSignalFiresDown:
             min_ev_threshold=0.06,
             max_market_price=0.75,
         )
-        assert result is not None
-        assert result.direction == Direction.DOWN
+        assert result.signal is not None
+        assert result.signal.direction == Direction.DOWN
 
     def test_down_signal_uses_no_best_ask(self):
         b = _make_bayesian(0.20)
@@ -281,8 +281,8 @@ class TestSignalFiresDown:
             open_price=100.0,
             seconds_remaining=30,
         )
-        assert result is not None
-        assert result.market_price == 0.45
+        assert result.signal is not None
+        assert result.signal.market_price ==0.45
 
     def test_down_signal_model_prob_is_one_minus_p_up(self):
         b = _make_bayesian(0.20)
@@ -294,8 +294,8 @@ class TestSignalFiresDown:
             open_price=100.0,
             seconds_remaining=30,
         )
-        assert result is not None
-        assert abs(result.model_prob - (1.0 - b.probability)) < 1e-9
+        assert result.signal is not None
+        assert abs(result.signal.model_prob - (1.0 - b.probability)) < 1e-9
 
     def test_down_market_priced_in_returns_none(self):
         """no_best_ask > max_market_price → market already priced in downside."""
@@ -309,7 +309,7 @@ class TestSignalFiresDown:
             seconds_remaining=30,
             max_market_price=0.75,
         )
-        assert result is None
+        assert result.signal is None
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +329,7 @@ class TestCustomThresholds:
             seconds_remaining=30,
             min_move_pct=0.04,  # lower threshold
         )
-        assert result is not None
+        assert result.signal is not None
 
     def test_custom_max_market_price(self):
         """Stricter max_market_price suppresses signal."""
@@ -344,7 +344,7 @@ class TestCustomThresholds:
             seconds_remaining=30,
             max_market_price=0.55,
         )
-        assert result is None
+        assert result.signal is None
 
     def test_custom_min_ev_threshold(self):
         """Higher ev threshold suppresses a marginal signal."""
@@ -359,7 +359,7 @@ class TestCustomThresholds:
             seconds_remaining=30,
             min_ev_threshold=0.20,
         )
-        assert result is None
+        assert result.signal is None
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +381,7 @@ class TestOBISpreadVeto:
             seconds_remaining=30,
             use_ai=False,
         )
-        assert result is None
+        assert result.signal is None
 
     def test_up_spread_just_below_threshold_not_vetoed(self):
         """Spread of 0.14 (< 0.15 threshold) is not vetoed."""
@@ -395,8 +395,8 @@ class TestOBISpreadVeto:
             seconds_remaining=30,
             use_ai=False,
         )
-        assert result is not None
-        assert result.direction == Direction.UP
+        assert result.signal is not None
+        assert result.signal.direction == Direction.UP
 
     def test_up_tight_yes_spread_passes(self):
         """UP signal passes when yes spread is tight (< 0.15)."""
@@ -410,8 +410,8 @@ class TestOBISpreadVeto:
             seconds_remaining=30,
             use_ai=False,
         )
-        assert result is not None
-        assert result.direction == Direction.UP
+        assert result.signal is not None
+        assert result.signal.direction == Direction.UP
 
     def test_down_wide_no_spread_vetoed(self):
         """DOWN signal vetoed when no_best_ask - no_best_bid > 0.15."""
@@ -425,7 +425,7 @@ class TestOBISpreadVeto:
             seconds_remaining=30,
             use_ai=False,
         )
-        assert result is None
+        assert result.signal is None
 
     def test_down_tight_no_spread_passes(self):
         """DOWN signal passes when no spread is tight (< 0.15)."""
@@ -439,8 +439,8 @@ class TestOBISpreadVeto:
             seconds_remaining=30,
             use_ai=False,
         )
-        assert result is not None
-        assert result.direction == Direction.DOWN
+        assert result.signal is not None
+        assert result.signal.direction == Direction.DOWN
 
     def test_up_wide_yes_spread_does_not_veto_down_direction(self):
         """A wide YES spread should NOT veto a DOWN signal (different side)."""
@@ -455,5 +455,5 @@ class TestOBISpreadVeto:
             seconds_remaining=30,
             use_ai=False,
         )
-        assert result is not None
-        assert result.direction == Direction.DOWN
+        assert result.signal is not None
+        assert result.signal.direction == Direction.DOWN

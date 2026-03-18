@@ -32,6 +32,7 @@ class DynamoStore:
             db = boto3.resource("dynamodb", region_name=region)
             self._trades = db.Table("polymarket-bot-trades")
             self._windows = db.Table("polymarket-bot-windows")
+            self._signals = db.Table("polymarket-bot-signals")
             self._available = True
         except Exception as e:
             logger.debug("dynamo_init_failed", extra={"error": str(e)})
@@ -60,6 +61,24 @@ class DynamoStore:
             return resp.get("Items", [])
         except Exception as e:
             logger.debug("dynamo_get_trades_failed", extra={"error": str(e)})
+            return []
+
+    def put_signal(self, signal: dict):
+        if not self._available:
+            return
+        try:
+            self._signals.put_item(Item=_to_decimal(signal))
+        except Exception as e:
+            logger.debug("dynamo_put_signal_failed", extra={"error": str(e)})
+
+    def get_recent_signals(self, limit: int = 100) -> list[dict]:
+        if not self._available:
+            return []
+        try:
+            resp = self._signals.scan(Limit=limit)
+            return resp.get("Items", [])
+        except Exception as e:
+            logger.debug("dynamo_get_signals_failed", extra={"error": str(e)})
             return []
 
     def get_trades_for_window(self, window_slug: str) -> list[dict]:

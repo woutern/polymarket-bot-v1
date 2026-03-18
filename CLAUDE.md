@@ -1,218 +1,406 @@
 # Scaleflow Polymarket Trading Bot — Claude Code Context
 
+> Read this file fully at the start of every session. This is the single source of truth.
+
+---
+
 ## What this project is
+
 An algorithmic trading bot for Polymarket crypto binary prediction markets.
 We trade BTC/ETH/SOL × 5min/15min Up/Down markets (6 pairs).
-Binary bets: does price close higher or lower than the open?
+Binary bets: does price close higher or lower than the open at window start?
 
 Owner: Wouter (Scaleflow)
-Stack: Python, AWS, Polygon blockchain
+Stack: Python, AWS (us-east-1), Polygon blockchain
+Live wallet: $32, $1 flat bets until 400+ trades with confirmed statistical edge
 
 ---
 
-## Current architecture (eu-west-1 — TO BE MIGRATED)
+## How it trades (core loop)
 
-### How it trades
 1. Coinbase WebSocket feeds live prices every 250ms
 2. Window opens → bot tracks price move from open
-3. Entry zone T-60s to T-15s → if price moved enough, evaluate trade
-4. Signal fires when: move > threshold AND ask < $0.75 AND expected value > 6%
-5. Probability = 70% Bayesian model + 30% Claude AI (AWS Bedrock)
-6. Sizing = flat $1 per trade (Quarter-Kelly, floored at $1)
-7. Execution = FOK limit order on Polymarket CLOB
+3. Entry logic fires based on tier (see Entry Tiers below)
+4. Probability computed from blended model (see Probability Model below)
+5. Signal fires when: edge > threshold AND ask < $0.90 AND conformal gate passes
+6. Sizing = flat $1 per trade (Kelly computed but floored at $1 until 400+ trades)
+7. Execution = FOK limit order on Polymarket CLOB (Tier A/C), GTD limit (Tier B)
 8. After close → verify outcome via Polymarket Gamma API (Chainlink oracle)
-
-### Current thresholds (to be replaced by ML model)
-- BTC: 0.08% move
-- ETH: 0.10% move
-- SOL: 0.14% move
-
-### Infrastructure (current)
-- Bot: ECS Fargate, eu-west-1 (Ireland)
-- Dashboard: EC2 at http://54.155.183.45:8888/ (3 pages: Overview, Trade Log, Analytics)
-- Storage: DynamoDB (trades + windows tables), SQLite (local backup)
-- AI: AWS Bedrock Claude Sonnet 4.6 (cross-region inference via eu.anthropic prefix)
-- Auto-claim: runs every 10 min, redeems winning positions
-- 193 tests passing
-- Live mode, $32 wallet, $1 flat trades
+9. After resolution → update River online model, run SPRT update, trigger meta-learning if 10-trade batch complete
 
 ---
 
-## Migration target: us-east-1 (N. Virginia)
+## Current architecture (POST-MIGRATION: us-east-1)
 
-### Why we're moving
-- Coinbase exchange is hosted in AWS us-east-1 → -67-85ms on price data
-- Bedrock Claude is native in us-east-1 (no cross-region prefix needed)
-- Polymarket CLOB API calls may also be faster
+### AWS Infrastructure
+- Bot: ECS Fargate, us-east-1 — always-on, 250ms tick loop
+- Dashboard: EC2 at http://54.155.183.45:8888/ — 4 pages (Overview, Trade Log, Analytics, Edge Analytics)
+- Storage: DynamoDB us-east-1 (trades, windows, training_data, edge_metrics, meta_insights, bandit_state tables)
+- SQLite: local backup inside container
+- AI: AWS Bedrock Claude Sonnet 4.6 (anthropic.claude-sonnet-4-6 — native us-east-1, no eu. prefix)
+- Model artifacts: S3 bucket, paths tracked in SSM Parameter Store
+- Auto-claim: every 10 min, redeems winning positions
 
-### What's already available in us-east-1
-- ECS Fargate: empty, ready
-- DynamoDB: empty, ready (need to recreate tables with same schema)
-- ECR: empty, ready (need to push images)
-- Bedrock Claude: native (use anthropic.claude-sonnet-4-6, no eu. prefix)
-- Secrets Manager: needs secrets recreated from eu-west-1
-
-### Migration steps needed
-1. Recreate DynamoDB tables (trades, windows) with same schema as eu-west-1
-2. Push ECR images to us-east-1 repos
-3. Recreate Secrets Manager secrets
-4. Update ECS task definitions to point to us-east-1 resources
-5. Update Bedrock model ID (remove eu. prefix)
-6. Deploy ECS service in us-east-1
-7. Verify dashboard EC2 instance connectivity
-8. Run smoke tests
-9. Decommission eu-west-1 resources
+### Why us-east-1
+- Coinbase exchange hosted in AWS us-east-1 → saves 67–85ms on price data vs eu-west-1
+- Bedrock Claude native (no cross-region routing)
+- Latency budget target: Coinbase tick → Polymarket order < 30ms total
 
 ---
 
-## Strategy improvements to implement (from research)
+## Data feeds (three WebSocket connections, always open)
 
-### Problem: T-60s entry is too late (mathematical certainty has arrived)
-Binary option pricing: at 60s to expiry with BTC vol ~50%, a 0.1% move from strike = 92%+ probability.
-The market correctly prices YES at 0.99. We're trying to buy at the wrong time.
+### Feed 1: Coinbase WebSocket (price + order book)
+- URL: wss://ws-direct.exchange.coinbase.com (authenticated direct feed, us-east-1 proximity)
+- Channels: ticker (250ms price), level2 (order book for OFI/depth features)
+- Assets: BTC-USD, ETH-USD, SOL-USD
+- Used for: price data, microstructure features, realized volatility
 
-### Fix 1: Earlier entry window (T-240s to T-120s)
-- Enter when market is at 0.55–0.70, not 0.95+
-- At $0.60 entry, need only 60% win rate to profit
-- Current T-60s entry needs ~99% accuracy
+### Feed 2: Polymarket RTDS (oracle lag signal)
+- URL: wss://ws-live-data.polymarket.com
+- Streams: binance_price AND chainlink_price per asset simultaneously
+- Used for: oracle_lag_ms, oracle_lag_pct, oracle_dislocation signal
+- Critical: Chainlink updates every ~10-30s or 0.5% deviation — Coinbase leads by 15-45s
+- This lag is our primary edge
 
-### Fix 2: Oracle latency exploitation
-- Polymarket uses Chainlink Data Streams (updates every ~10-30s or 0.5% deviation)
-- Our Coinbase WebSocket leads Chainlink by 15-45 seconds
-- Strategy: compute our own binary probability in real-time
-- Trade when our probability > Polymarket price by >3%
+### Feed 3: Polymarket CLOB WebSocket
+- Market channel: wss://ws-subscriptions-clob.polymarket.com/ws/market
+- User channel: wss://ws-subscriptions-clob.polymarket.com/ws/user
+- Used for: live order book, yes_ask/yes_bid, tick_size_change events, fill confirmations
 
-### Fix 3: Replace Bayesian model with LightGBM
-Research shows gradient boosting >> LSTM/deep learning for this use case.
-Feature tiers (in priority order):
+---
 
-**Tier 1 - Microstructure (most important)**
-- Order Flow Imbalance (OFI) at 30s/1m/5m windows
-- VPIN (Volume-synchronized Probability of Informed Trading)
-- Bid-ask spread
-- Depth imbalance
-- Trade arrival rate
-- Effective spread
+## Entry tiers (replaces old T-60s to T-15s logic)
 
-**Tier 2 - Technical**
-- RSI at 3/7/14 periods
-- MACD signal
-- Bollinger Band position
-- 5m/15m momentum
-- Volume momentum
+### Tier A — Oracle dislocation (fires at any time in window)
+Condition: oracle_dislocation = True AND edge > 0.05 AND conformal_gate_passed
+- oracle_dislocation = abs(oracle_lag_pct) > 0.003
+- Enter immediately, do not wait
+- Order type: FOK (aggressive, take the ask)
+- This is the primary edge — highest priority
 
-**Tier 3 - Volatility**
-- Realized volatility 5m/15m
-- Parkinson estimator
-- Garman-Klass OHLC estimator
-- Short/long vol ratio
+### Tier B — Early directional (T-240s to T-120s)
+Condition: edge > 0.04 AND interval_width < 0.15 AND regime in [A, D]
+- Enter when market is at 0.50-0.70 (genuine uncertainty exists)
+- At $0.60 entry: need only 60% win rate to profit (vs 99% at T-60s)
+- Order type: GTD limit at mid-price, auto-cancel at T-30s
+- Only fires if Tier A did not already fire this window
 
-**Tier 4 - Cross-asset**
-- BTC-ETH/SOL rolling correlation (λ=0.94 for 15s half-life)
-- Relative strength
-- Cross-asset VPIN
+### Tier C — Late confirmation (T-90s to T-30s)
+Condition: edge > 0.06 AND oracle_lag confirms direction
+- Replaces old T-60s to T-15s logic
+- Order type: FOK
+- Only fires if Tiers A and B did not fire this window
 
-**Tier 5 - Regime/time**
-- Hour-of-day (sin/cos encoded)
-- Day-of-week
-- Volatility regime
-- ADX trend strength
+---
 
-Model config:
-- LightGBM binary classification
-- Rolling 5,000 candle training window
-- Retrain every 4h or 100 predictions
-- Double calibration: Platt scaling → Isotonic regression
-- CPCV validation with 5-min embargo
-- Minimum edge threshold: 3% over market price
+## Probability model (blended ensemble)
 
-### Fix 4: Rust order signing (future, not now)
-Python EIP-712 signing takes ~1s. Rust client does it in <2ms.
-Polymarket official Rust client: https://github.com/Polymarket/rs-clob-client
-Defer this — do us-east-1 move and ML model first.
+### Components and weights
+1. LightGBM (60% base) — batch model, retrained every 4h
+2. River online model (10-30% adaptive) — updates on every resolved trade
+3. Claude regime-adjusted probability (20% base) — from 5-min regime call
+4. Oracle Black-Scholes probability (20% base) — real-time from RTDS feed
 
-### Fix 5: Subscribe to Polymarket RTDS feed
-URL: wss://ws-live-data.polymarket.com
-Streams both Binance AND Chainlink prices simultaneously.
-Comparing these directly reveals the oracle lag in real-time.
-This is the core signal for oracle latency exploitation.
+### Blending formula
+```python
+final_prob = (
+    lgbm_weight * lgbm_prob +
+    river_weight * river_prob +
+    bedrock_weight * bedrock_regime_prob +
+    oracle_weight * oracle_bs_prob
+)
+edge = final_prob - yes_ask
+```
+
+### Weight adjustment by regime
+```
+Regime A (TRENDING):         oracle +0.15, threshold -0.01, Tier B enabled
+Regime B (CHOPPY):           oracle -0.10, threshold +0.02, Tier B disabled
+Regime C (POST-MOVE):        oracle  0.00, threshold +0.03, Tier B disabled
+Regime D (PRE-CATALYST):     oracle +0.05, threshold -0.005, Tier B enabled
+Regime E (HIGH-UNCERTAINTY): oracle -0.20, threshold +0.05, Tier B disabled
+```
+
+### Thompson Sampling bandit (dynamic weight optimizer)
+- 5 weight configurations as arms (from oracle-heavy to lgbm-heavy)
+- 30 contexts: asset × timeframe × regime
+- State persisted in DynamoDB bandit_state table
+- Updates after every resolved trade
+- Meaningful signal after ~2 weeks of data
+
+---
+
+## AI components (detail)
+
+### Claude Sonnet 4.6 — regime classifier ONLY (not per-trade)
+- Called every 5 minutes via Bedrock (anthropic.claude-sonnet-4-6)
+- Returns JSON: regime A-E, confidence 0-1, directional_bias UP/DOWN/NEUTRAL, reasoning
+- Prompt includes: price, returns, vol, correlation, OFI, oracle lag, large trades, hour UTC
+- Regime output fed as features into LightGBM (regime_encoded, regime_confidence, directional_bias_encoded)
+- Regime also adjusts signal weights and entry thresholds (see above)
+- Cost: ~$0.15/day at ~1,500 calls/day
+- DO NOT call per-trade — too slow, wrong job for an LLM
+
+### LightGBM — batch model (6 models, one per asset+timeframe)
+- Models: BTC_5m, BTC_15m, ETH_5m, ETH_15m, SOL_5m, SOL_15m
+- Training: rolling 5,000 windows, time-ordered 80/20 split, 5-min embargo
+- Calibration: Platt scaling → Isotonic regression (double calibration)
+- Artifact storage: S3, latest path in SSM Parameter Store
+- Retrain: every 4h or 100 predictions (whichever first), scheduled ECS task
+- Deploy gate: only if new Brier score < current Brier score
+- Fallback: Bayesian model if no artifact available
+
+### River — online learning (inside main ECS container)
+- Model: HoeffdingAdaptiveTreeClassifier (drift-aware, grace_period=50)
+- Updates: after every resolved trade, <1ms
+- Weight in blend: 0.10 (at 50% accuracy) → 0.30 (at 60%+ accuracy), linear interpolation
+- Purpose: catches intraday session effects between 4h retrains
+- State: in-memory, checkpoint to DynamoDB every 100 updates
+
+### MAPIE — conformal prediction (trade gate)
+- Wraps calibrated LightGBM, method="score", cv="prefit"
+- Calibration set: last 500 resolved trades
+- Coverage: 90% (alpha=0.10)
+- Trade gate: SKIP if interval_width > 0.15
+- Effect: filters ~30-50% of uncertain trades
+
+### Meta-learning loop — async, not in hot path
+- Trigger: every 10 resolved trades
+- Sends batch to Claude: features, outcomes, regime, entry tier, top 5 features per trade
+- Claude returns: loss_patterns, win_patterns, regime_observation, feature_flag,
+  recommended_threshold_adjustment, skip_condition
+- Stored in meta_insights DynamoDB table
+- Loss patterns fed as context into next regime classification prompts
+- Threshold nudges: max ±20% of current value, require 3 consecutive same suggestion to apply
+- Cost: ~$0.05/day
+
+---
+
+## Feature engineering (40+ features per tick)
+
+All features z-score normalized: (feature - rolling_mean_500) / rolling_std_500
+Use deque(maxlen=500) per feature for rolling stats.
+
+### Tier 1 — Microstructure (Coinbase level2 order book)
+- ofi_30s, ofi_1m, ofi_5m: (buy_volume - sell_volume) / total_volume
+- vpin: Volume-synchronized Probability of Informed Trading
+- bid_ask_spread: (best_ask - best_bid) / mid_price
+- depth_imbalance: (bid_depth_top5 - ask_depth_top5) / (bid + ask depth top5)
+- trade_arrival_rate: trades per second, last 30s
+- effective_spread: 2 × abs(trade_price - mid_price) / mid_price
+
+### Tier 2 — Technical
+- rsi_3, rsi_7, rsi_14
+- macd_signal: MACD(12,26,9) signal line
+- bb_position: (price - lower) / (upper - lower), 20-period Bollinger Bands
+- momentum_5m, momentum_15m: log price returns
+- volume_momentum: (vol_1m - vol_ma_5m) / vol_ma_5m
+
+### Tier 3 — Volatility
+- realized_vol_5m, realized_vol_15m: from tick log returns
+- parkinson_vol: (1/(4×ln2)) × (ln(high/low))², 20-period rolling
+- garman_klass_vol: OHLC estimator
+- vol_ratio: realized_vol_5m / realized_vol_15m
+
+### Tier 4 — Cross-asset (BTC as base)
+- btc_eth_corr: EW correlation λ=0.94 (~15s half-life)
+- btc_sol_corr: same
+- btc_rel_strength: btc_return_5m - asset_return_5m
+- cross_asset_signal: BTC momentum direction (1/-1/0, threshold 0.05%)
+
+### Tier 5 — Regime/time
+- hour_sin, hour_cos: sin/cos(2π × hour/24)
+- dow_sin, dow_cos: sin/cos(2π × day/7)
+- vol_regime: 1 if realized_vol_5m > vol_ma_1h else 0
+- adx_14: Average Directional Index, 14-period
+
+### Tier 6 — AI-derived (from 5-min Claude regime call)
+- regime_encoded: A=0, B=1, C=2, D=3, E=4
+- regime_confidence: 0.0-1.0 from Claude output
+- directional_bias_encoded: UP=1, DOWN=-1, NEUTRAL=0
+
+---
+
+## Oracle signal computation
+
+```python
+# Black-Scholes probability from RTDS feed
+d2 = ln(binance_price / strike) / (realized_vol_per_second * sqrt(time_to_expiry_seconds))
+oracle_probability = scipy.stats.norm.cdf(d2)
+
+# Oracle dislocation detection
+oracle_lag_pct = (binance_price - chainlink_price) / chainlink_price
+oracle_dislocation = abs(oracle_lag_pct) > 0.003
+
+# Realized vol: last 100 Coinbase ticks (250ms = ~25s of data)
+# strike = window open price
+# time_to_expiry_seconds = seconds remaining in window
+```
+
+---
+
+## DynamoDB tables (all us-east-1)
+
+### trades (primary key: trade_id)
+Fields: asset, timeframe, entry_price, our_probability, outcome,
+        oracle_lag_ms, oracle_lag_pct, regime, regime_confidence,
+        directional_bias, entry_tier, lgbm_prob, river_prob, oracle_prob,
+        bedrock_prob, final_prob, edge_at_entry, interval_width,
+        confidence_gate_passed, kelly_suggested_size, actual_bet_size,
+        arm_index, context, timestamp, window_id,
+        coinbase_to_order_ms, fill_latency_ms, bedrock_latency_ms, feature_compute_ms
+
+### windows (primary key: window_id)
+Fields: asset, timeframe, open_price, close_price, outcome, start_ts, end_ts
+
+### training_data (primary key: window_id, sort key: asset_timeframe)
+Fields: all 40+ features as map, outcome, market_price_at_entry, timestamp
+
+### edge_metrics (primary key: trade_id)
+Fields: sprt_log_likelihood, brier_contribution, oracle_lag_at_entry,
+        entry_tier, interval_width, regime, timestamp
+
+### meta_insights (primary key: batch_id)
+Fields: loss_patterns, win_patterns, regime_observation, feature_flag,
+        recommended_thresholds, skip_condition, timestamp, trades_analyzed
+
+### bandit_state (primary key: context e.g. "BTC_5m_A")
+Fields: arm_alphas (list of 5), arm_betas (list of 5), total_pulls, last_updated
 
 ---
 
 ## Polymarket API reference
 
-### CLOB endpoints
-- Base: https://clob.polymarket.com
-- WS market channel: wss://ws-subscriptions-clob.polymarket.com/ws/market
-- WS user channel: wss://ws-subscriptions-clob.polymarket.com/ws/user
+### Endpoints
+- CLOB REST: https://clob.polymarket.com
+- CLOB WS market: wss://ws-subscriptions-clob.polymarket.com/ws/market
+- CLOB WS user: wss://ws-subscriptions-clob.polymarket.com/ws/user
 - RTDS: wss://ws-live-data.polymarket.com
+- Gamma API: https://gamma-api.polymarket.com (resolution / Chainlink oracle)
 
-### Order types supported
-- GTC (Good Till Cancelled)
-- GTD (Good Till Date) — use this for passive entries with auto-cancel
-- FOK (Fill or Kill) — current, for aggressive market taking
-- FAK (Fill and Kill) — IOC equivalent, partial fills OK
+### Order types
+- FOK: aggressive take — Tier A and C entries
+- GTD: passive limit with expiry — Tier B entries, cancel at T-30s
+- FAK: partial fill OK — fallback if FOK fill rate drops below 70%
 
 ### Key constraints
 - Minimum order: 5 shares
 - Batch endpoint: up to 15 orders per request
-- Maker orders must rest ≥3.5s for liquidity rebates
-- Rate limits: 350 orders/s burst, 60/s sustained
-- FOK BUY specifies dollar amount, not share count
-
-### Tick sizes
-- Default: 0.01
-- When price >0.96 or <0.04: automatically 0.001 or 0.0001
-- Watch for tick_size_change WebSocket events
+- Maker rebate: order must rest ≥3.5s
+- Rate limits: 350/s burst, 60/s sustained
+- FOK BUY amount = dollar amount (not share count)
+- Tick size refines to 0.001 when price >0.96 or <0.04 (watch tick_size_change events)
+- Signing: EIP-712 in Python (~1s) — future Rust migration (rs-clob-client) deferred
 
 ---
 
-## Edge measurement framework
+## Position sizing
 
-### Metrics to track
-- Brier score: mean((entry_price - outcome)²) — target < 0.08
-- Brier Skill Score: 1 - (our_BS / market_BS) — positive = edge exists
-- Win rate vs market-implied probability
-- ROI per market, per asset, per timeframe
-- Oracle lag captured (ms between Coinbase tick and Polymarket price update)
+```python
+def compute_position_size(edge, market_price, bankroll, model_age_hours):
+    kelly = edge / (1 - market_price)
+    uncertainty_discount = max(0.1, 1.0 - (model_age_hours / 8.0))
+    fraction = kelly * 0.25 * uncertainty_discount
+    raw = max(1.0, min(bankroll * 0.05, bankroll * fraction))
+    return round(raw, 2)
+```
 
-### SPRT for live monitoring
-After each trade, update log-likelihood ratio:
-log(Λₙ) = Σ [xᵢ × log(p₁/p₀) + (1-xᵢ) × log((1-p₁)/(1-p₀))]
-Cross boundary A = (1-β)/α → edge confirmed
-Cross boundary B = β/(1-α) → no edge, reassess
-
-### Minimum trades for significance
-- 5% edge: ~620 trades needed
-- 10% edge: ~150 trades needed
-- 20% edge: ~40 trades needed
-Current status: 1 trade. No statistical claims yet.
+HARD RULE: actual_bet_size = $1.00 until SPRT confirms edge AND trade count ≥ 400.
+Always log both kelly_suggested_size and actual_bet_size.
 
 ---
 
-## Key decisions and constraints
+## Edge measurement
 
-- Keep $1 flat bet sizing until we hit 400+ trades with confirmed edge
-- Do NOT increase position size without statistical validation
-- Keep 193 passing tests green throughout migration
-- Dashboard must stay accessible throughout migration (EC2 stays up)
-- Keep eu-west-1 running in parallel until us-east-1 is fully validated
-- Use the same DynamoDB table schema — dashboard reads from it
+### SPRT — update after every trade
+```
+log_lambda += outcome * log(p1/p0) + (1-outcome) * log((1-p1)/(1-p0))
+Boundary A = log((1-β)/α)  → edge confirmed, unlock dynamic sizing
+Boundary B = log(β/(1-α))  → no edge, halt and reassess
+```
+Use α=0.05, β=0.20. Plot log_lambda on Edge Analytics dashboard.
+
+### Brier score
+Per trade: (entry_price - outcome)²
+Rolling 50-trade average. Target < 0.08.
+Brier Skill Score = 1 - (our_BS / market_BS). Positive = edge exists.
+
+### Sample size requirements
+5% edge: ~620 trades | 10% edge: ~150 trades | 20% edge: ~40 trades
+Current: 1 trade. No statistical claims valid.
 
 ---
 
-## What NOT to change (yet)
-- Order execution logic (FOK for now)
-- Blockchain/Polygon interaction (auto-claim logic)
-- Dashboard frontend (EC2, port 8888)
-- SQLite local backup structure
-- Test suite structure (193 tests must stay green)
+## Dashboard (4 pages, EC2 port 8888)
+
+Page 1 — Overview: live P&L, positions, balance, win rate
+Page 2 — Trade Log: all trades with edge, tier, regime, interval width
+Page 3 — Analytics: P&L by asset/timeframe/hour, drawdown
+Page 4 — Edge Analytics:
+  - SPRT monitor (log-likelihood curve per pair, boundaries A and B)
+  - Brier score + calibration curve (predicted vs actual, decile buckets)
+  - Oracle lag monitor (live per asset, p50/p95, dislocation events last 24h)
+  - LightGBM feature importance (top 15)
+  - Entry tier analysis (win rate and P&L per tier A/B/C)
+  - Kelly sizing tracker (suggested vs actual, trades to unlock dynamic sizing)
+  - Meta-insights log (latest Claude pattern analysis output)
+  - Data collection progress (windows collected per asset/timeframe toward 500)
+  - Model age and last retrain Brier score
 
 ---
 
-## How to work with this codebase
-- Always run tests before and after changes: check that 193 pass
-- Use AWS CLI with --region us-east-1 for all new resources
-- Secrets are in AWS Secrets Manager (recreate in us-east-1 with same key names)
-- DynamoDB table names must match exactly what the code expects
-- ECS task definitions reference ECR image URIs — update these for us-east-1 ECR
+## Performance targets (log every trade)
+
+- Coinbase tick → order submission: p50 < 15ms, p95 < 30ms
+- Order submission → fill confirmation: p50 < 50ms
+- Bedrock regime call: p50 < 400ms (async, non-blocking)
+- Feature computation: p50 < 5ms
+- River update: < 1ms
+- LightGBM inference: < 10ms
+
+---
+
+## Constraints — read before every change
+
+1. 193 tests must pass at all times — run before and after every change
+2. EC2 dashboard stays up and accessible throughout all work
+3. Keep eu-west-1 running until Wouter explicitly says to shut it down
+4. Never increase bet above $1 without Wouter's explicit instruction
+5. Never deploy a model with higher Brier score than the current one
+6. Never call Bedrock per-trade — regime classifier only, every 5 minutes
+7. Meta-learning threshold nudges: max ±20%, require 3 consecutive same suggestion
+8. All new AWS resources in us-east-1
+9. DynamoDB table names must match exactly what code expects
+10. When in doubt: ask before executing
+
+---
+
+## What is NOT changing yet
+
+- Blockchain/Polygon auto-claim logic
+- Dashboard frontend framework (adding page 4 only)
+- SQLite backup structure
+- Test suite structure (add tests, never remove)
+- EIP-712 Python signing (Rust migration is future work)
+
+---
+
+## Libraries
+
+- lightgbm: batch model
+- river: online learning
+- mapie: conformal prediction
+- scipy.stats: Black-Scholes N(d2)
+- py_clob_client: Polymarket orders
+- boto3: AWS (Bedrock, DynamoDB, S3, SSM, Secrets Manager)
+- websockets: all three feeds
+- pandas / numpy: feature computation
+
+---
+
+## Secrets (AWS Secrets Manager, us-east-1)
+
+Same key names as eu-west-1:
+POLYMARKET_PRIVATE_KEY, POLYMARKET_API_KEY, POLYMARKET_API_SECRET,
+POLYMARKET_API_PASSPHRASE, COINBASE_API_KEY, COINBASE_API_SECRET

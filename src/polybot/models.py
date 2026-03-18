@@ -142,6 +142,33 @@ class TradeRecord:
 
 
 @dataclass
+class SignalEvaluation:
+    """Result of evaluating a potential signal — captures both fired and rejected signals."""
+
+    signal: Signal | None           # None if rejected
+    rejection_reason: str | None    # None if accepted: min_move, market_efficient, insufficient_ev, obi_veto, unrealistic_price
+    asset: str = ""
+    window_slug: str = ""
+    timeframe: str = "5m"
+    direction: str | None = None
+    pct_move: float = 0.0
+    model_prob: float | None = None
+    market_price: float | None = None
+    ev: float | None = None
+    p_bayesian: float | None = None
+    p_ai: float | None = None
+    seconds_remaining: float = 0.0
+    open_price: float = 0.0
+    current_price: float = 0.0
+    yes_ask: float = 0.0
+    no_ask: float = 0.0
+
+    @property
+    def outcome(self) -> str:
+        return "executed" if self.signal is not None else "rejected"
+
+
+@dataclass
 class MarketInfo:
     """Polymarket market metadata from Gamma API."""
 
