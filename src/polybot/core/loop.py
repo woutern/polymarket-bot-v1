@@ -128,7 +128,9 @@ class TradingLoop:
 
         # LightGBM model server
         from polybot.ml.server import ModelServer
+        from polybot.ml.kpi_tracker import KPITracker
         self.model_server = ModelServer()
+        self.kpi_tracker = KPITracker()
         try:
             self.model_server.load_models()
         except Exception as e:
@@ -736,6 +738,25 @@ class TradingLoop:
                         correct=correct,
                         pnl=round(pnl, 4),
                     )
+
+                    # Update KPIs after resolution
+                    try:
+                        all_trades = await self.db.get_trades(limit=200)
+                        t["pnl"] = pnl  # update in-memory for KPI
+                        t["resolved"] = 1
+                        t["outcome_source"] = source
+                        kpi = self.kpi_tracker.on_trade_resolved(t, all_trades)
+                        if kpi.get("brier_skill_score") is not None:
+                            logger.info(
+                                "kpi_updated",
+                                bss=kpi.get("brier_skill_score"),
+                                wr_20=kpi.get("win_rate_last_20"),
+                                sprt=kpi.get("sprt_status"),
+                                separation=kpi.get("lgbm_separation"),
+                            )
+                    except Exception as e:
+                        logger.debug(f"kpi_update_failed: {e}")
+
                 return  # done
 
             except Exception as e:

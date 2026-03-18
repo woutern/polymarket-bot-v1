@@ -64,6 +64,7 @@ _BANKROLL = float(_os.getenv("BANKROLL", "1000.0"))
 _WALLET_ADDRESS = _os.getenv(
     "POLYMARKET_FUNDER", "0x5ca439d661c9b44337E91fC681ec4b006C473610"
 )
+_TOTAL_DEPOSITED = float(_os.getenv("TOTAL_DEPOSITED", "265.72"))  # Total USDC ever deposited
 
 
 # ── Helper: DynamoDB Decimal → float ──────────────────────────────────────────
@@ -573,6 +574,33 @@ def api_pairs(_: str = Depends(_require_auth)):
     return {"pairs": pairs, "total_enabled": len(pairs)}
 
 
+@app.get("/api/kpi")
+def api_kpi(_: str = Depends(_require_auth)):
+    """Latest KPI snapshot from DynamoDB."""
+    if _USE_DYNAMO:
+        try:
+            kpi_table = _ddb.Table("polymarket-bot-kpi-snapshots")
+            resp = kpi_table.scan(Limit=5)
+            items = resp.get("Items", [])
+            if items:
+                # Get most recent
+                items.sort(key=lambda x: float(x.get("timestamp", 0)), reverse=True)
+                latest = items[0]
+                # Convert Decimals to floats
+                def to_float(obj):
+                    if hasattr(obj, '__float__'):
+                        return float(obj)
+                    if isinstance(obj, dict):
+                        return {k: to_float(v) for k, v in obj.items()}
+                    if isinstance(obj, list):
+                        return [to_float(i) for i in obj]
+                    return obj
+                return to_float(latest)
+        except Exception as e:
+            return {"error": str(e), "status": "no_data"}
+    return {"status": "no_data"}
+
+
 @app.get("/api/pnl-history")
 def api_pnl_history(_: str = Depends(_require_auth)):
     """Return hourly P&L buckets from resolved trades."""
@@ -633,7 +661,12 @@ async def api_balance(_: str = Depends(_require_auth)):
             except Exception:
                 pass
 
-            # Positions for P&L and unclaimed
+            # P&L = portfolio - total deposited (matches Polymarket UI)
+            portfolio = result["polygon_usdc"] + result["polymarket_value"]
+            result["total_pnl"] = round(portfolio - _TOTAL_DEPOSITED, 2)
+            result["portfolio"] = round(portfolio, 2)
+
+            # Unclaimed winnings from positions
             try:
                 resp = await client.get(
                     "https://data-api.polymarket.com/positions",
@@ -641,7 +674,6 @@ async def api_balance(_: str = Depends(_require_auth)):
                 )
                 if resp.status_code == 200:
                     positions = resp.json()
-                    result["total_pnl"] = round(sum(p.get("cashPnl", 0) for p in positions if isinstance(p, dict)), 2)
                     result["unclaimed_winnings"] = round(sum(
                         p.get("currentValue", 0) for p in positions
                         if isinstance(p, dict) and p.get("currentValue", 0) > 0.5
@@ -1050,6 +1082,7 @@ HTML = r"""<!DOCTYPE html>
     <button class="nav-tab" data-page="tradelog" onclick="showPage('tradelog', this)">Trade Log</button>
     <button class="nav-tab" data-page="signals" onclick="showPage('signals', this)">Signals</button>
     <button class="nav-tab" data-page="analytics" onclick="showPage('analytics', this)">Analytics</button>
+    <button class="nav-tab" data-page="kpis" onclick="showPage('kpis', this)">KPIs</button>
   </div>
   <div class="nav-right">
     <div class="nav-meta">
@@ -1340,6 +1373,100 @@ HTML = r"""<!DOCTYPE html>
 </div>
 </div>
 
+<!-- ══════════════════════════ PAGE 5: KPIs ══════════════════════════ -->
+<div id="page-kpis" class="page-content">
+<div class="page">
+
+  <!-- Edge Score -->
+  <div class="stat-card" style="text-align:center;padding:24px;margin-bottom:20px">
+    <div class="stat-label">THE EDGE SCORE (Brier Skill Score)</div>
+    <div class="stat-value" id="kpi-bss" style="font-size:36px">&mdash;</div>
+    <div class="stat-sub" id="kpi-bss-sub">Collecting data...</div>
+  </div>
+
+  <!-- SPRT + Win Rate -->
+  <div class="panels-grid">
+    <div class="panel-card">
+      <div class="panel-head"><span class="section-title">SPRT Edge Detection</span></div>
+      <div style="padding:16px">
+        <div id="kpi-sprt-status" style="font-size:18px;font-weight:700;margin-bottom:8px">ACCUMULATING</div>
+        <div id="kpi-sprt-lambda" style="font-size:13px;color:var(--text-3)">log(&Lambda;) = 0.000</div>
+        <div id="kpi-sprt-trades" style="font-size:13px;color:var(--text-3)">Trades to significance: ~400</div>
+      </div>
+    </div>
+    <div class="panel-card">
+      <div class="panel-head"><span class="section-title">Win Rate</span></div>
+      <div style="padding:16px;display:flex;gap:20px">
+        <div style="text-align:center;flex:1">
+          <div style="font-size:11px;color:var(--text-3)">Last 20</div>
+          <div id="kpi-wr20" style="font-size:24px;font-weight:800">&mdash;</div>
+        </div>
+        <div style="text-align:center;flex:1">
+          <div style="font-size:11px;color:var(--text-3)">Last 50</div>
+          <div id="kpi-wr50" style="font-size:24px;font-weight:800">&mdash;</div>
+        </div>
+        <div style="text-align:center;flex:1">
+          <div style="font-size:11px;color:var(--text-3)">All Time</div>
+          <div id="kpi-wrall" style="font-size:24px;font-weight:800">&mdash;</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Model + Risk -->
+  <div class="panels-grid">
+    <div class="panel-card">
+      <div class="panel-head"><span class="section-title">Model Intelligence</span></div>
+      <div style="padding:16px">
+        <div style="display:flex;gap:20px;margin-bottom:12px">
+          <div style="flex:1;text-align:center">
+            <div style="font-size:11px;color:var(--text-3)">Avg prob (wins)</div>
+            <div id="kpi-prob-wins" style="font-size:20px;font-weight:700;color:var(--green)">&mdash;</div>
+          </div>
+          <div style="flex:1;text-align:center">
+            <div style="font-size:11px;color:var(--text-3)">Avg prob (losses)</div>
+            <div id="kpi-prob-losses" style="font-size:20px;font-weight:700;color:var(--red)">&mdash;</div>
+          </div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:11px;color:var(--text-3)">Separation (target &gt;0.10)</div>
+          <div id="kpi-separation" style="font-size:18px;font-weight:700">&mdash;</div>
+        </div>
+      </div>
+    </div>
+    <div class="panel-card">
+      <div class="panel-head"><span class="section-title">Risk</span></div>
+      <div style="padding:16px;display:flex;gap:20px">
+        <div style="text-align:center;flex:1">
+          <div style="font-size:11px;color:var(--text-3)">Sharpe</div>
+          <div id="kpi-sharpe" style="font-size:20px;font-weight:700">&mdash;</div>
+        </div>
+        <div style="text-align:center;flex:1">
+          <div style="font-size:11px;color:var(--text-3)">Max DD</div>
+          <div id="kpi-dd" style="font-size:20px;font-weight:700">&mdash;</div>
+        </div>
+        <div style="text-align:center;flex:1">
+          <div style="font-size:11px;color:var(--text-3)">Today P&amp;L</div>
+          <div id="kpi-daily" style="font-size:20px;font-weight:700">&mdash;</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Per Pair -->
+  <div class="panel-card">
+    <div class="panel-head"><span class="section-title">Per Pair Breakdown</span></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Pair</th><th>Trades</th><th>Win Rate</th><th>Avg Entry</th><th>Avg LightGBM</th><th>P&amp;L</th><th>SPRT</th></tr></thead>
+        <tbody id="kpi-pairs-body"><tr class="empty-row"><td colspan="7">Collecting data...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+</div>
+
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
 let currentPage = 'overview';
@@ -1379,7 +1506,88 @@ function showPage(name, btn) {
     loadAnalytics();
     refreshInterval = setInterval(loadAnalytics, OTHER_REFRESH_MS);
     animateBar(OTHER_REFRESH_MS);
+  } else if (name === 'kpis') {
+    loadKPIs();
+    refreshInterval = setInterval(loadKPIs, 30000);
+    animateBar(30000);
   }
+}
+
+async function loadKPIs() {
+  try {
+    const resp = await fetch('/api/kpi');
+    const k = await resp.json();
+    if (k.status === 'no_data') {
+      document.getElementById('kpi-bss-sub').textContent = 'No KPI data yet — waiting for resolved trades';
+      return;
+    }
+
+    // Edge score
+    const bss = k.brier_skill_score || 0;
+    const bssEl = document.getElementById('kpi-bss');
+    bssEl.textContent = (bss >= 0 ? '+' : '') + (bss * 100).toFixed(1) + '%';
+    bssEl.style.color = bss >= 0 ? '#2f9e44' : '#c92a2a';
+    document.getElementById('kpi-bss-sub').textContent =
+      bss >= 0 ? 'You are ' + (bss*100).toFixed(1) + '% better than the market' : 'Market is ' + (-bss*100).toFixed(1) + '% better than you';
+
+    // SPRT
+    const sprt = k.sprt_status || 'ACCUMULATING';
+    const sprtEl = document.getElementById('kpi-sprt-status');
+    sprtEl.textContent = sprt;
+    sprtEl.style.color = sprt === 'EDGE_CONFIRMED' ? '#2f9e44' : sprt === 'REASSESS' ? '#c92a2a' : '#868e96';
+    document.getElementById('kpi-sprt-lambda').textContent = 'log(\u039B) = ' + (k.sprt_log_lambda || 0).toFixed(4);
+    document.getElementById('kpi-sprt-trades').textContent = 'Trades to significance: ~' + (k.trades_to_significance || '?');
+
+    // Win rates
+    const wrColor = (v) => v >= 0.70 ? '#2f9e44' : v >= 0.60 ? '#e67700' : '#c92a2a';
+    const wr20 = k.win_rate_last_20 || 0;
+    const wr50 = k.win_rate_last_50 || 0;
+    const wrAll = k.win_rate_total || 0;
+    document.getElementById('kpi-wr20').textContent = (wr20*100).toFixed(0) + '%';
+    document.getElementById('kpi-wr20').style.color = wrColor(wr20);
+    document.getElementById('kpi-wr50').textContent = (wr50*100).toFixed(0) + '%';
+    document.getElementById('kpi-wr50').style.color = wrColor(wr50);
+    document.getElementById('kpi-wrall').textContent = (wrAll*100).toFixed(0) + '%';
+    document.getElementById('kpi-wrall').style.color = wrColor(wrAll);
+
+    // Model
+    document.getElementById('kpi-prob-wins').textContent = (k.lgbm_avg_prob_wins || 0).toFixed(3);
+    document.getElementById('kpi-prob-losses').textContent = (k.lgbm_avg_prob_losses || 0).toFixed(3);
+    const sep = k.lgbm_separation || 0;
+    document.getElementById('kpi-separation').textContent = (sep >= 0 ? '+' : '') + sep.toFixed(4);
+    document.getElementById('kpi-separation').style.color = sep >= 0.10 ? '#2f9e44' : sep >= 0.05 ? '#e67700' : '#c92a2a';
+
+    // Risk
+    document.getElementById('kpi-sharpe').textContent = (k.sharpe_ratio || 0).toFixed(2);
+    document.getElementById('kpi-dd').textContent = '$' + (k.max_drawdown || 0).toFixed(2);
+    const daily = k.daily_pnl_today || 0;
+    document.getElementById('kpi-daily').textContent = (daily >= 0 ? '+' : '') + '$' + daily.toFixed(2);
+    document.getElementById('kpi-daily').style.color = daily >= 0 ? '#2f9e44' : '#c92a2a';
+
+    // Per pair
+    const pairs = k.pair_stats || {};
+    const tbody = document.getElementById('kpi-pairs-body');
+    tbody.innerHTML = '';
+    for (const [pair, ps] of Object.entries(pairs)) {
+      const wr = ps.win_rate || 0;
+      const pnlColor = ps.total_pnl >= 0 ? '#2f9e44' : '#c92a2a';
+      const sprtBadge = ps.sprt_status === 'EDGE_CONFIRMED' ? '<span style=\"color:#2f9e44\">CONFIRMED</span>'
+        : ps.sprt_status === 'REASSESS' ? '<span style=\"color:#c92a2a\">REASSESS</span>'
+        : '<span style=\"color:#868e96\">accumulating</span>';
+      tbody.innerHTML += '<tr>' +
+        '<td><strong>' + pair + '</strong></td>' +
+        '<td>' + (ps.trades || 0) + '</td>' +
+        '<td style=\"color:' + wrColor(wr) + ';font-weight:700\">' + (wr*100).toFixed(0) + '%</td>' +
+        '<td>$' + (ps.avg_entry || 0).toFixed(2) + '</td>' +
+        '<td>' + (ps.avg_lgbm_prob || 0).toFixed(3) + '</td>' +
+        '<td style=\"color:' + pnlColor + ';font-weight:600\">' + (ps.total_pnl >= 0 ? '+' : '') + '$' + (ps.total_pnl || 0).toFixed(2) + '</td>' +
+        '<td>' + sprtBadge + '</td>' +
+        '</tr>';
+    }
+    if (!Object.keys(pairs).length) {
+      tbody.innerHTML = '<tr class=\"empty-row\"><td colspan=\"7\">No pair data yet</td></tr>';
+    }
+  } catch(e) { console.error('kpi error', e); }
 }
 
 // ── Refresh bar ───────────────────────────────────────────────────────────────
@@ -1474,6 +1682,7 @@ async function refreshBalance() {
     document.getElementById('s-balance-label').textContent = 'Total Balance';
     document.getElementById('s-balance').textContent = '$' + wallet.toFixed(2);
     const pmPnl = d.total_pnl || 0;
+    window._polymarketPnl = pmPnl;  // Used by P&L display
     const unclaimed = d.unclaimed_winnings || 0;
     let subText = 'Cash $' + (d.polygon_usdc||0).toFixed(2) + ' + positions $' + (d.polymarket_value||0).toFixed(2);
     subText += ' | P&L ' + (pmPnl>=0?'+':'') + '$' + pmPnl.toFixed(2) + ' (Polymarket)';
@@ -1528,7 +1737,7 @@ function fmtPnl(p) {
   if (p == null || p === '') return '&mdash;';
   const v = parseFloat(p);
   const c = v >= 0 ? '#2f9e44' : '#c92a2a';
-  return '<span style="color:'+c+';font-weight:600">' + (v>=0?'+':'') + '$' + v.toFixed(4) + '</span>';
+  return '<span style="color:'+c+';font-weight:600">' + (v>=0?'+':'') + '$' + v.toFixed(2) + '</span>';
 }
 function fmtProb(p) {
   if (p == null || p === 0 || p === '0') return '&mdash;';
@@ -1577,13 +1786,14 @@ async function refreshOverview() {
       modeBadge.style.borderColor = 'rgba(25,113,194,.3)';
     }
 
-    const pnl = s.total_pnl;
-    const unrealized = s.unrealized_pnl || 0;
+    // P&L: use Polymarket data (set by refreshBalance, updated every 30s)
+    // Fallback to DynamoDB-calculated P&L if Polymarket not loaded yet
+    const pnl = window._polymarketPnl !== undefined ? window._polymarketPnl : s.total_pnl;
     const pnlEl = document.getElementById('s-pnl');
     pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
     pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'green' : 'red');
-    document.getElementById('s-pnl-sub').textContent =
-      'Realized (verified)' + (unrealized ? ' | Unrealized: ' + (unrealized>=0?'+':'') + '$' + unrealized.toFixed(2) : '');
+    const pnlSource = window._polymarketPnl !== undefined ? 'Polymarket' : 'DynamoDB';
+    document.getElementById('s-pnl-sub').textContent = 'Source: ' + pnlSource;
 
     const wr = s.total_resolved > 0 ? Math.round(s.wins / s.total_resolved * 100) : 0;
     document.getElementById('s-wl').textContent = s.wins + ' / ' + s.losses;
