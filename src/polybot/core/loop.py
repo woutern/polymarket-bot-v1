@@ -768,8 +768,9 @@ class TradingLoop:
     async def _resolve_orphan_trades(self):
         """On startup, resolve any trades left unresolved from previous sessions."""
         try:
-            trades = await self.db.get_trades(limit=50)
-            orphans = [t for t in trades if not t.get("resolved")]
+            # Query DynamoDB (not SQLite — SQLite is empty in new containers)
+            trades = self.dynamo.get_recent_trades(limit=100)
+            orphans = [t for t in trades if not t.get("resolved") or str(t.get("resolved")) == "0"]
             if not orphans:
                 logger.info("orphan_check_clean", count=0)
                 return
@@ -791,11 +792,32 @@ class TradingLoop:
                 pnl = round((size / fill) * (1 - fill), 2) if correct and fill > 0 else round(-size, 2)
 
                 self.risk.record_trade(pnl)
-                await self.db.update_trade_verified(
-                    trade_id=t["id"], pnl=pnl,
-                    polymarket_winner=winner, correct_prediction=correct,
-                    outcome_source=source,
-                )
+                # Update in DynamoDB directly (SQLite may be empty in new container)
+                try:
+                    self.dynamo.update_trade_resolved(t["id"], pnl, winner, correct, source)
+                except Exception:
+                    pass
+                # Also try SQLite
+                try:
+                    await self.db.update_trade_verified(
+                        trade_id=t["id"], pnl=pnl,
+                        polymarket_winner=winner, correct_prediction=correct,
+                        outcome_source=source,
+                    )
+                except Exception:
+                    pass
+
+                # Update KPIs
+                try:
+                    all_trades = self.dynamo.get_recent_trades(limit=200)
+                    t_updated = dict(t)
+                    t_updated["pnl"] = pnl
+                    t_updated["resolved"] = 1
+                    t_updated["outcome_source"] = source
+                    self.kpi_tracker.on_trade_resolved(t_updated, all_trades)
+                except Exception:
+                    pass
+
                 logger.info("orphan_resolved", id=t["id"], slug=slug, winner=winner, pnl=round(pnl, 2))
         except Exception as e:
             logger.warning("orphan_check_failed", error=str(e))
