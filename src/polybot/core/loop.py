@@ -279,6 +279,9 @@ class TradingLoop:
             # Auto-claim DISABLED — Gnosis Safe proxy wallet can't redeem via EOA
             # Claim manually at polymarket.com/portfolio
 
+            # Refresh models every 4 hours
+            self.model_server.refresh_if_needed()
+
             # Hourly strategy review — learn from recent trades, log insights
             if (time.time() - self._last_strategy_review) >= 3600:
                 self._last_strategy_review = time.time()
