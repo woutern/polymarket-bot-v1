@@ -72,25 +72,37 @@ Live wallet: $32, $1 flat bets until 400+ trades with confirmed statistical edge
 
 ## Entry tiers (replaces old T-60s to T-15s logic)
 
+### STRATEGY PIVOT (2026-03-18 backtest finding)
+Direction prediction is SOLVED: 97%+ win rate when move >0.08% by T-60s.
+The ONLY problem is entry price. By T-60s the ask is $0.95 (EV: +$0.02).
+We must enter EARLIER at $0.55-0.65 before market makers price it in.
+
+30-day BTC 5m backtest (4,065 signals):
+- T-120s entry (0.03% threshold): 96.2% WR, ask ~$0.55-0.65, EV ~+$0.60/dollar
+- T-180s entry (0.03% threshold): 92.3% WR, ask ~$0.50-0.60, EV ~+$0.55/dollar
+- T-240s entry (0.03% threshold): 86.3% WR, ask cheapest but lower WR
+- T-60s entry (current, 0.08%):   97.3% WR, ask $0.95+, EV ~+$0.02/dollar
+
 ### Tier A — Oracle dislocation (fires at any time in window)
-Condition: oracle_dislocation = True AND edge > 0.05 AND conformal_gate_passed
+Condition: oracle_dislocation = True AND edge > 0.05
 - oracle_dislocation = abs(oracle_lag_pct) > 0.003
 - Enter immediately, do not wait
 - Order type: FOK (aggressive, take the ask)
-- This is the primary edge — highest priority
+- Rare event — bonus edge, not primary
 
-### Tier B — Early directional (T-240s to T-120s)
-Condition: edge > 0.04 AND interval_width < 0.15 AND regime in [A, D]
-- Enter when market is at 0.50-0.70 (genuine uncertainty exists)
-- At $0.60 entry: need only 60% win rate to profit (vs 99% at T-60s)
-- Order type: GTD limit at mid-price, auto-cancel at T-30s
+### Tier B — Early directional (T-120s to T-90s) *** PRIMARY STRATEGY ***
+Condition: move >0.03% from open AND ask < 0.70 AND ev > 0.10
+- THIS IS THE MAIN EDGE — enter before market prices it in
+- At $0.60 entry with 96% WR: EV = (0.96-0.60)*(1/0.60) = +$0.60 per dollar
+- Order type: GTD limit at ask, auto-cancel at T-30s
+- LightGBM goal: predict at T-120s whether move holds to close
 - Only fires if Tier A did not already fire this window
 
-### Tier C — Late confirmation (T-90s to T-30s)
-Condition: edge > 0.06 AND oracle_lag confirms direction
-- Replaces old T-60s to T-15s logic
-- Order type: FOK
+### Tier C — Late confirmation (T-60s to T-30s) — FALLBACK ONLY
+Condition: edge > 0.10 AND ask < 0.75
 - Only fires if Tiers A and B did not fire this window
+- Low EV at T-60s asks ($0.90+) — only worth it on outlier pricing
+- Order type: FOK
 
 ---
 
@@ -309,6 +321,29 @@ def compute_position_size(edge, market_price, bankroll, model_age_hours):
 
 HARD RULE: actual_bet_size = $1.00 until SPRT confirms edge AND trade count ≥ 400.
 Always log both kelly_suggested_size and actual_bet_size.
+
+---
+
+## Hard rules (from 112K wallet analysis + Wouter directives)
+
+1. **MIN_EV = 0.15** — only trade when EV per dollar > 15%:
+   `ev = (model_prob - market_price) * (1 / market_price)`
+   NOT the old `(model_prob - market_price) / market_price`
+
+2. **Early exit**: if position value increases >30% before settlement,
+   SELL immediately and recycle capital. Don't always hold to resolution.
+
+3. **Regime F (OVERREACTION)** validated by top 1% wallets — they fade
+   extreme prices. Confirmed in Phase 6 plan.
+
+4. **Never expand beyond crypto price markets** until SPRT confirms edge
+   at 400+ trades. No politics, no sports, no custom markets.
+
+5. **Capital reserve**: never commit >70% of bankroll to open positions
+   simultaneously. Check `sum(open_sizes) + new_size <= bankroll * 0.70`
+   before every trade. Reject with reason="capital_reserve" if breached.
+
+6. **$1 flat bet** until SPRT confirmed. No exceptions.
 
 ---
 
