@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -25,6 +26,7 @@ from polybot.models import Direction, OrderbookSnapshot, Window
 from polybot.risk.manager import RiskManager
 from polybot.storage.db import Database
 from polybot.storage.dynamo import DynamoStore
+from polybot.feeds.rtds_ws import RTDSClient, compute_oracle_probability, compute_realized_vol
 from polybot.strategy.base_rate import BaseRateTable
 from polybot.strategy.bayesian import BayesianUpdater
 from polybot.strategy.directional import generate_directional_signal
@@ -66,6 +68,7 @@ class AssetState:
     prev_window: Window | None = None
     traded_this_window: bool = False
     orderbook_age: float = 0.0
+    price_history: deque = field(default_factory=lambda: deque(maxlen=200))  # for realized vol
 
 
 class TradingLoop:
@@ -147,6 +150,9 @@ class TradingLoop:
 
         logger.info("pairs_enabled", pairs=list(self.asset_states.keys()))
 
+        # RTDS client for Chainlink oracle prices
+        self.rtds = RTDSClient(assets=assets)
+
         self._wallet_address: str = settings.polymarket_funder or ""
         self._last_claim_check: float = 0.0
         self._last_strategy_review: float = 0.0
@@ -181,6 +187,7 @@ class TradingLoop:
 
         tasks = [
             asyncio.create_task(self.coinbase.connect(), name="coinbase_ws"),
+            asyncio.create_task(self.rtds.connect(), name="rtds_ws"),
             asyncio.create_task(self._strategy_loop_resilient(), name="strategy_loop"),
         ]
 
@@ -197,6 +204,7 @@ class TradingLoop:
     async def stop(self):
         self._running = False
         await self.coinbase.close()
+        await self.rtds.close()
         await self.db.close()
         logger.info("loop_stopped")
 
@@ -271,6 +279,13 @@ class TradingLoop:
         if not window:
             return
 
+        # Track price history for realized vol calculation
+        state.price_history.append(price)
+
+        # Update oracle lag (Coinbase vs Chainlink)
+        oracle = self.rtds.get_state(state.asset)
+        oracle.compute_lag(price)
+
         current_open_ts = window.open_ts
 
         if state.prev_open_ts is not None and current_open_ts != state.prev_open_ts:
@@ -279,11 +294,117 @@ class TradingLoop:
         elif state.prev_open_ts is None:
             await self._on_window_open(state, price)
 
-        # Directional strategy — entry zone only
+        # Tier A: Oracle dislocation entry — fires immediately, any time in window
+        remaining = window.seconds_remaining()
+        if (
+            oracle.dislocation
+            and not state.traded_this_window
+            and remaining > 30
+            and window.open_price
+            and window.open_price > 0
+        ):
+            await self._try_tier_a_entry(state, price, window, oracle, remaining)
+
+        # Tier C: Directional strategy — entry zone only (T-60s to T-15s)
         if window_state == WindowState.ENTRY_ZONE and not state.traded_this_window:
             await self._on_entry_zone(state, price)
 
         state.prev_open_ts = current_open_ts
+
+    async def _try_tier_a_entry(self, state: AssetState, price: float, window, oracle, remaining: float):
+        """Tier A: trade immediately on oracle dislocation when edge > 5%."""
+        realized_vol = compute_realized_vol(list(state.price_history))
+        if realized_vol <= 0:
+            return
+
+        oracle_prob = compute_oracle_probability(
+            spot_price=price,
+            strike=window.open_price,
+            realized_vol=realized_vol,
+            seconds_remaining=remaining,
+        )
+
+        await self._refresh_orderbook(state)
+        yes_ask = state.orderbook.yes_best_ask
+
+        if oracle_prob >= 0.5:
+            edge = oracle_prob - yes_ask
+            direction = "up"
+            market_price = yes_ask
+        else:
+            edge = (1 - oracle_prob) - state.orderbook.no_best_ask
+            direction = "down"
+            market_price = state.orderbook.no_best_ask
+
+        if edge < 0.05 or market_price < 0.20 or market_price >= 0.95:
+            return
+
+        logger.info(
+            "tier_a_signal",
+            asset=state.asset,
+            slug=window.slug,
+            oracle_lag_pct=round(oracle.oracle_lag_pct, 5),
+            oracle_prob=round(oracle_prob, 4),
+            yes_ask=round(yes_ask, 4),
+            edge=round(edge, 4),
+            direction=direction,
+            t_minus=round(remaining, 1),
+            realized_vol=round(realized_vol, 4),
+        )
+
+        from polybot.models import Direction, Signal, SignalSource
+        signal = Signal(
+            source=SignalSource.DIRECTIONAL,
+            direction=Direction.UP if direction == "up" else Direction.DOWN,
+            model_prob=oracle_prob if direction == "up" else (1 - oracle_prob),
+            market_price=market_price,
+            ev=edge / market_price if market_price > 0 else 0,
+            window_slug=window.slug,
+            asset=state.asset,
+            p_bayesian=state.bayesian.probability,
+            p_ai=None,
+            pct_move=(price - window.open_price) / window.open_price * 100 if window.open_price else 0,
+            seconds_remaining=remaining,
+            yes_ask=state.orderbook.yes_best_ask,
+            no_ask=state.orderbook.no_best_ask,
+            yes_bid=state.orderbook.yes_best_bid,
+            no_bid=state.orderbook.no_best_bid,
+            open_price=window.open_price or 0,
+        )
+
+        if self.risk.can_trade():
+            t0 = time.time()
+            from polybot.strategy.bedrock_signal import get_last_latency
+            await self._execute(signal, state, (time.time() - t0) * 1000, 0)
+            state.traded_this_window = True
+
+            # Log oracle fields
+            try:
+                self.dynamo.put_signal({
+                    "window_slug": window.slug,
+                    "timestamp": time.time(),
+                    "asset": state.asset,
+                    "timeframe": "15m" if "15m" in window.slug else "5m",
+                    "outcome": "executed",
+                    "rejection_reason": "",
+                    "direction": direction,
+                    "pct_move": round(signal.pct_move, 6),
+                    "model_prob": round(signal.model_prob, 4),
+                    "market_price": round(market_price, 4),
+                    "ev": round(signal.ev, 4),
+                    "p_bayesian": round(state.bayesian.probability, 4),
+                    "seconds_remaining": round(remaining, 1),
+                    "yes_ask": round(state.orderbook.yes_best_ask, 4),
+                    "no_ask": round(state.orderbook.no_best_ask, 4),
+                    "current_price": round(price, 2),
+                    "open_price": round(window.open_price, 2) if window.open_price else 0,
+                    "entry_tier": "A",
+                    "oracle_lag_pct": round(oracle.oracle_lag_pct, 6),
+                    "oracle_lag_ms": round(oracle.oracle_lag_ms, 1),
+                    "oracle_prob": round(oracle_prob, 4),
+                })
+            except Exception:
+                pass
 
     async def _on_window_open(self, state: AssetState, price: float):
         window = state.tracker.current
