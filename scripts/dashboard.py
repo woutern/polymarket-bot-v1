@@ -46,7 +46,7 @@ try:
     except Exception:
         _session = _boto3.Session(region_name="us-east-1")
     _ddb = _session.resource("dynamodb", region_name="us-east-1")
-    _logs_client = _session.client("logs", region_name="us-east-1")
+    _logs_client = _session.client("logs", region_name="eu-west-1")  # Bot runs in eu-west-1
     _trades_table = _ddb.Table("polymarket-bot-trades")
     _windows_table = _ddb.Table("polymarket-bot-windows")
     _signals_table = _ddb.Table("polymarket-bot-signals")

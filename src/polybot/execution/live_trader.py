@@ -59,6 +59,26 @@ class LiveTrader:
         )
         logger.info("live_trader_initialized", chain_id=settings.polymarket_chain_id)
 
+        # Connectivity test — halt if CLOB is geoblocked
+        self._test_clob_connectivity()
+
+    def _test_clob_connectivity(self):
+        """Test that CLOB API is reachable (not geoblocked). Halt if 403."""
+        import httpx
+        try:
+            resp = httpx.get(f"{POLYMARKET_HOST}/time", timeout=10)
+            if resp.status_code == 403:
+                logger.error(
+                    "clob_connectivity_blocked",
+                    status=403,
+                    message="Polymarket CLOB geoblocked from this region. Trading halted.",
+                )
+                raise RuntimeError("Polymarket CLOB geoblocked (403). Cannot trade from this region.")
+            logger.info("clob_connectivity", status="ok", code=resp.status_code)
+        except httpx.HTTPError as e:
+            logger.error("clob_connectivity_failed", error=str(e))
+            raise RuntimeError(f"Cannot reach Polymarket CLOB: {e}")
+
     async def execute(self, signal: Signal, yes_token_id: str, no_token_id: str, signal_ms: float = 0, bedrock_ms: float = 0) -> TradeRecord | None:
         """Execute a live order from a signal.
 
