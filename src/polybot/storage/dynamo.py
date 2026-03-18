@@ -29,7 +29,17 @@ class DynamoStore:
         self._available = False
         try:
             import boto3
-            db = boto3.resource("dynamodb", region_name=region)
+            import os
+            # Use playground profile locally, fall back to instance/task role on AWS
+            if not os.getenv("AWS_EXECUTION_ENV"):
+                try:
+                    session = boto3.Session(profile_name="playground", region_name=region)
+                    session.client("sts").get_caller_identity()
+                    db = session.resource("dynamodb")
+                except Exception:
+                    db = boto3.resource("dynamodb", region_name=region)
+            else:
+                db = boto3.resource("dynamodb", region_name=region)
             self._trades = db.Table("polymarket-bot-trades")
             self._windows = db.Table("polymarket-bot-windows")
             self._signals = db.Table("polymarket-bot-signals")
