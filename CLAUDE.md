@@ -78,30 +78,35 @@ CORE INSIGHT: Cheap asks ($0.55-0.65) only exist in first ~60 seconds of each wi
 By T+60s the median ask crosses $0.70. By T+150s it crosses $0.85. At T-60s it's $0.99.
 Direction prediction at T-60s is 97%+ but worthless — the ask is already $0.95.
 
-ENTRY SIGNAL: First-minute price move from window open.
-- |move| > 0.05%: 82.6% directional accuracy, ~1,960 signals/day (PRIMARY)
-- |move| > 0.03%: 78.6% accuracy, ~2,700 signals/day (more signals, lower quality)
-- Previous window carry-over: 59% accuracy alone (weak, tiebreaker only)
-- Combined (carry-over + first-min agree, both strong): 78.6% WR
-
-ENTRY WINDOW: T+30s to T+60s (wait 30s to detect move, enter before ask hits $0.70)
+CONFIRMED ENTRY WINDOW: T+2s to T+15s after window open (live orderbook data 2026-03-18)
+CONFIRMED ASK RANGE: $0.45-$0.60 (observed T+2s: $0.49-0.54, T+10s: $0.45-0.57, T+15s: $0.43-0.59)
+SIGNAL: move > 0.03% in either direction within first 15s
+MAX ASK: $0.60 (strict — only enter below $0.60)
 EV FORMULA: ev = p × (1 - price) - (1 - p) × price
 MIN_EV: 0.10
-MAX_ASK: $0.65 (strict — only cheap asks)
-Expected WR: 78-83% (NOT 96% — that was at T-60s where asks are $0.95)
-EV at target: p=0.82, price=$0.58 → ev = 0.82×0.42 - 0.18×0.58 = +$0.24/dollar
+WIN RATE EXPECTATION: 78-83%
+CONFIRMED EV: +$0.27-$0.31/dollar at $0.50-$0.55 entry with 80% WR
+
+Live orderbook observation (BTC 5m, first window 2026-03-18 12:45 UTC):
+  T+2s:  YES@$0.51, NO@$0.50 (spread $0.01) — CHEAP
+  T+5s:  YES@$0.52, NO@$0.49 — CHEAP
+  T+10s: YES@$0.57, NO@$0.44 — still tradeable
+  T+15s: YES@$0.59, NO@$0.42 — borderline
+  T+20s: YES@$0.63, NO@$0.38 — too expensive
+  T+30s: YES@$0.63+           — way too late
 
 ### Tier A — Oracle dislocation (fires at any time in window)
 Condition: oracle_dislocation = True AND edge > 0.05
 - Rare event — bonus edge, not primary
 - Order type: FOK
 
-### Tier B — Early entry (T+30s to T+60s) *** PRIMARY STRATEGY ***
-Condition: |first-min move| > 0.05% AND ask < 0.65 AND ev > 0.10
-- Enter in direction of first-minute move
-- Target ask: $0.55-0.65
-- Order type: FOK (take the ask while it's cheap)
+### Tier B — Early entry (T+2s to T+15s) *** PRIMARY STRATEGY ***
+Condition: move > 0.03% AND direction-side ask < $0.60 AND ev > 0.10
+- Enter in direction of first 2-15 second price move
+- Target ask: $0.45-$0.60 (confirmed from live orderbook observation)
+- Order type: FOK (take the ask while it's cheap — disappears by T+20s)
 - This is the ONLY strategy that generates real EV
+- Seconds since open must be >= 2s (need minimum price data)
 
 ### Tier C — Late confirmation (T-60s to T-30s) — FALLBACK ONLY
 Condition: ev > 0.10 AND ask < 0.65

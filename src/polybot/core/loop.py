@@ -305,8 +305,19 @@ class TradingLoop:
         ):
             await self._try_tier_a_entry(state, price, window, oracle, remaining)
 
-        # Tier C: Directional strategy — entry zone only (T-60s to T-15s)
-        if window_state == WindowState.ENTRY_ZONE and not state.traded_this_window:
+        # Tier B (PRIMARY): Early entry T+2s to T+15s after window open
+        # Cheap asks ($0.45-$0.60) only exist in this window
+        seconds_since_open = time.time() - window.open_ts
+        if (
+            2.0 <= seconds_since_open <= 15.0
+            and not state.traded_this_window
+            and window.open_price
+            and window.open_price > 0
+        ):
+            await self._on_entry_zone(state, price)
+
+        # Tier C: Late fallback (old entry zone) — rarely fires due to strict max_ask
+        elif window_state == WindowState.ENTRY_ZONE and not state.traded_this_window:
             await self._on_entry_zone(state, price)
 
         state.prev_open_ts = current_open_ts
