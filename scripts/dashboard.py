@@ -8,14 +8,21 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 
+import os as _os
+import secrets
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 app = FastAPI()
+_security = HTTPBasic()
+
+# Dashboard password — set DASHBOARD_PASSWORD env var, default "polybot2026"
+_DASHBOARD_USER = _os.getenv("DASHBOARD_USER", "admin")
+_DASHBOARD_PASS = _os.getenv("DASHBOARD_PASSWORD", "polybot2026")
 
 # ── Storage: SQLite locally, DynamoDB when on AWS (no local DB) ──────────────
-import os as _os
 
 _DB_PATH_CANDIDATES = [
     "polybot.db",
@@ -27,7 +34,10 @@ _USE_DYNAMO = not _os.path.exists(_DB_PATH)
 if _USE_DYNAMO:
     try:
         import boto3 as _boto3
-        _session = _boto3.Session(profile_name="playground", region_name="eu-west-1")
+        # On AWS ECS, use task role credentials (no profile needed)
+        # Locally, try playground profile if available
+        _profile = "playground" if not _os.getenv("AWS_EXECUTION_ENV") else None
+        _session = _boto3.Session(profile_name=_profile, region_name="eu-west-1")
         _ddb = _session.resource("dynamodb")
         _logs_client = _session.client("logs")
         _trades_table  = _ddb.Table("polymarket-bot-trades")
@@ -104,8 +114,17 @@ def get_logs(lines=100):
         return []
 
 
+def _require_auth(creds: HTTPBasicCredentials = Depends(_security)):
+    ok_user = secrets.compare_digest(creds.username.encode(), _DASHBOARD_USER.encode())
+    ok_pass = secrets.compare_digest(creds.password.encode(), _DASHBOARD_PASS.encode())
+    if not (ok_user and ok_pass):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Unauthorized", headers={"WWW-Authenticate": "Basic"})
+    return creds.username
+
+
 @app.get("/api/data")
-def api_data():
+def api_data(_: str = Depends(_require_auth)):
     trades = get_trades()
     windows = get_windows()
     log_lines = get_logs()
@@ -119,9 +138,19 @@ def api_data():
     asset_windows = {}
     asset_windows_15m = {}
     for w in windows:
-        a = w.get("asset", {})
-        asset = a.get("S", "BTC") if isinstance(a, dict) else str(a) if a else "BTC"
         slug = w.get("slug", "") or ""
+        # Extract asset from slug (e.g. "eth-updown-5m-..." → "ETH")
+        # Fall back to stored asset field if present
+        slug_upper = slug.upper()
+        if slug_upper.startswith("ETH"):
+            asset = "ETH"
+        elif slug_upper.startswith("SOL"):
+            asset = "SOL"
+        elif slug_upper.startswith("BTC"):
+            asset = "BTC"
+        else:
+            a = w.get("asset", {})
+            asset = a.get("S", "BTC") if isinstance(a, dict) else str(a) if a else "BTC"
         if "15m" in slug:
             asset_windows_15m[asset] = asset_windows_15m.get(asset, 0) + 1
         else:
@@ -132,7 +161,7 @@ def api_data():
     for t in trades:
         if not t.get("resolved"):
             continue
-        src = t.get("source", {})
+        src = t.get("source", "unknown")
         source = src.get("S", "unknown") if isinstance(src, dict) else str(src) if src else "unknown"
         p = float(t.get("pnl", 0) or 0)
         if source not in strategy_pnl:
@@ -160,7 +189,7 @@ def api_data():
 
 
 @app.get("/api/pnl-history")
-def api_pnl_history():
+def api_pnl_history(_: str = Depends(_require_auth)):
     """Return hourly P&L buckets from resolved trades."""
     trades = get_trades(limit=500)
     buckets: dict[str, float] = defaultdict(float)
@@ -186,7 +215,7 @@ def api_pnl_history():
 
 
 @app.get("/api/balance")
-async def api_balance():
+async def api_balance(_: str = Depends(_require_auth)):
     """Return wallet USDC balances."""
     import os
     try:
@@ -951,8 +980,8 @@ async function refresh() {
 
     // Strategy cards
     const strats = s.strategy_pnl || {};
-    const all_strats = ['directional', 'arbitrage', 'copy', 'news'];
-    const stratLabels = { directional: 'Directional', arbitrage: 'Arbitrage', copy: 'Copy Trading', news: 'News' };
+    const all_strats = ['directional'];
+    const stratLabels = { directional: 'Directional' };
     let scHtml = '';
     for (const st of all_strats) {
       const d = strats[st] || { pnl: 0, count: 0, wins: 0 };

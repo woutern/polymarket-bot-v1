@@ -1,8 +1,7 @@
-"""Main async event loop — multi-asset, multi-strategy orchestrator.
+"""Main async event loop — multi-asset, multi-timeframe directional trading.
 
-Runs latency arb on EVERY tick (the primary alpha).
-Entry zone directional as secondary strategy.
-Copy trading as tertiary.
+Strategy: Late-window directional (T-60s to T-15s) across BTC/ETH/SOL
+on both 5-minute and 15-minute windows.
 """
 
 from __future__ import annotations
@@ -15,7 +14,6 @@ from dataclasses import dataclass, field
 import structlog
 
 from polybot.config import Settings
-from polybot.core.clock import WINDOW_SECONDS
 from polybot.execution.live_trader import LiveTrader
 from polybot.execution.paper_trader import PaperTrader
 from polybot.feeds.coinbase_ws import CoinbaseWS
@@ -27,12 +25,9 @@ from polybot.models import Direction, OrderbookSnapshot, Window
 from polybot.risk.manager import RiskManager
 from polybot.storage.db import Database
 from polybot.storage.dynamo import DynamoStore
-from polybot.strategy.arbitrage import check_arbitrage
 from polybot.strategy.base_rate import BaseRateTable
 from polybot.strategy.bayesian import BayesianUpdater
-from polybot.strategy.copy_trader import CopyTrader
 from polybot.strategy.directional import generate_directional_signal
-from polybot.strategy.latency import check_latency_arb
 
 logger = structlog.get_logger()
 
@@ -52,17 +47,15 @@ class AssetState:
     prev_open_ts: int | None = None
     prev_window: Window | None = None
     traded_this_window: bool = False
-    orderbook_age: float = 0.0  # When we last refreshed the orderbook
+    orderbook_age: float = 0.0
 
 
 class TradingLoop:
-    """Multi-asset, multi-strategy orchestrator.
+    """Multi-asset, multi-timeframe directional trading bot.
 
-    Strategy priority:
-    1. Latency arb — every tick, fire if Coinbase moved but PM hasn't repriced
-    2. Classic arb — YES+NO < 1.0
-    3. Directional — T-60s entry zone with Bayesian model
-    4. Copy trading — follow profitable wallets
+    Single strategy: late-window momentum entry (T-60s to T-15s).
+    Uses Bayesian updater + historical base rates to estimate P(UP).
+    Quarter-Kelly sizing capped at $1 per trade.
     """
 
     @staticmethod
@@ -103,9 +96,8 @@ class TradingLoop:
             self.trader = PaperTrader(risk=self.risk, db=self.db)
 
         base_rates = self._load_base_rates()
-        self.copy_trader = CopyTrader()
 
-        # Build asset states for each asset × duration combo
+        # One AssetState per asset × duration combo
         self.asset_states: dict[str, AssetState] = {}
         for dur in settings.duration_list:
             for asset in assets:
@@ -121,11 +113,9 @@ class TradingLoop:
                 )
 
         self.balance_checker = BalanceChecker()
-
-        # Use proxy/funder wallet for balance checks (where funds actually live)
         self._wallet_address: str = settings.polymarket_funder or ""
-
         self._last_balance_check: float = 0.0
+        self._last_claim_check: float = 0.0
         self._running = False
 
     async def start(self):
@@ -138,16 +128,21 @@ class TradingLoop:
 
         await self.db.connect()
 
-        # Initial balance check
-        if self._wallet_address:
+        if self._wallet_address and self.settings.mode == "live":
             try:
                 balances = await self.balance_checker.check(self._wallet_address)
                 logger.info("wallet_balance", **balances)
-                # Seed bankroll from on-chain balance if substantially different
                 polygon_usdc = balances.get("polygon_usdc", 0.0)
                 if polygon_usdc > 0 and abs(polygon_usdc - self.risk.bankroll) > 0.50:
                     self.risk.bankroll = polygon_usdc
                     logger.info("bankroll_updated_from_balance", bankroll=round(polygon_usdc, 2))
+            except Exception as e:
+                logger.warning("startup_balance_check_failed", error=str(e))
+        elif self._wallet_address:
+            # Paper mode: check balance for display only, don't override bankroll
+            try:
+                balances = await self.balance_checker.check(self._wallet_address)
+                logger.info("wallet_balance", **balances)
             except Exception as e:
                 logger.warning("startup_balance_check_failed", error=str(e))
 
@@ -156,7 +151,6 @@ class TradingLoop:
         tasks = [
             asyncio.create_task(self.coinbase.connect(), name="coinbase_ws"),
             asyncio.create_task(self._strategy_loop_resilient(), name="strategy_loop"),
-            asyncio.create_task(self.copy_trader.start(), name="copy_trader"),
         ]
 
         try:
@@ -172,12 +166,10 @@ class TradingLoop:
     async def stop(self):
         self._running = False
         await self.coinbase.close()
-        await self.copy_trader.stop()
         await self.db.close()
         logger.info("loop_stopped")
 
     async def _strategy_loop_resilient(self):
-        """Wraps _strategy_loop with auto-restart on crash."""
         while self._running:
             try:
                 await self._strategy_loop()
@@ -190,8 +182,11 @@ class TradingLoop:
                     await asyncio.sleep(5)
 
     async def _strategy_loop(self):
-        """Core loop — every 250ms, check all assets for opportunities."""
-        while self._running and all(self.coinbase.get_price(a) == 0 for a in set(s.asset for s in self.asset_states.values())):
+        # Wait for first price
+        while self._running and all(
+            self.coinbase.get_price(s.asset) == 0
+            for s in self.asset_states.values()
+        ):
             await asyncio.sleep(0.25)
 
         for key, state in self.asset_states.items():
@@ -209,19 +204,7 @@ class TradingLoop:
                 except Exception as e:
                     logger.error("tick_asset_error", key=key, error=str(e), exc_info=True)
 
-            # Check copy trading signals
-            for signal in self.copy_trader.drain_signals():
-                if self.risk.can_trade():
-                    # Find the matching asset state for the copy signal
-                    for state in self.asset_states.values():
-                        if state.asset == signal.asset:
-                            try:
-                                await self._execute(signal, state)
-                            except Exception as e:
-                                logger.error("copy_execute_error", error=str(e))
-                            break
-
-            await asyncio.sleep(0.25)  # 250ms — faster polling for latency edge
+            await asyncio.sleep(0.25)
 
             # Periodic balance refresh every 5 minutes
             if self._wallet_address and (time.time() - self._last_balance_check) >= 300:
@@ -229,19 +212,19 @@ class TradingLoop:
                 try:
                     balances = await self.balance_checker.check(self._wallet_address)
                     logger.info("wallet_balance", **balances)
-                    polygon_usdc = balances.get("polygon_usdc", 0.0)
-                    if polygon_usdc > 0 and abs(polygon_usdc - self.risk.bankroll) > 0.50:
-                        logger.info(
-                            "bankroll_updated_from_balance",
-                            old=round(self.risk.bankroll, 2),
-                            new=round(polygon_usdc, 2),
-                        )
-                        self.risk.bankroll = polygon_usdc
+                    if self.settings.mode == "live":
+                        polygon_usdc = balances.get("polygon_usdc", 0.0)
+                        if polygon_usdc > 0 and abs(polygon_usdc - self.risk.bankroll) > 0.50:
+                            logger.info(
+                                "bankroll_updated_from_balance",
+                                old=round(self.risk.bankroll, 2),
+                                new=round(polygon_usdc, 2),
+                            )
+                            self.risk.bankroll = polygon_usdc
                 except Exception as e:
                     logger.warning("periodic_balance_check_failed", error=str(e))
 
     async def _tick_asset(self, state: AssetState, price: float):
-        """Process one tick for a single asset."""
         tracker = state.tracker
         window_state = tracker.tick(price)
         window = tracker.current
@@ -250,46 +233,13 @@ class TradingLoop:
 
         current_open_ts = window.open_ts
 
-        # Window transition
         if state.prev_open_ts is not None and current_open_ts != state.prev_open_ts:
             await self._on_window_close(state, price)
             await self._on_window_open(state, price)
         elif state.prev_open_ts is None:
             await self._on_window_open(state, price)
 
-        # === STRATEGY 1: Latency arb — EVERY TICK ===
-        # This is the primary alpha: detect Coinbase move before PM reprices
-        if window.open_price and not state.traded_this_window:
-            # Refresh orderbook frequently (but not every tick — rate limit)
-            now = time.time()
-            if now - state.orderbook_age > 1.0:  # Max 1 refresh/second
-                await self._refresh_orderbook(state)
-                state.orderbook_age = now
-
-            signal = check_latency_arb(
-                current_price=price,
-                open_price=window.open_price,
-                orderbook=state.orderbook,
-                min_move_pct=0.03,  # Very sensitive — catch small moves
-                max_cheap_price=0.65,  # Only buy if still cheap
-                min_profit_margin=0.10,
-                window_slug=window.slug,
-                asset=state.asset,
-            )
-            if signal and self.risk.can_trade():
-                result = await self._execute(signal, state)
-                state.traded_this_window = True  # Don't retry regardless of fill
-
-        # === STRATEGY 2: Classic arb — YES+NO < 1.0 ===
-        if window_state in (WindowState.OPEN, WindowState.ENTRY_ZONE) and not state.traded_this_window:
-            arb = check_arbitrage(state.orderbook, window.slug)
-            if arb and self.risk.can_trade():
-                arb.asset = state.asset
-                result = await self._execute(arb, state)
-                if result:
-                    state.traded_this_window = True
-
-        # === STRATEGY 3: Directional — entry zone ===
+        # Directional strategy — entry zone only
         if window_state == WindowState.ENTRY_ZONE and not state.traded_this_window:
             await self._on_entry_zone(state, price)
 
@@ -301,9 +251,7 @@ class TradingLoop:
             return
         state.prev_window = window
         state.traded_this_window = False
-
         logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
-
         state.bayesian.reset(price, 0.5)
 
         try:
@@ -319,6 +267,11 @@ class TradingLoop:
             return
 
         remaining = window.seconds_remaining()
+
+        # Hard cutoff: don't enter after T-15s (fill risk, blockchain latency)
+        if remaining < 15:
+            return
+
         pct_move = state.tracker.pct_move(price) or 0.0
         state.bayesian.update(price, remaining)
 
@@ -350,9 +303,8 @@ class TradingLoop:
         )
 
         if signal and self.risk.can_trade():
-            result = await self._execute(signal, state)
-            if result:
-                state.traded_this_window = True
+            await self._execute(signal, state)
+            state.traded_this_window = True
 
     async def _on_window_close(self, state: AssetState, price: float):
         window = state.prev_window
@@ -391,7 +343,6 @@ class TradingLoop:
             logger.warning("dynamo_write_failed", error=str(e))
 
     async def _execute(self, signal, state: AssetState):
-        """Route signal to paper or live trader."""
         if isinstance(self.trader, LiveTrader):
             window = state.tracker.current
             yes_id = window.yes_token_id if window else ""
@@ -403,12 +354,15 @@ class TradingLoop:
         window = state.tracker.current
         if not window or not window.yes_token_id:
             return
+        now = time.time()
+        if now - state.orderbook_age < 1.0:  # Max 1 refresh/second
+            return
+        state.orderbook_age = now
         try:
             yes_book = await get_orderbook(window.yes_token_id)
             no_book = await get_orderbook(window.no_token_id) if window.no_token_id else {}
 
-            ts = time.time()
-            snap = OrderbookSnapshot(timestamp=ts)
+            snap = OrderbookSnapshot(timestamp=now)
             yes_asks = yes_book.get("asks", [])
             yes_bids = yes_book.get("bids", [])
             no_asks = no_book.get("asks", [])

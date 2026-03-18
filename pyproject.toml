@@ -16,6 +16,8 @@ dependencies = [
     "web3>=7.14.1",
     "pandas>=3.0.1",
     "numpy>=2.4.3",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
 ]
 
 [project.optional-dependencies]

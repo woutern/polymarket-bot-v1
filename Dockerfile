@@ -19,4 +19,6 @@ COPY scripts/ scripts/
 
 ENV PYTHONPATH=/app/src
 
-CMD [".venv/bin/python", "scripts/run.py"]
+EXPOSE 8888
+
+CMD ["/bin/sh", "scripts/start.sh"]

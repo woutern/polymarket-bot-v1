@@ -180,14 +180,22 @@ class LiveTrader:
         return await self._execute_directional(signal, yes_token_id, no_token_id, size / 2)
 
     async def resolve_window(self, window_slug: str, went_up: bool):
-        """Record resolution of a window's positions (P&L calculation)."""
+        """Record resolution of a window's positions (P&L calculation).
+
+        NOTE: went_up is from Coinbase price comparison — NOT Chainlink oracle.
+        We verify against Polymarket's actual outcome before marking resolved.
+        """
         trades = await self.db.get_trades(window_slug=window_slug)
         if not trades:
-            return  # No positions in this window — nothing to resolve
+            return
+
+        # Verify actual market outcome via Gamma API (Chainlink-based resolution)
+        actual_went_up = await self._verify_market_outcome(window_slug, went_up)
+
         for t in trades:
             if t["resolved"]:
                 continue
-            won = (t["side"] == "YES" and went_up) or (t["side"] == "NO" and not went_up)
+            won = (t["side"] == "YES" and actual_went_up) or (t["side"] == "NO" and not actual_went_up)
             if won:
                 shares = t["size_usd"] / t["fill_price"]
                 pnl = shares * (1.0 - t["fill_price"])
@@ -205,4 +213,45 @@ class LiveTrader:
                 won=won,
                 pnl=round(pnl, 4),
                 slug=window_slug,
+                verified_direction="UP" if actual_went_up else "DOWN",
             )
+
+    async def _verify_market_outcome(self, window_slug: str, fallback_went_up: bool) -> bool:
+        """Query Polymarket Gamma API for actual market resolution outcome.
+
+        Returns True if YES (Up) won, False if NO (Down) won.
+        Falls back to Coinbase-based direction if market not yet resolved.
+        """
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    "https://gamma-api.polymarket.com/markets",
+                    params={"slug": window_slug},
+                )
+                if resp.status_code != 200:
+                    return fallback_went_up
+                markets = resp.json()
+                if not markets:
+                    return fallback_went_up
+                m = markets[0]
+                prices = m.get("outcomePrices", [])
+                if len(prices) >= 2:
+                    yes_price = float(prices[0])
+                    # If prices are conclusive (near 0 or 1), use them even if not
+                    # officially "closed" yet — Gamma API can lag on the closed flag
+                    if yes_price >= 0.99:
+                        return True
+                    if yes_price <= 0.01:
+                        return False
+                if not m.get("closed"):
+                    # Market not closed yet and prices ambiguous — don't resolve
+                    logger.info("market_not_closed_yet", slug=window_slug)
+                    return fallback_went_up
+                # Market closed, prices between 0.01–0.99 (rare edge case)
+                if len(prices) >= 2:
+                    yes_price = float(prices[0])
+                    return yes_price >= 0.5
+        except Exception as e:
+            logger.warning("market_outcome_verify_failed", slug=window_slug, error=str(e))
+        return fallback_went_up

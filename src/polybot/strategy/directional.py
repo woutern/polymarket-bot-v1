@@ -24,8 +24,8 @@ def generate_directional_signal(
     open_price: float,
     seconds_remaining: float,
     min_move_pct: float = 0.08,
-    min_ev_threshold: float = 0.05,
-    max_market_price: float = 0.85,
+    min_ev_threshold: float = 0.06,
+    max_market_price: float = 0.75,
     window_slug: str = "",
     asset: str = "BTC",
 ) -> Signal | None:

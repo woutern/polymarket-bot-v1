@@ -27,13 +27,6 @@ class Settings(BaseSettings):
     assets: str = "BTC,ETH,SOL"  # Comma-separated asset list
     window_durations: str = "5m,15m"  # Comma-separated window durations
 
-    # AI Signal
-    ai_signal_enabled: bool = True
-    ai_base_rate_weight: float = 0.6
-    ai_signal_weight: float = 0.4
-    ai_min_confidence: float = 0.6
-    news_poll_interval: int = 30
-
     # Logging
     log_level: str = "INFO"
 

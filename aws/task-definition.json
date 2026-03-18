@@ -1,0 +1,99 @@
+{
+  "family": "polymarket-bot",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::688567279867:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "polymarket-bot",
+      "image": "688567279867.dkr.ecr.eu-west-1.amazonaws.com/polymarket-bot:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8888,
+          "protocol": "tcp"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "POLYMARKET_PRIVATE_KEY",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:POLYMARKET_PRIVATE_KEY::"
+        },
+        {
+          "name": "POLYMARKET_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:POLYMARKET_API_KEY::"
+        },
+        {
+          "name": "POLYMARKET_API_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:POLYMARKET_API_SECRET::"
+        },
+        {
+          "name": "POLYMARKET_API_PASSPHRASE",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:POLYMARKET_API_PASSPHRASE::"
+        },
+        {
+          "name": "POLYMARKET_CHAIN_ID",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:POLYMARKET_CHAIN_ID::"
+        },
+        {
+          "name": "POLYMARKET_FUNDER",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:POLYMARKET_FUNDER::"
+        },
+        {
+          "name": "MODE",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:MODE::"
+        },
+        {
+          "name": "BANKROLL",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:BANKROLL::"
+        },
+        {
+          "name": "MAX_POSITION_PCT",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:MAX_POSITION_PCT::"
+        },
+        {
+          "name": "DAILY_LOSS_CAP_PCT",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:DAILY_LOSS_CAP_PCT::"
+        },
+        {
+          "name": "KELLY_FRACTION",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:KELLY_FRACTION::"
+        },
+        {
+          "name": "MIN_EV_THRESHOLD",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:MIN_EV_THRESHOLD::"
+        },
+        {
+          "name": "DIRECTIONAL_ENTRY_SECONDS",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:DIRECTIONAL_ENTRY_SECONDS::"
+        },
+        {
+          "name": "DIRECTIONAL_MIN_MOVE_PCT",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:DIRECTIONAL_MIN_MOVE_PCT::"
+        },
+        {
+          "name": "MAX_MARKET_PRICE",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:MAX_MARKET_PRICE::"
+        },
+        {
+          "name": "ASSETS",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:ASSETS::"
+        },
+        {
+          "name": "LOG_LEVEL",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:LOG_LEVEL::"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/polymarket-bot",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "polybot"
+        }
+      }
+    }
+  ]
+}
