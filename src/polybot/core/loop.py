@@ -256,16 +256,8 @@ class TradingLoop:
 
             await asyncio.sleep(0.25)
 
-            # Periodic auto-claim every 60 minutes — live mode only
-            if (
-                self.settings.mode == "live"
-                and self.settings.polymarket_private_key
-                and self.settings.polymarket_funder
-                and (time.time() - self._last_claim_check) >= 3600
-            ):
-                self._last_claim_check = time.time()
-                asyncio.create_task(self._run_claim(), name="auto_claim")
-                logger.info("auto_claim_triggered")
+            # Auto-claim DISABLED — Gnosis Safe proxy wallet can't redeem via EOA
+            # Claim manually at polymarket.com/portfolio
 
             # Hourly strategy review — learn from recent trades, log insights
             if (time.time() - self._last_strategy_review) >= 3600:

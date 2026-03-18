@@ -608,7 +608,28 @@ async def api_balance(_: str = Depends(_require_auth)):
             return {"polymarket_value": 0.0, "polygon_usdc": 0.0, "error": "no_address"}
 
         checker = BalanceChecker()
-        return await checker.check(_WALLET_ADDRESS)
+        result = await checker.check(_WALLET_ADDRESS)
+
+        # Check for unclaimed winnings via data-api positions
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    "https://data-api.polymarket.com/positions",
+                    params={"user": _WALLET_ADDRESS, "sizeThreshold": "0.01"},
+                )
+                if resp.status_code == 200:
+                    positions = resp.json()
+                    unclaimed = sum(
+                        p.get("currentValue", 0)
+                        for p in positions
+                        if isinstance(p, dict) and p.get("currentValue", 0) > 0.5
+                    )
+                    result["unclaimed_winnings"] = round(unclaimed, 2)
+        except Exception:
+            result["unclaimed_winnings"] = 0.0
+
+        return result
     except Exception as e:
         return {"polymarket_value": 0.0, "polygon_usdc": 0.0, "error": str(e)}
 
@@ -1431,8 +1452,12 @@ async function refreshBalance() {
     const total = (d.polygon_usdc || 0) + (d.polymarket_value || 0);
     document.getElementById('s-balance-label').textContent = 'Wallet Balance';
     document.getElementById('s-balance').textContent = '$' + total.toFixed(2);
-    document.getElementById('s-balance-sub').textContent =
-      'Cash $' + (d.polygon_usdc||0).toFixed(2) + ' + positions $' + (d.polymarket_value||0).toFixed(2);
+    const unclaimed = d.unclaimed_winnings || 0;
+    let subText = 'Cash $' + (d.polygon_usdc||0).toFixed(2) + ' + positions $' + (d.polymarket_value||0).toFixed(2);
+    if (unclaimed > 0.5) {
+      subText += ' | $' + unclaimed.toFixed(2) + ' unclaimed — claim at polymarket.com/portfolio';
+    }
+    document.getElementById('s-balance-sub').textContent = subText;
   } catch(e) {}
 }
 

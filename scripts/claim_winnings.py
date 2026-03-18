@@ -54,7 +54,7 @@ REDEEM_ABI = [
     },
 ]
 
-POLYGON_RPC = "https://polygon-rpc.com"
+POLYGON_RPC = "https://polygon-bor-rpc.publicnode.com"
 
 
 def get_claimable_positions(funder_address: str) -> list[dict]:
@@ -78,7 +78,12 @@ def get_claimable_positions(funder_address: str) -> list[dict]:
 
 
 def get_resolved_markets(condition_ids: list[str]) -> dict[str, bool]:
-    """Check which markets resolved and which side won. Returns {condition_id: yes_won}."""
+    """Check which markets resolved and which side won. Returns {condition_id: yes_won}.
+
+    Uses outcomes + outcomePrices mapping:
+      outcomes[0]='Up', outcomePrices[0]='1' → Up won → yes_won=True
+      outcomes[0]='Up', outcomePrices[0]='0' → Down won → yes_won=False
+    """
     import json as _json
     resolved = {}
     for cid in condition_ids:
@@ -96,22 +101,25 @@ def get_resolved_markets(condition_ids: list[str]) -> dict[str, bool]:
             m = markets[0]
             if not m.get("closed"):
                 continue
+
+            outcomes = m.get("outcomes", [])
+            if isinstance(outcomes, str):
+                outcomes = _json.loads(outcomes)
             prices = m.get("outcomePrices", [])
-            # Gamma sometimes returns as JSON string
             if isinstance(prices, str):
                 prices = _json.loads(prices)
-            if len(prices) >= 2:
-                yes_price = float(prices[0])
-                no_price = float(prices[1])
-                if yes_price >= 0.99 or (yes_price > no_price and m.get("closed")):
-                    resolved[cid] = True   # YES won
-                elif no_price >= 0.99 or (no_price > yes_price and m.get("closed")):
-                    resolved[cid] = False  # NO won
-                elif yes_price == 0 and no_price == 0 and m.get("closed"):
-                    # Both 0 = market resolved but prices cleared. Check winner field.
-                    winner = m.get("winner", "")
-                    if winner:
-                        resolved[cid] = (winner == m.get("outcomes", ["", ""])[0])
+
+            if len(outcomes) < 2 or len(prices) < 2:
+                continue
+
+            outcome_map = dict(zip(outcomes, prices))
+            up_price = float(outcome_map.get("Up", 0))
+
+            # Only trust conclusive (0 or 1)
+            if up_price >= 0.99:
+                resolved[cid] = True   # Up/YES won
+            elif up_price <= 0.01:
+                resolved[cid] = False  # Down/NO won
         except Exception:
             continue
     return resolved
@@ -145,9 +153,14 @@ def claim_all(settings: Settings, dry_run: bool = False) -> None:
         index_set = 1 if yes_won else 2  # YES=1, NO=2
         side = "YES" if yes_won else "NO"
 
-        # Find position size for logging
+        # Find position and check if it has value (skip $0 losers to save gas)
         pos = next((p for p in positions if p.get("conditionId") == cid), {})
         size = pos.get("size", 0)
+        current_value = pos.get("currentValue", 0)
+        if current_value < 0.01:
+            outcome = pos.get("outcome", "")
+            print(f"  {cid[:12]}: {side} won but our {outcome} position is $0 — skipping (save gas)")
+            continue
         market_slug = pos.get("market", {}).get("slug", cid[:12]) if isinstance(pos.get("market"), dict) else cid[:12]
 
         print(f"  {market_slug}: {side} won, position size={size:.4f}")
@@ -178,8 +191,13 @@ def claim_all(settings: Settings, dry_run: bool = False) -> None:
             })
 
             signed = account.sign_transaction(tx)
-            tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
             print(f"  Claimed! tx={tx_hash.hex()}")
+            # Wait for confirmation before next claim (avoid nonce collision)
+            try:
+                w3.eth.wait_for_transaction_receipt(tx_hash, timeout=30)
+            except Exception:
+                import time; time.sleep(5)  # fallback wait
 
         except Exception as e:
             print(f"  Failed to claim {cid[:12]}...: {e}")
