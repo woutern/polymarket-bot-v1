@@ -8,7 +8,7 @@ import time
 import httpx
 
 # Public endpoint — no auth needed
-CANDLES_URL = "https://api.coinbase.com/api/v3/brokerage/market/products/BTC-USD/candles"
+CANDLES_URL_TEMPLATE = "https://api.coinbase.com/api/v3/brokerage/market/products/{product_id}/candles"
 
 # Coinbase granularity options
 GRANULARITY_1MIN = "ONE_MINUTE"
@@ -20,6 +20,7 @@ async def get_candles(
     end: int,
     granularity: str = GRANULARITY_1MIN,
     client: httpx.AsyncClient | None = None,
+    product_id: str = "BTC-USD",
 ) -> list[dict]:
     """Fetch candles from Coinbase. Max 300 per request.
 
@@ -31,8 +32,9 @@ async def get_candles(
         client = httpx.AsyncClient(timeout=30)
 
     try:
+        url = CANDLES_URL_TEMPLATE.format(product_id=product_id)
         resp = await client.get(
-            CANDLES_URL,
+            url,
             params={
                 "start": str(start),
                 "end": str(end),
@@ -67,6 +69,7 @@ async def get_candles_paginated(
     end: int,
     granularity: str = GRANULARITY_1MIN,
     max_per_request: int = 300,
+    product_id: str = "BTC-USD",
 ) -> list[dict]:
     """Paginate through Coinbase candles API (max 300 per request).
 
@@ -80,7 +83,7 @@ async def get_candles_paginated(
         cursor = start
         while cursor < end:
             chunk_end = min(cursor + chunk_seconds, end)
-            candles = await get_candles(cursor, chunk_end, granularity, client)
+            candles = await get_candles(cursor, chunk_end, granularity, client, product_id)
             all_candles.extend(candles)
             cursor = chunk_end
             # Be nice to the API

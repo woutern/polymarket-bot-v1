@@ -46,8 +46,13 @@ def _import_claim_all():
     return mod.claim_all
 
 S3_BUCKET = "polymarket-bot-data-688567279867"
-S3_KEY = "candles/btc_usd_1min.parquet"
-LOCAL_PARQUET = "/tmp/btc_usd_1min.parquet"
+
+# Per-asset parquet config: asset symbol -> (local path, S3 key, /tmp fallback)
+_ASSET_PARQUET: dict[str, tuple[str, str, str]] = {
+    "BTC": ("data/candles/btc_usd_1min.parquet", "candles/btc_usd_1min.parquet", "/tmp/btc_usd_1min.parquet"),
+    "ETH": ("data/candles/eth_usd_1min.parquet", "candles/eth_usd_1min.parquet", "/tmp/eth_usd_1min.parquet"),
+    "SOL": ("data/candles/sol_usd_1min.parquet", "candles/sol_usd_1min.parquet", "/tmp/sol_usd_1min.parquet"),
+}
 
 
 @dataclass
@@ -73,22 +78,30 @@ class TradingLoop:
     """
 
     @staticmethod
-    def _load_base_rates() -> BaseRateTable:
+    def _load_base_rate_for(asset: str) -> BaseRateTable:
+        """Load historical base rate table for a single asset.
+
+        Tries local path first, then S3 fallback.  Falls back to an empty
+        table (returns 0.5 for all lookups) if no data is available.
+        """
         table = BaseRateTable()
-        local_paths = ["data/candles/btc_usd_1min.parquet", LOCAL_PARQUET]
-        for path in local_paths:
+        cfg = _ASSET_PARQUET.get(asset, _ASSET_PARQUET["BTC"])
+        local_path, s3_key, tmp_path = cfg
+
+        for path in (local_path, tmp_path):
             if os.path.exists(path):
                 table.load_from_parquet(path)
-                logger.info("base_rates_loaded", source=path, bins=len(table.bins))
+                logger.info("base_rates_loaded", asset=asset, source=path, bins=len(table.bins))
                 return table
+
         try:
             import boto3
             s3 = boto3.client("s3", region_name="eu-west-1")
-            s3.download_file(S3_BUCKET, S3_KEY, LOCAL_PARQUET)
-            table.load_from_parquet(LOCAL_PARQUET)
-            logger.info("base_rates_loaded", source="s3", bins=len(table.bins))
+            s3.download_file(S3_BUCKET, s3_key, tmp_path)
+            table.load_from_parquet(tmp_path)
+            logger.info("base_rates_loaded", asset=asset, source="s3", bins=len(table.bins))
         except Exception as e:
-            logger.warning("base_rates_load_failed", error=str(e))
+            logger.warning("base_rates_load_failed", asset=asset, error=str(e))
         return table
 
     def __init__(self, settings: Settings):
@@ -109,7 +122,10 @@ class TradingLoop:
         else:
             self.trader = PaperTrader(risk=self.risk, db=self.db)
 
-        base_rates = self._load_base_rates()
+        # Load a separate base rate table per asset so volatility profiles match
+        base_rates: dict[str, BaseRateTable] = {
+            asset: self._load_base_rate_for(asset) for asset in assets
+        }
 
         # One AssetState per asset × duration combo
         self.asset_states: dict[str, AssetState] = {}
@@ -123,7 +139,7 @@ class TradingLoop:
                         asset=asset,
                         window_seconds=dur,
                     ),
-                    bayesian=BayesianUpdater(base_rates),
+                    bayesian=BayesianUpdater(base_rates[asset]),
                 )
 
         self.balance_checker = BalanceChecker()
@@ -534,10 +550,15 @@ class TradingLoop:
                 snap.yes_best_ask = min(float(a["price"]) for a in yes_asks)
             if yes_bids:
                 snap.yes_best_bid = max(float(b["price"]) for b in yes_bids)
+                # Sum of top-3 bid sizes (sorted desc by price, take first 3)
+                top3_yes = sorted(yes_bids, key=lambda b: float(b["price"]), reverse=True)[:3]
+                snap.yes_bid_depth = sum(float(b.get("size", 0)) for b in top3_yes)
             if no_asks:
                 snap.no_best_ask = min(float(a["price"]) for a in no_asks)
             if no_bids:
                 snap.no_best_bid = max(float(b["price"]) for b in no_bids)
+                top3_no = sorted(no_bids, key=lambda b: float(b["price"]), reverse=True)[:3]
+                snap.no_bid_depth = sum(float(b.get("size", 0)) for b in top3_no)
             state.orderbook = snap
         except Exception as e:
             logger.error("orderbook_refresh_failed", asset=state.asset, error=str(e))

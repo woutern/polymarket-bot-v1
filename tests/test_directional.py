@@ -28,10 +28,19 @@ def _make_bayesian(p_up: float = 0.75) -> BayesianUpdater:
     return b
 
 
-def _make_orderbook(yes_ask: float = 0.50, no_ask: float = 0.50) -> OrderbookSnapshot:
+def _make_orderbook(
+    yes_ask: float = 0.50,
+    no_ask: float = 0.50,
+    yes_bid: float | None = None,
+    no_bid: float | None = None,
+) -> OrderbookSnapshot:
+    # Default bids to ask - 0.02 so the spread is tight (0.02 < OBI threshold 0.15)
+    # and existing signal tests are not inadvertently vetoed.
     return OrderbookSnapshot(
         yes_best_ask=yes_ask,
+        yes_best_bid=yes_bid if yes_bid is not None else yes_ask - 0.02,
         no_best_ask=no_ask,
+        no_best_bid=no_bid if no_bid is not None else no_ask - 0.02,
     )
 
 
@@ -351,3 +360,100 @@ class TestCustomThresholds:
             min_ev_threshold=0.20,
         )
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# OBI proxy spread veto
+# ---------------------------------------------------------------------------
+
+class TestOBISpreadVeto:
+    """Wide bid-ask spread on the directional side triggers veto (proxy OBI)."""
+
+    def test_up_wide_yes_spread_vetoed(self):
+        """UP signal vetoed when yes_best_ask - yes_best_bid > 0.15."""
+        b = _make_bayesian(0.80)
+        ob = _make_orderbook(yes_ask=0.50, yes_bid=0.30)  # spread = 0.20 > 0.15
+        result = generate_directional_signal(
+            bayesian=b,
+            orderbook=ob,
+            current_price=100.5,
+            open_price=100.0,
+            seconds_remaining=30,
+            use_ai=False,
+        )
+        assert result is None
+
+    def test_up_spread_just_below_threshold_not_vetoed(self):
+        """Spread of 0.14 (< 0.15 threshold) is not vetoed."""
+        b = _make_bayesian(0.80)
+        ob = _make_orderbook(yes_ask=0.50, yes_bid=0.36)  # spread = 0.14 < 0.15
+        result = generate_directional_signal(
+            bayesian=b,
+            orderbook=ob,
+            current_price=100.5,
+            open_price=100.0,
+            seconds_remaining=30,
+            use_ai=False,
+        )
+        assert result is not None
+        assert result.direction == Direction.UP
+
+    def test_up_tight_yes_spread_passes(self):
+        """UP signal passes when yes spread is tight (< 0.15)."""
+        b = _make_bayesian(0.80)
+        ob = _make_orderbook(yes_ask=0.50, yes_bid=0.48)  # spread = 0.02
+        result = generate_directional_signal(
+            bayesian=b,
+            orderbook=ob,
+            current_price=100.5,
+            open_price=100.0,
+            seconds_remaining=30,
+            use_ai=False,
+        )
+        assert result is not None
+        assert result.direction == Direction.UP
+
+    def test_down_wide_no_spread_vetoed(self):
+        """DOWN signal vetoed when no_best_ask - no_best_bid > 0.15."""
+        b = _make_bayesian(0.20)
+        ob = _make_orderbook(no_ask=0.50, no_bid=0.30)  # spread = 0.20 > 0.15
+        result = generate_directional_signal(
+            bayesian=b,
+            orderbook=ob,
+            current_price=99.5,
+            open_price=100.0,
+            seconds_remaining=30,
+            use_ai=False,
+        )
+        assert result is None
+
+    def test_down_tight_no_spread_passes(self):
+        """DOWN signal passes when no spread is tight (< 0.15)."""
+        b = _make_bayesian(0.20)
+        ob = _make_orderbook(no_ask=0.50, no_bid=0.48)  # spread = 0.02
+        result = generate_directional_signal(
+            bayesian=b,
+            orderbook=ob,
+            current_price=99.5,
+            open_price=100.0,
+            seconds_remaining=30,
+            use_ai=False,
+        )
+        assert result is not None
+        assert result.direction == Direction.DOWN
+
+    def test_up_wide_yes_spread_does_not_veto_down_direction(self):
+        """A wide YES spread should NOT veto a DOWN signal (different side)."""
+        b = _make_bayesian(0.20)
+        # Wide YES spread but tight NO spread
+        ob = _make_orderbook(yes_ask=0.50, yes_bid=0.20, no_ask=0.50, no_bid=0.48)
+        result = generate_directional_signal(
+            bayesian=b,
+            orderbook=ob,
+            current_price=99.5,
+            open_price=100.0,
+            seconds_remaining=30,
+            use_ai=False,
+        )
+        assert result is not None
+        assert result.direction == Direction.DOWN

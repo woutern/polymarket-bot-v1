@@ -66,13 +66,16 @@ class Window:
 
 @dataclass
 class OrderbookSnapshot:
-    """Best bid/ask for YES and NO tokens."""
+    """Best bid/ask for YES and NO tokens, plus shallow bid depth."""
 
     yes_best_bid: float = 0.0
     yes_best_ask: float = 1.0
     no_best_bid: float = 0.0
     no_best_ask: float = 1.0
     timestamp: float = 0.0
+    # Sum of top-3 bid sizes; used as a proxy for order-book depth / OBI.
+    yes_bid_depth: float = 0.0
+    no_bid_depth: float = 0.0
 
 
 @dataclass

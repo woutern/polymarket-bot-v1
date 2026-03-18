@@ -97,6 +97,35 @@ def generate_directional_signal(
     if market_price < 0.05 or market_price >= 1:
         return None
 
+    # OBI proxy veto: wide bid-ask spread signals reluctant buyers / high uncertainty.
+    # True OBI (Cont, Kukanov & Stoikov 2014) needs volume; we approximate via price
+    # spread. If spread > 0.15 on the relevant side, skip the trade.
+    OBI_SPREAD_THRESHOLD = 0.15
+    if direction == Direction.UP:
+        yes_spread = orderbook.yes_best_ask - orderbook.yes_best_bid
+        if yes_spread > OBI_SPREAD_THRESHOLD:
+            logger.info(
+                "directional_obi_veto",
+                direction=direction.value,
+                yes_spread=round(yes_spread, 4),
+                obi_threshold=OBI_SPREAD_THRESHOLD,
+                slug=window_slug,
+                asset=asset,
+            )
+            return None
+    else:  # Direction.DOWN
+        no_spread = orderbook.no_best_ask - orderbook.no_best_bid
+        if no_spread > OBI_SPREAD_THRESHOLD:
+            logger.info(
+                "directional_obi_veto",
+                direction=direction.value,
+                no_spread=round(no_spread, 4),
+                obi_threshold=OBI_SPREAD_THRESHOLD,
+                slug=window_slug,
+                asset=asset,
+            )
+            return None
+
     ev = (model_prob - market_price) / market_price
 
     if ev < min_ev_threshold:
