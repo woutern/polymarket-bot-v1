@@ -1021,7 +1021,7 @@ HTML = r"""<!DOCTYPE html>
   <!-- Stats row -->
   <div class="stats-grid">
     <div class="stat-card primary">
-      <div class="stat-label">Wallet Balance</div>
+      <div class="stat-label" id="s-balance-label">Wallet Balance</div>
       <div class="stat-value gold" id="s-balance">&mdash;</div>
       <div class="stat-sub" id="s-balance-sub">USDC on Polymarket</div>
     </div>
@@ -1408,9 +1408,18 @@ async function refreshBalance() {
   if (Date.now() - lastBalanceFetch < 30000) return;
   lastBalanceFetch = Date.now();
   try {
+    const mode = (window._tradeMode || 'paper').toUpperCase();
+    if (mode === 'PAPER') {
+      // Paper mode: show virtual bankroll
+      document.getElementById('s-balance-label').textContent = 'Virtual Bankroll';
+      document.getElementById('s-balance').textContent = '$' + (window._bankroll || 1000).toFixed(2);
+      document.getElementById('s-balance-sub').textContent = 'Paper trading (not real money)';
+      return;
+    }
     const resp = await fetch('/api/balance');
     const d = await resp.json();
     const total = (d.polygon_usdc || 0) + (d.polymarket_value || 0);
+    document.getElementById('s-balance-label').textContent = 'Wallet Balance';
     document.getElementById('s-balance').textContent = '$' + total.toFixed(2);
     document.getElementById('s-balance-sub').textContent =
       'Cash $' + (d.polygon_usdc||0).toFixed(2) + ' + positions $' + (d.polymarket_value||0).toFixed(2);
@@ -1496,6 +1505,8 @@ async function refreshOverview() {
     const s = data.stats;
 
     const mode = (s.mode || 'paper').toUpperCase();
+    window._tradeMode = mode.toLowerCase();
+    window._bankroll = s.starting_bankroll || 1000;
     const modeBadge = document.getElementById('mode-badge');
     modeBadge.textContent = mode;
     if (mode === 'LIVE') {
