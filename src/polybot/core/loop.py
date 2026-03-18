@@ -280,11 +280,15 @@ class TradingLoop:
 
             await asyncio.sleep(0.25)
 
-            # Heartbeat every 60 seconds
-            if time.time() - getattr(self, '_last_heartbeat', 0) >= 60:
+            # Heartbeat every 60 seconds — log + touch file for Docker HEALTHCHECK
+            if time.time() - self._last_heartbeat >= 60:
                 self._last_heartbeat = time.time()
-                uptime = round((time.time() - getattr(self, '_start_time', time.time())) / 60, 1)
+                uptime = round((time.time() - self._start_time) / 60, 1)
                 logger.info("heartbeat", uptime_min=uptime, tasks=len(asyncio.all_tasks()))
+                try:
+                    open("/tmp/heartbeat", "w").write(str(time.time()))
+                except Exception:
+                    pass
 
             # Refresh models every 4 hours (non-blocking)
             try:

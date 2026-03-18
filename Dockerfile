@@ -24,4 +24,8 @@ ENV PYTHONPATH=/app/src
 
 EXPOSE 8888
 
+# Watchdog: if heartbeat file older than 5 min → unhealthy → ECS restarts
+HEALTHCHECK --interval=60s --timeout=5s --start-period=120s --retries=3 \
+  CMD python3 -c "import os,time; f='/tmp/heartbeat'; exit(0 if os.path.exists(f) and time.time()-float(open(f).read())<300 else 1)"
+
 CMD ["/bin/sh", "scripts/start.sh"]
