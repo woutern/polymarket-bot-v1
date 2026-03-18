@@ -105,7 +105,9 @@ class TradingLoop:
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        assets = settings.asset_list
+        enabled = settings.enabled_pairs
+        # Unique assets needed for price feeds
+        assets = sorted({a for a, _ in enabled})
         self.coinbase = CoinbaseWS(assets=assets)
         self.risk = RiskManager(
             bankroll=settings.bankroll,
@@ -128,20 +130,22 @@ class TradingLoop:
             asset: self._load_base_rate_for(asset) for asset in assets
         }
 
-        # One AssetState per asset × duration combo
+        # One AssetState per enabled pair
         self.asset_states: dict[str, AssetState] = {}
-        for dur in settings.duration_list:
-            for asset in assets:
-                key = f"{asset}_{dur}" if dur != 300 else asset
-                self.asset_states[key] = AssetState(
+        for asset, dur in enabled:
+            tf = "15m" if dur == 900 else "5m"
+            key = f"{asset}_{tf}"
+            self.asset_states[key] = AssetState(
+                asset=asset,
+                tracker=WindowTracker(
+                    entry_seconds=settings.directional_entry_seconds,
                     asset=asset,
-                    tracker=WindowTracker(
-                        entry_seconds=settings.directional_entry_seconds,
-                        asset=asset,
-                        window_seconds=dur,
-                    ),
-                    bayesian=BayesianUpdater(base_rates[asset]),
-                )
+                    window_seconds=dur,
+                ),
+                bayesian=BayesianUpdater(base_rates[asset]),
+            )
+
+        logger.info("pairs_enabled", pairs=list(self.asset_states.keys()))
 
         self._wallet_address: str = settings.polymarket_funder or ""
         self._last_claim_check: float = 0.0

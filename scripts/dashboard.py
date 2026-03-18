@@ -328,6 +328,62 @@ def api_strategy_stats(_: str = Depends(_require_auth)):
     }
 
 
+@app.get("/api/pairs")
+def api_pairs(_: str = Depends(_require_auth)):
+    """Per-pair strategy config and performance summary."""
+    try:
+        from polybot.config import Settings
+        settings = Settings()
+        enabled = settings.enabled_pairs
+        pairs = []
+        for asset, dur in enabled:
+            cfg = settings.pair_config(asset, dur)
+            pairs.append(cfg)
+    except Exception:
+        # Fallback: show all 6 combos with default thresholds
+        _defaults = {
+            "BTC 5m": 0.08, "ETH 5m": 0.10, "SOL 5m": 0.14,
+            "BTC 15m": 0.12, "ETH 15m": 0.14, "SOL 15m": 0.18,
+        }
+        pairs = [
+            {"pair": k, "asset": k.split()[0], "timeframe": k.split()[1],
+             "min_move_pct": v, "min_ev_threshold": 0.06, "max_market_price": 0.75,
+             "entry_seconds": 60, "kelly_fraction": 0.25,
+             "min_trade_usd": 1.0, "max_trade_usd": 1.0}
+            for k, v in _defaults.items()
+        ]
+
+    # Enrich with actual performance from trades
+    trades = get_trades(limit=500)
+    resolved = [t for t in trades if t.get("resolved")]
+    perf: dict[str, dict] = {}
+    for t in resolved:
+        asset = _extract_field(t, "asset", "BTC").upper()
+        slug = _extract_field(t, "window_slug", "")
+        tf = "15m" if "15m" in slug else "5m"
+        key = f"{asset} {tf}"
+        if key not in perf:
+            perf[key] = {"wins": 0, "losses": 0, "pnl": 0.0, "trades": 0}
+        perf[key]["trades"] += 1
+        pnl = _float_field(t, "pnl")
+        perf[key]["pnl"] += pnl
+        if pnl > 0:
+            perf[key]["wins"] += 1
+        else:
+            perf[key]["losses"] += 1
+
+    for p in pairs:
+        k = p["pair"]
+        s = perf.get(k, {"wins": 0, "losses": 0, "pnl": 0.0, "trades": 0})
+        p["perf"] = {
+            **s,
+            "wr": round(s["wins"] / s["trades"], 3) if s["trades"] else 0,
+            "pnl": round(s["pnl"], 4),
+        }
+
+    return {"pairs": pairs, "total_enabled": len(pairs)}
+
+
 @app.get("/api/calibration")
 def api_calibration(_: str = Depends(_require_auth)):
     """p_final buckets vs actual win rate — model calibration curve."""
@@ -954,6 +1010,24 @@ HTML = r"""<!DOCTYPE html>
 <div id="page-analytics" class="page-content">
 <div class="page">
 
+  <!-- Per-pair strategy config -->
+  <div class="section-header" style="margin-bottom:12px">
+    <span class="section-title">Pair Configuration &amp; Performance</span>
+    <span class="section-badge" id="pairs-badge">Loading...</span>
+  </div>
+  <div class="panel-card" style="margin-bottom:20px">
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Pair</th><th>Status</th><th>Min Move</th><th>Min EV</th><th>Max Price</th>
+          <th>Entry</th><th>Kelly</th><th>Trade Size</th>
+          <th>Trades</th><th>Win Rate</th><th>P&amp;L</th>
+        </tr></thead>
+        <tbody id="pairs-body"><tr class="empty-row"><td colspan="11">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="analytics-grid">
     <!-- By segment -->
     <div class="panel-card">
@@ -1330,12 +1404,38 @@ async function loadTradeLog() {
 // ── Analytics page ────────────────────────────────────────────────────────────
 async function loadAnalytics() {
   try {
-    const [statsResp, calResp] = await Promise.all([
+    const [statsResp, calResp, pairsResp] = await Promise.all([
       fetch('/api/strategy-stats'),
       fetch('/api/calibration'),
+      fetch('/api/pairs'),
     ]);
     const stats = await statsResp.json();
     const cal   = await calResp.json();
+    const pairsData = await pairsResp.json();
+
+    // Pairs config table
+    const pairsBody = document.getElementById('pairs-body');
+    pairsBody.innerHTML = '';
+    document.getElementById('pairs-badge').textContent = pairsData.total_enabled + ' pairs enabled';
+    for (const p of pairsData.pairs) {
+      const perf = p.perf || {};
+      const wr = perf.trades > 0 ? Math.round(perf.wr * 100) : 0;
+      const pnlColor = (perf.pnl || 0) >= 0 ? '#2f9e44' : '#c92a2a';
+      const assetCls = { BTC: 'tag-btc', ETH: 'tag-eth', SOL: 'tag-sol' }[p.asset] || '';
+      pairsBody.innerHTML += `<tr>
+        <td><span class="tag ${assetCls}" style="font-size:11px">${p.pair}</span></td>
+        <td><span class="tag tag-up" style="font-size:10px">ACTIVE</span></td>
+        <td><code>${p.min_move_pct}%</code></td>
+        <td><code>${(p.min_ev_threshold * 100).toFixed(0)}%</code></td>
+        <td><code>${p.max_market_price}</code></td>
+        <td><code>T-${p.entry_seconds}s</code></td>
+        <td><code>${p.kelly_fraction}x</code></td>
+        <td><code>$${p.min_trade_usd}-$${p.max_trade_usd}</code></td>
+        <td>${perf.trades || 0}</td>
+        <td><span style="font-weight:700;color:${wr>60?'#2f9e44':wr<40?'#c92a2a':'#e67700'}">${perf.trades ? wr+'%' : '—'}</span></td>
+        <td style="color:${pnlColor};font-weight:600">${perf.trades ? (perf.pnl>=0?'+':'')+'$'+perf.pnl.toFixed(2) : '—'}</td>
+      </tr>`;
+    }
 
     // By segment
     const segBody = document.getElementById('seg-body');
