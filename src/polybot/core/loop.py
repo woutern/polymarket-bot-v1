@@ -168,6 +168,12 @@ class TradingLoop:
 
         await self.db.connect()
 
+        # Smoke test all dependencies before trading
+        from polybot.core.smoke_test import run_smoke_tests
+        smoke = await run_smoke_tests(self.settings)
+        if smoke.failed:
+            raise RuntimeError(f"Smoke test failed: {smoke.failed}")
+
         # Balance check at startup only (no longer in hot loop)
         if self._wallet_address:
             try:

@@ -33,13 +33,13 @@ class Settings(BaseSettings):
     # Set to e.g. "BTC_5m,ETH_5m,SOL_15m" to enable only those pairs.
     pairs: str = ""
 
-    # Per-asset move thresholds (T-180s to T-90s entry, direction must be established)
-    min_move_btc_5m: float = 0.08   # BTC 5m: 97% WR at T-60s, ~83% at T-120s
-    min_move_eth_5m: float = 0.10   # ETH 5m
-    min_move_sol_5m: float = 0.14   # SOL 5m: higher vol
-    min_move_btc_15m: float = 0.12  # 15m: stricter
-    min_move_eth_15m: float = 0.14
-    min_move_sol_15m: float = 0.18
+    # Per-asset move thresholds (T+2s-T+15s early entry with quality filters)
+    min_move_btc_5m: float = 0.05   # BTC 5m: aligned with pre-filter
+    min_move_eth_5m: float = 0.05   # ETH 5m: same
+    min_move_sol_5m: float = 0.05   # SOL 5m: same (prev_window filter handles vol)
+    min_move_btc_15m: float = 0.05  # 15m: same
+    min_move_eth_15m: float = 0.05
+    min_move_sol_15m: float = 0.05
 
     # Logging
     log_level: str = "INFO"
