@@ -119,10 +119,10 @@ class TestGuardConditions:
         )
         assert result is None
 
-    def test_market_price_zero_returns_none(self):
-        """market_price=0 triggers the guard (market_price <= 0)."""
+    def test_market_price_below_floor_returns_none(self):
+        """market_price < 0.20 triggers the floor guard (uninitialized orderbook)."""
         b = _make_bayesian(0.9)
-        ob = _make_orderbook(yes_ask=0.0)
+        ob = _make_orderbook(yes_ask=0.10)
         result = generate_directional_signal(
             bayesian=b,
             orderbook=ob,

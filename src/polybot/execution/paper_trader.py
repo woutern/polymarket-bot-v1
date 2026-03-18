@@ -33,6 +33,22 @@ class PaperTrader:
             logger.warning("paper_trade_blocked", reason="circuit_breaker")
             return None
 
+        # Dedup guard: only one trade per window_slug
+        if any(p.window_slug == signal.window_slug for p in self.open_positions):
+            logger.warning("paper_trade_dedup", slug=signal.window_slug)
+            return None
+
+        # Sanity check: reject suspiciously cheap fills (orderbook not yet initialized)
+        MIN_FILL_PRICE = 0.20
+        if signal.market_price < MIN_FILL_PRICE:
+            logger.warning(
+                "paper_trade_price_too_low",
+                market_price=signal.market_price,
+                min_allowed=MIN_FILL_PRICE,
+                slug=signal.window_slug,
+            )
+            return None
+
         # Compute position size
         size = compute_size(
             model_prob=signal.model_prob,

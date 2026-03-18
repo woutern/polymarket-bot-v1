@@ -94,7 +94,8 @@ def generate_directional_signal(
         return None
 
     # Require a realistic market price — orderbook not yet fetched defaults to 0.0
-    if market_price < 0.05 or market_price >= 1:
+    # 0.20 floor: prices below this suggest uninitialized orderbook, not real edge
+    if market_price < 0.20 or market_price >= 1:
         return None
 
     # OBI proxy veto: wide bid-ask spread signals reluctant buyers / high uncertainty.
