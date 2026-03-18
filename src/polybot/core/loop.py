@@ -126,6 +126,14 @@ class TradingLoop:
         self.dynamo = DynamoStore()
         self.db.attach_dynamo(self.dynamo)
 
+        # LightGBM model server
+        from polybot.ml.server import ModelServer
+        self.model_server = ModelServer()
+        try:
+            self.model_server.load_models()
+        except Exception as e:
+            logger.warning("model_server_load_failed", error=str(e))
+
         if settings.mode == "live":
             self.trader = LiveTrader(settings=settings, risk=self.risk, db=self.db)
         else:
@@ -532,6 +540,41 @@ class TradingLoop:
             asset=state.asset,
         )
         signal = evaluation.signal
+
+        # LightGBM prediction (logged alongside existing signal, not blocking yet)
+        tf = "15m" if "15m" in window.slug else "5m"
+        pair = f"{state.asset}_{tf}"
+        features = {
+            "move_pct_15s": pct_move,
+            "realized_vol_5m": vol,
+            "vol_ratio": vol_ratio,
+            "body_ratio": body_ratio,
+            "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price and state.prev_window.open_price and state.prev_window.close_price >= state.prev_window.open_price else -1) if state.prev_window else 0,
+            "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price) / state.prev_window.open_price * 100) if state.prev_window and state.prev_window.open_price and state.prev_window.close_price else 0,
+            "hour_sin": __import__("math").sin(2 * __import__("math").pi * __import__("datetime").datetime.now(__import__("datetime").timezone.utc).hour / 24),
+            "hour_cos": __import__("math").cos(2 * __import__("math").pi * __import__("datetime").datetime.now(__import__("datetime").timezone.utc).hour / 24),
+            "dow_sin": __import__("math").sin(2 * __import__("math").pi * __import__("datetime").datetime.now(__import__("datetime").timezone.utc).weekday() / 7),
+            "dow_cos": __import__("math").cos(2 * __import__("math").pi * __import__("datetime").datetime.now(__import__("datetime").timezone.utc).weekday() / 7),
+        }
+        lgbm_prob = self.model_server.predict(pair, features)
+        model_has = self.model_server.has_model(pair)
+
+        # Log model prediction
+        if model_has:
+            logger.info(
+                "lgbm_prediction",
+                asset=state.asset,
+                pair=pair,
+                lgbm_prob=round(lgbm_prob, 4),
+                model_age_h=round(self.model_server.get_model_age_hours(pair), 1),
+                pct_move=round(pct_move, 4),
+            )
+
+        # If model loaded and confident, use as additional filter
+        if model_has and signal is not None:
+            if lgbm_prob < 0.55:
+                logger.info("lgbm_low_confidence", pair=pair, prob=round(lgbm_prob, 4))
+                signal = None  # block trade — model not confident
 
         # Log every evaluation to DynamoDB (throttle: 1 per window per asset)
         if not state.traded_this_window:
