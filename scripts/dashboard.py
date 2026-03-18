@@ -245,105 +245,6 @@ def _require_auth(creds: HTTPBasicCredentials = Depends(_security)):
 
 # ── API endpoints ─────────────────────────────────────────────────────────────
 
-@app.post("/api/resolve-all")
-async def api_resolve_all(_: str = Depends(_require_auth)):
-    """Manually resolve all unresolved trades via Gamma API."""
-    import json as _json
-
-    if not _USE_DYNAMO:
-        return {"status": "error", "message": "DynamoDB not available"}
-
-    trades = get_trades(limit=200)
-    unresolved = [t for t in trades if not t.get("resolved") or str(t.get("resolved")) == "0"]
-
-    if not unresolved:
-        return {"status": "ok", "message": "No unresolved trades", "resolved": 0}
-
-    resolved_count = 0
-    errors = []
-
-    import httpx
-    async with httpx.AsyncClient(timeout=10) as client:
-        for t in unresolved:
-            slug = _extract_field(t, "window_slug")
-            side = _extract_field(t, "side")
-            trade_id = _extract_field(t, "id")
-            fill = _float_field(t, "fill_price")
-            size = _float_field(t, "size_usd")
-
-            if not slug or not trade_id:
-                continue
-
-            try:
-                resp = await client.get(
-                    "https://gamma-api.polymarket.com/events",
-                    params={"slug": slug, "limit": 1},
-                )
-                if resp.status_code != 200:
-                    errors.append(f"{slug}: HTTP {resp.status_code}")
-                    continue
-
-                events = resp.json()
-                if not events:
-                    errors.append(f"{slug}: not found")
-                    continue
-
-                mkt = events[0].get("markets", [{}])[0]
-                if not mkt.get("closed"):
-                    errors.append(f"{slug}: not closed yet")
-                    continue
-
-                outcomes = mkt.get("outcomes", [])
-                if isinstance(outcomes, str):
-                    outcomes = _json.loads(outcomes)
-                prices = mkt.get("outcomePrices", [])
-                if isinstance(prices, str):
-                    prices = _json.loads(prices)
-
-                if len(outcomes) < 2 or len(prices) < 2:
-                    errors.append(f"{slug}: missing data")
-                    continue
-
-                outcome_map = dict(zip(outcomes, prices))
-                up_price = float(outcome_map.get("Up", 0))
-
-                if up_price >= 0.99:
-                    winner = "YES"
-                elif up_price <= 0.01:
-                    winner = "NO"
-                else:
-                    errors.append(f"{slug}: ambiguous (up={up_price})")
-                    continue
-
-                won = (winner == side)
-                pnl = round((size / fill) * (1 - fill), 2) if won and fill > 0 else round(-size, 2)
-
-                # Update DynamoDB
-                from decimal import Decimal
-                _trades_table.update_item(
-                    Key={"id": trade_id},
-                    UpdateExpression="SET resolved = :r, pnl = :p, polymarket_winner = :w, correct_prediction = :c, outcome_source = :s",
-                    ExpressionAttributeValues={
-                        ":r": 1,
-                        ":p": Decimal(str(pnl)),
-                        ":w": winner,
-                        ":c": int(won),
-                        ":s": "polymarket_verified",
-                    },
-                )
-                resolved_count += 1
-
-            except Exception as e:
-                errors.append(f"{slug}: {str(e)[:50]}")
-
-    return {
-        "status": "ok",
-        "resolved": resolved_count,
-        "errors": errors,
-        "remaining_unresolved": len(unresolved) - resolved_count,
-    }
-
-
 @app.get("/api/health")
 def api_health():
     """No auth — health check."""
@@ -1221,10 +1122,7 @@ HTML = r"""<!DOCTYPE html>
     <div class="stat-card">
       <div class="stat-label">Open Positions</div>
       <div class="stat-value blue" id="s-open">&mdash;</div>
-      <div class="stat-sub" id="s-open-sub">
-        <button onclick="resolveAll()" style="background:#1971c2;color:#fff;border:none;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;font-weight:600" id="resolve-btn">Resolve All</button>
-        <span id="resolve-status" style="font-size:11px;margin-left:6px"></span>
-      </div>
+      <div class="stat-sub" id="s-open-sub">awaiting resolution</div>
     </div>
   </div>
 
@@ -1693,35 +1591,6 @@ async function loadKPIs() {
 }
 
 // ── Refresh bar ───────────────────────────────────────────────────────────────
-async function resolveAll() {
-  const btn = document.getElementById('resolve-btn');
-  const status = document.getElementById('resolve-status');
-  btn.disabled = true;
-  btn.textContent = 'Resolving...';
-  status.textContent = '';
-  try {
-    const resp = await fetch('/api/resolve-all', {method: 'POST'});
-    const data = await resp.json();
-    if (data.resolved > 0) {
-      status.textContent = data.resolved + ' resolved';
-      status.style.color = '#2f9e44';
-    } else if (data.errors && data.errors.length) {
-      status.textContent = data.errors[0];
-      status.style.color = '#e67700';
-    } else {
-      status.textContent = 'All resolved';
-      status.style.color = '#2f9e44';
-    }
-    // Refresh overview data
-    setTimeout(refreshOverview, 1000);
-  } catch(e) {
-    status.textContent = 'Error: ' + e.message;
-    status.style.color = '#c92a2a';
-  }
-  btn.disabled = false;
-  btn.textContent = 'Resolve All';
-}
-
 function animateBar(ms) {
   const bar = document.getElementById('refresh-progress');
   bar.style.transition = 'none';
