@@ -333,9 +333,13 @@ class TradingLoop:
             asset=state.asset,
         )
 
-        if signal and self.risk.can_trade():
+        # Only execute if orderbook was fetched recently (< 30s old) — stale = don't trade
+        orderbook_fresh = (time.time() - state.orderbook_age) < 30.0
+        if signal and self.risk.can_trade() and orderbook_fresh:
             await self._execute(signal, state)
             state.traded_this_window = True
+        elif signal and not orderbook_fresh:
+            logger.warning("signal_skipped_stale_orderbook", asset=state.asset, age=round(time.time() - state.orderbook_age, 1))
 
     async def _on_window_close(self, state: AssetState, price: float):
         window = state.prev_window

@@ -93,7 +93,8 @@ def generate_directional_signal(
         )
         return None
 
-    if market_price <= 0 or market_price >= 1:
+    # Require a realistic market price — orderbook not yet fetched defaults to 0.0
+    if market_price < 0.05 or market_price >= 1:
         return None
 
     ev = (model_prob - market_price) / market_price
