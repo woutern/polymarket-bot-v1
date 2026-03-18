@@ -33,14 +33,13 @@ class Settings(BaseSettings):
     # Set to e.g. "BTC_5m,ETH_5m,SOL_15m" to enable only those pairs.
     pairs: str = ""
 
-    # Per-asset Tier B move thresholds (T-120s entry, backtested 30 days)
-    # BTC 0.03%, ETH/SOL 0.05% — calibrated for T-120s early entry
-    min_move_btc_5m: float = 0.03   # BTC 5m: 96.2% WR at T-120s
-    min_move_eth_5m: float = 0.05   # ETH 5m: 95.5% WR at T-120s
-    min_move_sol_5m: float = 0.05   # SOL 5m: 96.3% WR at T-120s
-    min_move_btc_15m: float = 0.05  # 15m: slightly stricter
-    min_move_eth_15m: float = 0.07
-    min_move_sol_15m: float = 0.07
+    # Per-asset move thresholds (T-180s to T-90s entry, direction must be established)
+    min_move_btc_5m: float = 0.08   # BTC 5m: 97% WR at T-60s, ~83% at T-120s
+    min_move_eth_5m: float = 0.10   # ETH 5m
+    min_move_sol_5m: float = 0.14   # SOL 5m: higher vol
+    min_move_btc_15m: float = 0.12  # 15m: stricter
+    min_move_eth_15m: float = 0.14
+    min_move_sol_15m: float = 0.18
 
     # Logging
     log_level: str = "INFO"

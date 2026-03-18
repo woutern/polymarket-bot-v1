@@ -297,19 +297,13 @@ class TradingLoop:
         ):
             await self._try_tier_a_entry(state, price, window, oracle, remaining)
 
-        # Tier B (PRIMARY): Early entry T+2s to T+15s after window open
-        # Cheap asks ($0.45-$0.60) only exist in this window
-        seconds_since_open = time.time() - window.open_ts
+        # Tier B (PRIMARY): Enter T-180s to T-90s when direction established AND ask still cheap
         if (
-            2.0 <= seconds_since_open <= 15.0
+            90 <= remaining <= 180
             and not state.traded_this_window
             and window.open_price
             and window.open_price > 0
         ):
-            await self._on_entry_zone(state, price)
-
-        # Tier C: Late fallback (old entry zone) — rarely fires due to strict max_ask
-        elif window_state == WindowState.ENTRY_ZONE and not state.traded_this_window:
             await self._on_entry_zone(state, price)
 
         state.prev_open_ts = current_open_ts
@@ -432,8 +426,8 @@ class TradingLoop:
 
         remaining = window.seconds_remaining()
 
-        # Hard cutoff: don't enter after T-15s (fill risk, blockchain latency)
-        if remaining < 15:
+        # Hard cutoff: only enter T-180s to T-90s (direction established, ask may be cheap)
+        if remaining < 90 or remaining > 180:
             return
 
         pct_move = state.tracker.pct_move(price) or 0.0
