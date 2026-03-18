@@ -87,6 +87,14 @@ MIN_EV: 0.10
 WIN RATE EXPECTATION: 78-83%
 CONFIRMED EV: +$0.27-$0.31/dollar at $0.50-$0.55 entry with 80% WR
 
+FIRST LIVE TRADE CONFIRMED (2026-03-18 12:00 UTC):
+  BTC YES @$0.39, 6 shares, $2.34 cost
+  Entry at T+~10s after window open (T+2s to T+15s strategy)
+  Entry price $0.39 — better than $0.52 theoretical model
+  EV at entry: 0.80×0.61 - 0.20×0.39 = +$0.41/dollar
+  Order latency: signal=178ms, order=1,434ms (eu-west-1 → CLOB)
+  ETH/SOL FOK orders failed (no liquidity at target price) — BTC filled
+
 Live orderbook observation (BTC 5m, first window 2026-03-18 12:45 UTC):
   T+2s:  YES@$0.51, NO@$0.50 (spread $0.01) — CHEAP
   T+5s:  YES@$0.52, NO@$0.49 — CHEAP
