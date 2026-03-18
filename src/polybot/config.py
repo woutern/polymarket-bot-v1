@@ -22,10 +22,10 @@ class Settings(BaseSettings):
     kelly_fraction: float = 0.25
     min_trade_usd: float = 1.0    # Floor — always bet at least this when there's edge (Polymarket min is $1)
     max_trade_usd: float = 10.0   # Hard cap per trade
-    min_ev_threshold: float = 0.05
-    directional_entry_seconds: int = 60  # T-60s — enter before market reprices
-    directional_min_move_pct: float = 0.08  # default; overridden per-asset below
-    max_market_price: float = 0.75  # Don't buy if ask > 0.75 (market already priced in)
+    min_ev_threshold: float = 0.10  # Raised: ev = (prob - price) * (1/price), min 10%
+    directional_entry_seconds: int = 120  # T-120s — Tier B primary entry
+    directional_min_move_pct: float = 0.03  # default; overridden per-asset below
+    max_market_price: float = 0.70  # Tier B: enter before market prices it in
     assets: str = "BTC,ETH,SOL"  # Comma-separated asset list
     window_durations: str = "5m,15m"  # Comma-separated window durations
     # Enabled pairs — granular control over which asset×timeframe combos are active.
@@ -33,14 +33,14 @@ class Settings(BaseSettings):
     # Set to e.g. "BTC_5m,ETH_5m,SOL_15m" to enable only those pairs.
     pairs: str = ""
 
-    # Per-asset move thresholds (research: SOL is ~1.8x more volatile than BTC)
-    # Higher threshold = higher win rate but fewer trades
-    min_move_btc_5m: float = 0.08   # BTC 5-min: 96.4% WR
-    min_move_eth_5m: float = 0.10   # ETH 5-min: slightly more volatile
-    min_move_sol_5m: float = 0.14   # SOL 5-min: ~1.8x BTC vol
-    min_move_btc_15m: float = 0.12  # 15-min: market has more time to price in → stricter
-    min_move_eth_15m: float = 0.14
-    min_move_sol_15m: float = 0.18
+    # Per-asset Tier B move thresholds (T-120s entry, backtested 30 days)
+    # BTC 0.03%, ETH/SOL 0.05% — calibrated for T-120s early entry
+    min_move_btc_5m: float = 0.03   # BTC 5m: 96.2% WR at T-120s
+    min_move_eth_5m: float = 0.05   # ETH 5m: 95.5% WR at T-120s
+    min_move_sol_5m: float = 0.05   # SOL 5m: 96.3% WR at T-120s
+    min_move_btc_15m: float = 0.05  # 15m: slightly stricter
+    min_move_eth_15m: float = 0.07
+    min_move_sol_15m: float = 0.07
 
     # Logging
     log_level: str = "INFO"

@@ -199,8 +199,9 @@ class TestSignalFiresUp:
             open_price=100.0,
             seconds_remaining=30,
         )
-        # ev = (model_prob - market_price) / market_price
-        expected_ev = (result.signal.model_prob - 0.50) / 0.50
+        # ev = p * (1 - price) - (1 - p) * price
+        p = result.signal.model_prob
+        expected_ev = p * (1 - 0.50) - (1 - p) * 0.50
         assert abs(result.signal.ev - expected_ev) < 1e-9
 
     def test_up_signal_model_prob_matches_bayesian(self):

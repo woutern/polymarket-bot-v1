@@ -72,37 +72,41 @@ Live wallet: $32, $1 flat bets until 400+ trades with confirmed statistical edge
 
 ## Entry tiers (replaces old T-60s to T-15s logic)
 
-### STRATEGY PIVOT (2026-03-18 backtest finding)
-Direction prediction is SOLVED: 97%+ win rate when move >0.08% by T-60s.
-The ONLY problem is entry price. By T-60s the ask is $0.95 (EV: +$0.02).
-We must enter EARLIER at $0.55-0.65 before market makers price it in.
+### STRATEGY (confirmed 2026-03-18, 30-day backtest + theoretical ask analysis)
 
-30-day BTC 5m backtest (4,065 signals):
-- T-120s entry (0.03% threshold): 96.2% WR, ask ~$0.55-0.65, EV ~+$0.60/dollar
-- T-180s entry (0.03% threshold): 92.3% WR, ask ~$0.50-0.60, EV ~+$0.55/dollar
-- T-240s entry (0.03% threshold): 86.3% WR, ask cheapest but lower WR
-- T-60s entry (current, 0.08%):   97.3% WR, ask $0.95+, EV ~+$0.02/dollar
+CORE INSIGHT: Cheap asks ($0.55-0.65) only exist in first ~60 seconds of each window.
+By T+60s the median ask crosses $0.70. By T+150s it crosses $0.85. At T-60s it's $0.99.
+Direction prediction at T-60s is 97%+ but worthless — the ask is already $0.95.
+
+ENTRY SIGNAL: First-minute price move from window open.
+- |move| > 0.05%: 82.6% directional accuracy, ~1,960 signals/day (PRIMARY)
+- |move| > 0.03%: 78.6% accuracy, ~2,700 signals/day (more signals, lower quality)
+- Previous window carry-over: 59% accuracy alone (weak, tiebreaker only)
+- Combined (carry-over + first-min agree, both strong): 78.6% WR
+
+ENTRY WINDOW: T+30s to T+60s (wait 30s to detect move, enter before ask hits $0.70)
+EV FORMULA: ev = p × (1 - price) - (1 - p) × price
+MIN_EV: 0.10
+MAX_ASK: $0.65 (strict — only cheap asks)
+Expected WR: 78-83% (NOT 96% — that was at T-60s where asks are $0.95)
+EV at target: p=0.82, price=$0.58 → ev = 0.82×0.42 - 0.18×0.58 = +$0.24/dollar
 
 ### Tier A — Oracle dislocation (fires at any time in window)
 Condition: oracle_dislocation = True AND edge > 0.05
-- oracle_dislocation = abs(oracle_lag_pct) > 0.003
-- Enter immediately, do not wait
-- Order type: FOK (aggressive, take the ask)
 - Rare event — bonus edge, not primary
+- Order type: FOK
 
-### Tier B — Early directional (T-120s to T-90s) *** PRIMARY STRATEGY ***
-Condition: move >0.03% from open AND ask < 0.70 AND ev > 0.10
-- THIS IS THE MAIN EDGE — enter before market prices it in
-- At $0.60 entry with 96% WR: EV = (0.96-0.60)*(1/0.60) = +$0.60 per dollar
-- Order type: GTD limit at ask, auto-cancel at T-30s
-- LightGBM goal: predict at T-120s whether move holds to close
-- Only fires if Tier A did not already fire this window
+### Tier B — Early entry (T+30s to T+60s) *** PRIMARY STRATEGY ***
+Condition: |first-min move| > 0.05% AND ask < 0.65 AND ev > 0.10
+- Enter in direction of first-minute move
+- Target ask: $0.55-0.65
+- Order type: FOK (take the ask while it's cheap)
+- This is the ONLY strategy that generates real EV
 
 ### Tier C — Late confirmation (T-60s to T-30s) — FALLBACK ONLY
-Condition: edge > 0.10 AND ask < 0.75
-- Only fires if Tiers A and B did not fire this window
-- Low EV at T-60s asks ($0.90+) — only worth it on outlier pricing
-- Order type: FOK
+Condition: ev > 0.10 AND ask < 0.65
+- Almost never fires (ask is $0.95+ at T-60s)
+- Kept as emergency fallback for rare mispricing events
 
 ---
 

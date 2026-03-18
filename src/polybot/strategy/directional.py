@@ -155,7 +155,7 @@ def generate_directional_signal(
             )
             return SignalEvaluation(signal=None, rejection_reason="obi_veto", **base)
 
-    ev = (model_prob - market_price) / market_price
+    ev = model_prob * (1 - market_price) - (1 - model_prob) * market_price
     base["ev"] = ev
 
     if ev < min_ev_threshold:
