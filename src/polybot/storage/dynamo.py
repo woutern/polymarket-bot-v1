@@ -22,7 +22,7 @@ def _to_decimal(obj):
 
 
 class DynamoStore:
-    def __init__(self, region: str = "eu-west-1"):
+    def __init__(self, region: str = "us-east-1"):
         self._region = region
         self._trades = None
         self._windows = None

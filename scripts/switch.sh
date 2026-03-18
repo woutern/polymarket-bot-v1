@@ -8,11 +8,11 @@
 set -euo pipefail
 
 PROFILE="playground"
-REGION="eu-west-1"
+REGION="us-east-1"
 CLUSTER="polymarket-bot"
 SECRET_ID="polymarket-bot-env"
-SUBNET="subnet-09d92195326f57aaa"
-SG="sg-02d37542b9d600034"
+SUBNET="subnet-0ad6ae3ee1277d9f2"
+SG="sg-035f8d47dd34cad66"
 
 MODE="${1:-}"
 if [[ "$MODE" != "paper" && "$MODE" != "live" ]]; then
@@ -56,7 +56,6 @@ if [[ "$TASK_ARN" != "None" && "$TASK_ARN" != "" ]]; then
         --cluster "$CLUSTER" --task "$TASK_ARN" \
         --reason "switching to $MODE" --region "$REGION" > /dev/null
     echo "  Stopped: ${TASK_ARN##*/}"
-    # Wait for task to stop
     echo "  Waiting for task to drain..."
     sleep 5
 else
@@ -87,8 +86,8 @@ DASHBOARD_BANKROLL=$( [ "$MODE" = "live" ] && echo "43.0" || echo "1000.0" )
 aws --profile "$PROFILE" ssm send-command \
     --instance-ids "$INSTANCE_ID" \
     --document-name "AWS-RunShellScript" \
-    --parameters "commands=[\"docker stop dashboard && docker rm dashboard && docker run -d --name dashboard -p 8888:8888 -e MODE=$MODE -e BANKROLL=$DASHBOARD_BANKROLL --restart unless-stopped 688567279867.dkr.ecr.eu-west-1.amazonaws.com/polymarket-dashboard:latest\"]" \
-    --region "$REGION" > /dev/null
+    --parameters "commands=[\"docker stop dashboard && docker rm dashboard && docker run -d --name dashboard -p 8888:8888 -e MODE=$MODE -e BANKROLL=$DASHBOARD_BANKROLL -e AWS_DEFAULT_REGION=us-east-1 --restart unless-stopped 688567279867.dkr.ecr.us-east-1.amazonaws.com/polymarket-dashboard:latest\"]" \
+    --region eu-west-1 > /dev/null
 echo "  Dashboard restarted with MODE=$MODE"
 
 echo ""

@@ -44,7 +44,7 @@ def _import_claim_all():
     spec.loader.exec_module(mod)
     return mod.claim_all
 
-S3_BUCKET = "polymarket-bot-data-688567279867"
+S3_BUCKET = "polymarket-bot-data-688567279867-use1"
 
 # Per-asset parquet config: asset symbol -> (local path, S3 key, /tmp fallback)
 _ASSET_PARQUET: dict[str, tuple[str, str, str]] = {
@@ -95,7 +95,7 @@ class TradingLoop:
 
         try:
             import boto3
-            s3 = boto3.client("s3", region_name="eu-west-1")
+            s3 = boto3.client("s3", region_name="us-east-1")
             s3.download_file(S3_BUCKET, s3_key, tmp_path)
             table.load_from_parquet(tmp_path)
             logger.info("base_rates_loaded", asset=asset, source="s3", bins=len(table.bins))
@@ -558,7 +558,7 @@ class TradingLoop:
                         "messages": [{"role": "user", "content": prompt}],
                     })
                     resp = client.invoke_model(
-                        modelId="eu.anthropic.claude-sonnet-4-6-20251001-v1:0",
+                        modelId="anthropic.claude-sonnet-4-6-20251001-v1:0",
                         body=body,
                     )
                     result = json.loads(resp["body"].read())

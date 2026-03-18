@@ -19,7 +19,7 @@ import time
 logger = logging.getLogger(__name__)
 
 # Model: cross-region inference in eu-west-1
-_MODEL_ID = "eu.anthropic.claude-sonnet-4-6-20251001-v1:0"
+_MODEL_ID = "anthropic.claude-sonnet-4-6-20251001-v1:0"
 _MAX_TOKENS = 150
 _LAST_CALL: dict[str, float] = {}  # key → timestamp, rate-limit per key
 _MIN_INTERVAL = 20.0  # at most once per 20s per window key (down from 60s)
@@ -34,7 +34,7 @@ def _get_client():
             import boto3
             import os
             profile = "playground" if not os.getenv("AWS_EXECUTION_ENV") else None
-            session = boto3.Session(profile_name=profile, region_name="eu-west-1")
+            session = boto3.Session(profile_name=profile, region_name="us-east-1")
             _client = session.client("bedrock-runtime")
         except Exception as e:
             logger.debug("bedrock_client_init_failed", extra={"error": str(e)})
