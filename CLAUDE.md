@@ -120,6 +120,7 @@ Regime B (CHOPPY):           oracle -0.10, threshold +0.02, Tier B disabled
 Regime C (POST-MOVE):        oracle  0.00, threshold +0.03, Tier B disabled
 Regime D (PRE-CATALYST):     oracle +0.05, threshold -0.005, Tier B enabled
 Regime E (HIGH-UNCERTAINTY): oracle -0.20, threshold +0.05, Tier B disabled
+Regime F (OVERREACTION): move >0.3% in first 120s AND yes_ask >0.75. Bias: FADE (Tier B fires in OPPOSITE direction to the move)
 ```
 
 ### Thompson Sampling bandit (dynamic weight optimizer)
