@@ -57,6 +57,8 @@ class LiveTrader:
             signature_type=sig_type,
             funder=funder,
         )
+        self._traded_slugs: set[str] = set()  # dedup: one trade per window_slug
+
         logger.info("live_trader_initialized", chain_id=settings.polymarket_chain_id)
 
         # Connectivity test — halt if CLOB is geoblocked
@@ -90,6 +92,16 @@ class LiveTrader:
         if not self.risk.can_trade():
             logger.warning("live_trade_blocked", reason="circuit_breaker")
             return None
+
+        # Dedup: one trade per window_slug
+        if signal.window_slug in self._traded_slugs:
+            logger.warning("live_trade_dedup", slug=signal.window_slug)
+            return None
+        self._traded_slugs.add(signal.window_slug)
+
+        # Clean old slugs (keep last 50)
+        if len(self._traded_slugs) > 50:
+            self._traded_slugs = set(list(self._traded_slugs)[-30:])
 
         # Position size: 1% of bankroll with circuit breaker override
         size = self.risk.get_bet_size()
