@@ -84,6 +84,10 @@ async def get_market_outcome(slug: str) -> tuple[str | None, str]:
             return None, "pending"
         m = markets[0]
         prices = m.get("outcomePrices", [])
+        # Gamma sometimes returns as JSON string "[\"0.99\",\"0.01\"]"
+        if isinstance(prices, str):
+            import json as _json
+            prices = _json.loads(prices)
         if len(prices) >= 2:
             yes_price = float(prices[0])
             # Conclusive even before "closed" flag — Gamma API can lag

@@ -7,7 +7,7 @@ import uuid
 
 import structlog
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, MarketOrderArgs, OrderArgs, OrderType
+from py_clob_client.clob_types import ApiCreds, CreateOrderOptions, MarketOrderArgs, OrderArgs, OrderType
 
 from polybot.config import Settings
 from polybot.models import Direction, Signal, TradeRecord
@@ -92,30 +92,53 @@ class LiveTrader:
         no_token_id: str,
         size: float,
     ) -> TradeRecord | None:
-        """Place a FOK directional order."""
+        """Place a FOK directional order.
+
+        Uses create_order with explicit tick_size='0.01' because short-lived
+        5/15-min markets return 404 from get_tick_size (CLOB doesn't index them).
+        """
         token_id = yes_token_id if signal.direction == Direction.UP else no_token_id
         side = "YES" if signal.direction == Direction.UP else "NO"
 
-        # MarketOrderArgs takes a dollar amount and handles share/amount rounding
-        # internally, avoiding the "max 2 decimals" precision error from OrderArgs.
-        market_args = MarketOrderArgs(
+        # Calculate integer shares from dollar amount
+        price = round(signal.market_price, 2)
+        if price <= 0 or price >= 1:
+            return None
+        shares = round(size / price, 0)  # integer shares for 2-decimal precision
+        if shares < 1:
+            shares = 1.0
+        actual_cost = round(shares * price, 2)
+
+        order_args = OrderArgs(
             token_id=token_id,
-            amount=round(size, 2),  # dollar amount to spend
+            price=price,
+            size=shares,
             side="BUY",
         )
+        options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
 
         try:
-            order = self.client.create_market_order(market_args)
-            resp = self.client.post_order(order, OrderType.FOK)
+            signed = self.client.create_order(order_args, options)
+            resp = self.client.post_order(signed, OrderType.FOK)
             order_id = resp.get("orderID", "") if resp else ""
+            success = resp.get("success", False) if resp else False
 
-            shares = round(size / signal.market_price, 4) if signal.market_price > 0 else 0
+            if not success:
+                logger.warning(
+                    "live_order_not_matched",
+                    side=side,
+                    price=price,
+                    shares=shares,
+                    error_msg=resp.get("errorMsg", ""),
+                    slug=signal.window_slug,
+                )
+                return None
             logger.info(
                 "live_order_placed",
                 side=side,
-                price=signal.market_price,
+                price=price,
                 shares=shares,
-                size_usd=size,
+                size_usd=actual_cost,
                 order_id=order_id,
                 slug=signal.window_slug,
             )
@@ -127,9 +150,17 @@ class LiveTrader:
                 source=signal.source.value,
                 direction=signal.direction.value,
                 side=side,
-                price=signal.market_price,
-                size_usd=size,
-                fill_price=signal.market_price,  # FOK fills at limit or not at all
+                price=price,
+                size_usd=actual_cost,
+                fill_price=price,
+                asset=signal.asset,
+                mode="live",
+                p_bayesian=signal.p_bayesian,
+                p_ai=signal.p_ai,
+                p_final=signal.model_prob,
+                pct_move=signal.pct_move,
+                seconds_remaining=signal.seconds_remaining,
+                ev=signal.ev,
             )
             await self.db.insert_trade({
                 "id": trade.id,
@@ -143,6 +174,14 @@ class LiveTrader:
                 "fill_price": trade.fill_price,
                 "pnl": None,
                 "resolved": 0,
+                "mode": "live",
+                "asset": trade.asset,
+                "p_bayesian": trade.p_bayesian,
+                "p_ai": trade.p_ai,
+                "p_final": trade.p_final,
+                "pct_move": trade.pct_move,
+                "seconds_remaining": trade.seconds_remaining,
+                "ev": trade.ev,
             })
             return trade
 

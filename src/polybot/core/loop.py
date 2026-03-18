@@ -573,6 +573,8 @@ class TradingLoop:
     async def _refresh_orderbook(self, state: AssetState):
         window = state.tracker.current
         if not window or not window.yes_token_id:
+            if window:
+                logger.debug("orderbook_skip_no_token", asset=state.asset, slug=window.slug)
             return
         now = time.time()
         if now - state.orderbook_age < 1.0:  # Max 1 refresh/second
@@ -587,6 +589,15 @@ class TradingLoop:
             yes_bids = yes_book.get("bids", [])
             no_asks = no_book.get("asks", [])
             no_bids = no_book.get("bids", [])
+            if not yes_asks and not no_asks:
+                logger.warning(
+                    "orderbook_empty",
+                    asset=state.asset,
+                    slug=window.slug,
+                    yes_token_len=len(window.yes_token_id),
+                    no_token_len=len(window.no_token_id) if window.no_token_id else 0,
+                    yes_book_keys=list(yes_book.keys())[:5],
+                )
             if yes_asks:
                 snap.yes_best_ask = min(float(a["price"]) for a in yes_asks)
             if yes_bids:
