@@ -79,6 +79,7 @@ def get_claimable_positions(funder_address: str) -> list[dict]:
 
 def get_resolved_markets(condition_ids: list[str]) -> dict[str, bool]:
     """Check which markets resolved and which side won. Returns {condition_id: yes_won}."""
+    import json as _json
     resolved = {}
     for cid in condition_ids:
         try:
@@ -93,13 +94,24 @@ def get_resolved_markets(condition_ids: list[str]) -> dict[str, bool]:
             if not markets:
                 continue
             m = markets[0]
+            if not m.get("closed"):
+                continue
             prices = m.get("outcomePrices", [])
+            # Gamma sometimes returns as JSON string
+            if isinstance(prices, str):
+                prices = _json.loads(prices)
             if len(prices) >= 2:
                 yes_price = float(prices[0])
-                if yes_price >= 0.99:
+                no_price = float(prices[1])
+                if yes_price >= 0.99 or (yes_price > no_price and m.get("closed")):
                     resolved[cid] = True   # YES won
-                elif yes_price <= 0.01:
+                elif no_price >= 0.99 or (no_price > yes_price and m.get("closed")):
                     resolved[cid] = False  # NO won
+                elif yes_price == 0 and no_price == 0 and m.get("closed"):
+                    # Both 0 = market resolved but prices cleared. Check winner field.
+                    winner = m.get("winner", "")
+                    if winner:
+                        resolved[cid] = (winner == m.get("outcomes", ["", ""])[0])
         except Exception:
             continue
     return resolved
