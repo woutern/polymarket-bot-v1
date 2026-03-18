@@ -69,6 +69,9 @@ class AssetState:
     traded_this_window: bool = False
     orderbook_age: float = 0.0
     price_history: deque = field(default_factory=lambda: deque(maxlen=200))  # for realized vol
+    vol_history: deque = field(default_factory=lambda: deque(maxlen=12))  # rolling vol for vol_ma_1h
+    window_high: float = 0.0  # track high/low within first 15s for body_ratio
+    window_low: float = float("inf")
 
 
 class TradingLoop:
@@ -282,6 +285,11 @@ class TradingLoop:
 
         # Track price history for realized vol calculation
         state.price_history.append(price)
+        # Track high/low for body_ratio
+        if price > state.window_high:
+            state.window_high = price
+        if price < state.window_low:
+            state.window_low = price
 
         # Update oracle lag (Coinbase vs Chainlink)
         oracle = self.rtds.get_state(state.asset)
@@ -417,8 +425,15 @@ class TradingLoop:
         window = state.tracker.current
         if not window:
             return
+        # Store vol from closing window before resetting
+        vol = compute_realized_vol(list(state.price_history))
+        if vol > 0:
+            state.vol_history.append(vol)
+
         state.prev_window = window
         state.traded_this_window = False
+        state.window_high = price
+        state.window_low = price
         logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
         state.bayesian.reset(price, 0.5)
 
@@ -453,13 +468,25 @@ class TradingLoop:
                 logger.debug("filter_prev_window_disagree", asset=state.asset, slug=window.slug)
                 return
 
-        # FILTER 2: Volatility — skip if vol is spiking (>3x rolling average)
+        # FILTER 2: Volatility ratio — skip if too quiet or too wild
         vol = compute_realized_vol(list(state.price_history))
-        if len(state.price_history) > 50 and vol > 0:
-            # Simple check: if vol > 2.0 annualized (extreme), skip
-            if vol > 2.0:
-                logger.debug("filter_vol_spike", asset=state.asset, vol=round(vol, 4))
-                return
+        vol_ma = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol
+        vol_ratio = vol / vol_ma if vol_ma > 0 else 1.0
+
+        if vol_ratio < 0.5:
+            logger.debug("filter_vol_quiet", asset=state.asset, vol_ratio=round(vol_ratio, 3))
+            return
+        if vol_ratio > 3.0:
+            logger.debug("filter_vol_wild", asset=state.asset, vol_ratio=round(vol_ratio, 3))
+            return
+
+        # FILTER 5: Body ratio — skip indecisive candles
+        hl_range = state.window_high - state.window_low
+        body = abs(price - (window.open_price or price))
+        body_ratio = body / hl_range if hl_range > 0 else 0.5
+        if body_ratio < 0.4:
+            logger.debug("filter_body_indecisive", asset=state.asset, body_ratio=round(body_ratio, 3))
+            return
 
         await self._refresh_orderbook(state)
 
@@ -484,6 +511,8 @@ class TradingLoop:
             no_ask=round(state.orderbook.no_best_ask, 4),
             prev_window_agrees=True,
             spread=round(spread, 4),
+            vol_ratio=round(vol_ratio, 3),
+            body_ratio=round(body_ratio, 3),
         )
 
         # Use per-asset × per-duration threshold (research-calibrated)
