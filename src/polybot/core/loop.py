@@ -170,6 +170,8 @@ class TradingLoop:
         self._last_claim_check: float = 0.0
         self._last_strategy_review: float = 0.0
         self._running = False
+        self._start_time = time.time()
+        self._last_heartbeat = 0.0
 
     async def start(self):
         logger.info(
@@ -278,11 +280,17 @@ class TradingLoop:
 
             await asyncio.sleep(0.25)
 
-            # Auto-claim DISABLED — Gnosis Safe proxy wallet can't redeem via EOA
-            # Claim manually at polymarket.com/portfolio
+            # Heartbeat every 60 seconds
+            if time.time() - getattr(self, '_last_heartbeat', 0) >= 60:
+                self._last_heartbeat = time.time()
+                uptime = round((time.time() - getattr(self, '_start_time', time.time())) / 60, 1)
+                logger.info("heartbeat", uptime_min=uptime, tasks=len(asyncio.all_tasks()))
 
-            # Refresh models every 4 hours
-            self.model_server.refresh_if_needed()
+            # Refresh models every 4 hours (non-blocking)
+            try:
+                self.model_server.refresh_if_needed()
+            except Exception as e:
+                logger.warning("model_refresh_failed", error=str(e)[:60])
 
             # Hourly strategy review — learn from recent trades, log insights
             if (time.time() - self._last_strategy_review) >= 3600:
