@@ -332,6 +332,7 @@ class TradingLoop:
         # Use per-asset × per-duration threshold (research-calibrated)
         min_move = self.settings.min_move_for(state.asset, state.tracker.window_seconds)
 
+        t_signal_start = time.time()
         signal = generate_directional_signal(
             bayesian=state.bayesian,
             orderbook=state.orderbook,
@@ -348,7 +349,10 @@ class TradingLoop:
         # Only execute if orderbook was fetched recently (< 30s old) — stale = don't trade
         orderbook_fresh = (time.time() - state.orderbook_age) < 30.0
         if signal and self.risk.can_trade() and orderbook_fresh:
-            await self._execute(signal, state)
+            signal_ms = (time.time() - t_signal_start) * 1000
+            from polybot.strategy.bedrock_signal import get_last_latency
+            bedrock_ms = get_last_latency(window.slug)
+            await self._execute(signal, state, signal_ms, bedrock_ms)
             state.traded_this_window = True
         elif signal and not orderbook_fresh:
             logger.warning("signal_skipped_stale_orderbook", asset=state.asset, age=round(time.time() - state.orderbook_age, 1))
@@ -418,13 +422,13 @@ class TradingLoop:
             except Exception as e:
                 logger.warning("live_verify_failed", slug=window_slug, error=str(e))
 
-    async def _execute(self, signal, state: AssetState):
+    async def _execute(self, signal, state: AssetState, signal_ms: float = 0, bedrock_ms: float = 0):
         if isinstance(self.trader, LiveTrader):
             window = state.tracker.current
             yes_id = window.yes_token_id if window else ""
             no_id = window.no_token_id if window else ""
-            return await self.trader.execute(signal, yes_id, no_id)
-        return await self.trader.execute(signal)
+            return await self.trader.execute(signal, yes_id, no_id, signal_ms=signal_ms, bedrock_ms=bedrock_ms)
+        return await self.trader.execute(signal, signal_ms=signal_ms, bedrock_ms=bedrock_ms)
 
     async def _run_claim(self):
         """Run claim_all in a thread so it never blocks the event loop."""

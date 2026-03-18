@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 _MODEL_ID = "anthropic.claude-sonnet-4-6-20251001-v1:0"
 _MAX_TOKENS = 150
 _LAST_CALL: dict[str, float] = {}  # key → timestamp, rate-limit per key
+_LAST_LATENCY: dict[str, float] = {}  # key → last inference latency in ms
 _MIN_INTERVAL = 20.0  # at most once per 20s per window key (down from 60s)
 
 _client = None
@@ -115,6 +116,7 @@ def get_ai_probability(
     )
 
     try:
+        t0 = time.time()
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": _MAX_TOKENS,
@@ -126,6 +128,7 @@ def get_ai_probability(
         parsed = json.loads(text)
         p_ai = float(parsed.get("p_up", p_bayesian))
         p_ai = max(0.01, min(0.99, p_ai))
+        latency_ms = (time.time() - t0) * 1000
         logger.info(
             "bedrock_signal",
             extra={
@@ -135,12 +138,20 @@ def get_ai_probability(
                 "confidence": parsed.get("confidence"),
                 "key_factor": parsed.get("key_factor"),
                 "window_key": window_key,
+                "latency_ms": round(latency_ms, 1),
             },
         )
+        # Store latency for the caller to pick up
+        _LAST_LATENCY[window_key] = latency_ms
         return p_ai
     except Exception as e:
         logger.debug("bedrock_signal_failed", extra={"error": str(e)})
         return None
+
+
+def get_last_latency(window_key: str) -> float:
+    """Return last Bedrock inference latency in ms for a window key (0 if not called)."""
+    return _LAST_LATENCY.get(window_key, 0.0)
 
 
 def blend_probabilities(p_bayesian: float, p_ai: float | None, ai_weight: float = 0.3) -> float:

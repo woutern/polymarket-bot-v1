@@ -32,7 +32,10 @@ CREATE TABLE IF NOT EXISTS trades (
     ev REAL DEFAULT 0,
     outcome_source TEXT DEFAULT 'coinbase_inferred',
     polymarket_winner TEXT,
-    correct_prediction INTEGER
+    correct_prediction INTEGER,
+    latency_signal_ms REAL DEFAULT 0,
+    latency_order_ms REAL DEFAULT 0,
+    latency_bedrock_ms REAL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS windows (
@@ -67,6 +70,9 @@ _MIGRATIONS = [
     "ALTER TABLE windows ADD COLUMN trades_executed INTEGER DEFAULT 0",
     "ALTER TABLE windows ADD COLUMN rejection_reason TEXT DEFAULT ''",
     "ALTER TABLE windows ADD COLUMN polymarket_winner TEXT",
+    "ALTER TABLE trades ADD COLUMN latency_signal_ms REAL DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN latency_order_ms REAL DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN latency_bedrock_ms REAL DEFAULT 0",
 ]
 
 
@@ -100,11 +106,12 @@ class Database:
             """INSERT OR REPLACE INTO trades
                (id, timestamp, window_slug, source, direction, side, price, size_usd, fill_price,
                 pnl, resolved, mode, asset, p_bayesian, p_ai, p_final, pct_move, seconds_remaining,
-                ev, outcome_source, polymarket_winner, correct_prediction)
+                ev, outcome_source, polymarket_winner, correct_prediction,
+                latency_signal_ms, latency_order_ms, latency_bedrock_ms)
                VALUES (:id, :timestamp, :window_slug, :source, :direction, :side, :price, :size_usd,
                        :fill_price, :pnl, :resolved, :mode, :asset, :p_bayesian, :p_ai, :p_final,
                        :pct_move, :seconds_remaining, :ev, :outcome_source, :polymarket_winner,
-                       :correct_prediction)""",
+                       :correct_prediction, :latency_signal_ms, :latency_order_ms, :latency_bedrock_ms)""",
             {
                 "mode": "paper",
                 "asset": "",
@@ -117,6 +124,9 @@ class Database:
                 "outcome_source": "coinbase_inferred",
                 "polymarket_winner": None,
                 "correct_prediction": None,
+                "latency_signal_ms": 0.0,
+                "latency_order_ms": 0.0,
+                "latency_bedrock_ms": 0.0,
                 **trade,
             },
         )

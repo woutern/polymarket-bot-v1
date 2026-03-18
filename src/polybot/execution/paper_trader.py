@@ -28,7 +28,7 @@ class PaperTrader:
         self.db = db
         self.open_positions: list[TradeRecord] = []
 
-    async def execute(self, signal: Signal) -> TradeRecord | None:
+    async def execute(self, signal: Signal, signal_ms: float = 0, bedrock_ms: float = 0) -> TradeRecord | None:
         """Execute a paper trade from a signal."""
         if not self.risk.can_trade():
             logger.warning("paper_trade_blocked", reason="circuit_breaker")
@@ -77,6 +77,9 @@ class PaperTrader:
             fill_price=signal.market_price,  # Paper: fill at ask
             asset=signal.asset,
             mode="paper",
+            latency_signal_ms=signal_ms,
+            latency_order_ms=0.0,
+            latency_bedrock_ms=bedrock_ms,
             p_bayesian=signal.p_bayesian,
             p_ai=signal.p_ai,
             p_final=signal.model_prob,
@@ -197,4 +200,7 @@ class PaperTrader:
             "outcome_source": trade.outcome_source,
             "polymarket_winner": trade.polymarket_winner,
             "correct_prediction": None if trade.correct_prediction is None else int(trade.correct_prediction),
+            "latency_signal_ms": trade.latency_signal_ms,
+            "latency_order_ms": trade.latency_order_ms,
+            "latency_bedrock_ms": trade.latency_bedrock_ms,
         }

@@ -59,7 +59,7 @@ class LiveTrader:
         )
         logger.info("live_trader_initialized", chain_id=settings.polymarket_chain_id)
 
-    async def execute(self, signal: Signal, yes_token_id: str, no_token_id: str) -> TradeRecord | None:
+    async def execute(self, signal: Signal, yes_token_id: str, no_token_id: str, signal_ms: float = 0, bedrock_ms: float = 0) -> TradeRecord | None:
         """Execute a live order from a signal.
 
         Args:
@@ -83,7 +83,7 @@ class LiveTrader:
         if size <= 0:
             return None
 
-        return await self._execute_directional(signal, yes_token_id, no_token_id, size)
+        return await self._execute_directional(signal, yes_token_id, no_token_id, size, signal_ms, bedrock_ms)
 
     async def _execute_directional(
         self,
@@ -91,6 +91,8 @@ class LiveTrader:
         yes_token_id: str,
         no_token_id: str,
         size: float,
+        signal_ms: float = 0,
+        bedrock_ms: float = 0,
     ) -> TradeRecord | None:
         """Place a FOK directional order.
 
@@ -118,8 +120,10 @@ class LiveTrader:
         options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
 
         try:
+            t_order_start = time.time()
             signed = self.client.create_order(order_args, options)
             resp = self.client.post_order(signed, OrderType.FOK)
+            order_ms = (time.time() - t_order_start) * 1000
             order_id = resp.get("orderID", "") if resp else ""
             success = resp.get("success", False) if resp else False
 
@@ -141,6 +145,9 @@ class LiveTrader:
                 size_usd=actual_cost,
                 order_id=order_id,
                 slug=signal.window_slug,
+                latency_signal_ms=round(signal_ms, 1),
+                latency_order_ms=round(order_ms, 1),
+                latency_bedrock_ms=round(bedrock_ms, 1),
             )
 
             trade = TradeRecord(
@@ -182,6 +189,9 @@ class LiveTrader:
                 "pct_move": trade.pct_move,
                 "seconds_remaining": trade.seconds_remaining,
                 "ev": trade.ev,
+                "latency_signal_ms": round(signal_ms, 1),
+                "latency_order_ms": round(order_ms, 1),
+                "latency_bedrock_ms": round(bedrock_ms, 1),
             })
             return trade
 

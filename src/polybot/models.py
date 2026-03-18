@@ -135,6 +135,10 @@ class TradeRecord:
     outcome_source: str = "coinbase_inferred"   # "coinbase_inferred" | "polymarket_verified"
     polymarket_winner: str | None = None         # "YES" | "NO" | None (pending)
     correct_prediction: bool | None = None       # Did our direction match Polymarket outcome?
+    # Latency instrumentation (ms)
+    latency_signal_ms: float = 0.0      # Signal generation time (incl. Bedrock if used)
+    latency_order_ms: float = 0.0       # Order sign + POST round-trip
+    latency_bedrock_ms: float = 0.0     # Bedrock inference time (0 if skipped)
 
 
 @dataclass
