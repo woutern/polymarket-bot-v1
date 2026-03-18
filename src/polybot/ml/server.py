@@ -7,14 +7,14 @@ Falls back to 0.5 (neutral) if no model available.
 from __future__ import annotations
 
 import io
-import logging
 import os
 import pickle
 import time
 
 import numpy as np
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 PAIRS = ["BTC_5m", "BTC_15m", "ETH_5m", "ETH_15m", "SOL_5m", "SOL_15m"]
 
@@ -58,15 +58,16 @@ class ModelServer:
                     except Exception:
                         self._model_ages[pair] = time.time()
 
-                    logger.info(f"model_loaded pair={pair} path={s3_path}")
+                    age_h = round((time.time() - self._model_ages[pair]) / 3600, 1)
+                    logger.info("model_loaded", pair=pair, path=s3_path, age_hours=age_h)
                 except ssm.exceptions.ParameterNotFound:
-                    logger.debug(f"no_model pair={pair}")
+                    logger.debug("no_model", pair=pair)
                 except Exception as e:
-                    logger.warning(f"model_load_failed pair={pair} error={str(e)[:80]}")
+                    logger.warning("model_load_failed", pair=pair, error=str(e)[:80])
 
             self._last_refresh = time.time()
         except Exception as e:
-            logger.warning(f"model_server_init_failed error={str(e)[:80]}")
+            logger.warning("model_server_init_failed", error=str(e)[:80])
 
     def predict(self, pair: str, features: dict) -> float:
         """Return calibrated probability. 0.5 if no model."""
@@ -86,7 +87,7 @@ class ModelServer:
             final = isotonic.predict([platt_prob])[0]
             return float(max(0.01, min(0.99, final)))
         except Exception as e:
-            logger.debug(f"predict_failed pair={pair} error={str(e)[:60]}")
+            logger.debug("predict_failed", pair=pair, error=str(e)[:60])
             return 0.5
 
     def get_model_age_hours(self, pair: str) -> float:
