@@ -65,6 +65,39 @@ async def get_orderbook(token_id: str) -> dict:
         return resp.json()
 
 
+async def get_market_outcome(slug: str) -> tuple[str | None, str]:
+    """Query Gamma API for the resolved outcome of a market.
+
+    Returns:
+        (winner, source) where winner is "YES" | "NO" | None (pending),
+        and source is "polymarket_verified" | "pending".
+    """
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            f"{GAMMA_URL}/markets",
+            params={"slug": slug},
+        )
+        if resp.status_code != 200:
+            return None, "pending"
+        markets = resp.json()
+        if not markets:
+            return None, "pending"
+        m = markets[0]
+        prices = m.get("outcomePrices", [])
+        if len(prices) >= 2:
+            yes_price = float(prices[0])
+            # Conclusive even before "closed" flag — Gamma API can lag
+            if yes_price >= 0.99:
+                return "YES", "polymarket_verified"
+            if yes_price <= 0.01:
+                return "NO", "polymarket_verified"
+        if m.get("closed") and len(prices) >= 2:
+            yes_price = float(prices[0])
+            winner = "YES" if yes_price >= 0.5 else "NO"
+            return winner, "polymarket_verified"
+        return None, "pending"
+
+
 async def get_prices_history(
     token_id: str,
     interval: str = "1m",

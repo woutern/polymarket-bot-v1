@@ -7,6 +7,7 @@ import uuid
 
 import structlog
 
+from polybot.feeds.polymarket_rest import get_market_outcome
 from polybot.models import Direction, OrderbookSnapshot, Signal, TradeRecord
 from polybot.risk.manager import RiskManager
 from polybot.storage.db import Database
@@ -56,16 +57,13 @@ class PaperTrader:
             bankroll=self.risk.bankroll,
             kelly_mult=0.25,
             max_position_pct=self.risk.max_position_pct,
+            min_trade_usd=self.risk.min_trade_usd,
+            max_trade_usd=self.risk.max_trade_usd,
         )
         if size <= 0:
             return None
 
-        # Determine which side to buy
-        if signal.source.value == "arbitrage":
-            # For arbitrage, we'd buy both YES and NO — simplified here
-            side = "YES"
-        else:
-            side = "YES" if signal.direction == Direction.UP else "NO"
+        side = "YES" if signal.direction == Direction.UP else "NO"
 
         trade = TradeRecord(
             id=str(uuid.uuid4())[:8],
@@ -78,27 +76,19 @@ class PaperTrader:
             size_usd=size,
             fill_price=signal.market_price,  # Paper: fill at ask
             asset=signal.asset,
+            mode="paper",
+            p_bayesian=signal.p_bayesian,
+            p_ai=signal.p_ai,
+            p_final=signal.model_prob,
+            pct_move=signal.pct_move,
+            seconds_remaining=signal.seconds_remaining,
+            ev=signal.ev,
+            outcome_source="coinbase_inferred",
         )
 
         self.open_positions.append(trade)
 
-        await self.db.insert_trade(
-            {
-                "id": trade.id,
-                "timestamp": trade.timestamp,
-                "window_slug": trade.window_slug,
-                "source": trade.source,
-                "direction": trade.direction,
-                "side": trade.side,
-                "price": trade.price,
-                "size_usd": trade.size_usd,
-                "fill_price": trade.fill_price,
-                "pnl": None,
-                "resolved": 0,
-                "mode": "paper",
-                "asset": trade.asset,
-            }
-        )
+        await self.db.insert_trade(self._trade_to_dict(trade))
 
         logger.info(
             "paper_trade_executed",
@@ -108,48 +98,32 @@ class PaperTrader:
             size=trade.size_usd,
             source=trade.source,
             slug=trade.window_slug,
+            p_bayesian=round(trade.p_bayesian, 4),
+            p_ai=round(trade.p_ai, 4) if trade.p_ai is not None else None,
+            p_final=round(trade.p_final, 4),
+            pct_move=round(trade.pct_move, 4),
+            ev=round(trade.ev, 4),
         )
         return trade
 
     async def resolve_window(self, window_slug: str, went_up: bool):
-        """Resolve all open positions for a completed window."""
+        """Resolve all open positions for a completed window (Coinbase-based)."""
         to_resolve = [p for p in self.open_positions if p.window_slug == window_slug]
 
         for trade in to_resolve:
-            # Did we win?
-            if trade.source == "arbitrage":
-                # Arbitrage always wins: profit = 1.0 - total_cost
-                pnl = (1.0 - trade.price) * (trade.size_usd / trade.price)
+            won = (trade.side == "YES" and went_up) or (trade.side == "NO" and not went_up)
+            if won:
+                # Bought at `price`, pays out $1 per share
+                shares = trade.size_usd / trade.fill_price
+                pnl = shares * (1.0 - trade.fill_price)
             else:
-                won = (trade.side == "YES" and went_up) or (trade.side == "NO" and not went_up)
-                if won:
-                    # Bought at `price`, pays out $1 per share
-                    shares = trade.size_usd / trade.fill_price
-                    pnl = shares * (1.0 - trade.fill_price)
-                else:
-                    pnl = -trade.size_usd
+                pnl = -trade.size_usd
 
             trade.pnl = pnl
             trade.resolved = True
             self.risk.record_trade(pnl)
 
-            await self.db.insert_trade(
-                {
-                    "id": trade.id,
-                    "timestamp": trade.timestamp,
-                    "window_slug": trade.window_slug,
-                    "source": trade.source,
-                    "direction": trade.direction,
-                    "side": trade.side,
-                    "price": trade.price,
-                    "size_usd": trade.size_usd,
-                    "fill_price": trade.fill_price,
-                    "pnl": trade.pnl,
-                    "resolved": 1,
-                    "mode": "paper",
-                    "asset": trade.asset,
-                }
-            )
+            await self.db.insert_trade(self._trade_to_dict(trade))
 
             logger.info(
                 "paper_trade_resolved",
@@ -158,6 +132,69 @@ class PaperTrader:
                 won=pnl > 0,
                 pnl=round(pnl, 4),
                 slug=trade.window_slug,
+                outcome_source=trade.outcome_source,
             )
 
         self.open_positions = [p for p in self.open_positions if p.window_slug != window_slug]
+
+    async def verify_and_update(self, window_slug: str):
+        """Query Polymarket Gamma API to verify actual outcome and update trade records.
+
+        Called 30s after window close — overrides Coinbase-inferred resolution
+        with the authoritative Chainlink-based result from Polymarket.
+        """
+        try:
+            winner, source = await get_market_outcome(window_slug)
+            if winner is None:
+                logger.info("outcome_verification_pending", slug=window_slug)
+                return
+
+            trades = await self.db.get_trades(window_slug=window_slug)
+            for t in trades:
+                if not t.get("resolved"):
+                    continue
+                side = t.get("side", "")
+                correct = (side == winner)
+                await self.db.update_trade_outcome(
+                    trade_id=t["id"],
+                    polymarket_winner=winner,
+                    correct_prediction=correct,
+                    outcome_source=source,
+                )
+                logger.info(
+                    "outcome_verified",
+                    id=t["id"],
+                    slug=window_slug,
+                    polymarket_winner=winner,
+                    our_side=side,
+                    correct=correct,
+                    source=source,
+                )
+        except Exception as e:
+            logger.warning("verify_and_update_failed", slug=window_slug, error=str(e))
+
+    def _trade_to_dict(self, trade: TradeRecord) -> dict:
+        return {
+            "id": trade.id,
+            "timestamp": trade.timestamp,
+            "window_slug": trade.window_slug,
+            "source": trade.source,
+            "direction": trade.direction,
+            "side": trade.side,
+            "price": trade.price,
+            "size_usd": trade.size_usd,
+            "fill_price": trade.fill_price,
+            "pnl": trade.pnl,
+            "resolved": int(trade.resolved),
+            "mode": trade.mode,
+            "asset": trade.asset,
+            "p_bayesian": trade.p_bayesian,
+            "p_ai": trade.p_ai,
+            "p_final": trade.p_final,
+            "pct_move": trade.pct_move,
+            "seconds_remaining": trade.seconds_remaining,
+            "ev": trade.ev,
+            "outcome_source": trade.outcome_source,
+            "polymarket_winner": trade.polymarket_winner,
+            "correct_prediction": None if trade.correct_prediction is None else int(trade.correct_prediction),
+        }

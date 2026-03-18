@@ -114,17 +114,42 @@ def test_compute_size_negative_bankroll():
     assert size == 0.0
 
 
-def test_compute_size_below_minimum_returns_zero():
-    """Very tiny bankroll means size < $1 → returns 0."""
-    size = compute_size(0.7, 0.55, bankroll=5.0)
-    # 1% of 5 = 0.05, but capped at $10; 0.05 < 1.0 threshold
+def test_compute_size_small_bankroll_uses_min_floor():
+    """With tiny bankroll, Kelly gives less than min_trade_usd → min floor applied."""
+    size = compute_size(0.7, 0.55, bankroll=5.0, min_trade_usd=1.0, max_trade_usd=10.0)
+    # 1% of $5 = $0.05 → below $1 floor → min_trade_usd kicks in → $1.0
+    assert size == 1.0
+
+
+def test_compute_size_small_bankroll_custom_min():
+    """min_trade_usd=0 disables the floor — returns raw Kelly size."""
+    size = compute_size(0.7, 0.55, bankroll=5.0, min_trade_usd=0.0, max_trade_usd=10.0)
+    # Kelly fraction of $5 bankroll at 1% cap = $0.05 — small but non-zero
+    assert 0 < size < 1.0
+
+
+def test_compute_size_hard_cap_via_max_trade_usd():
+    """max_trade_usd caps size regardless of bankroll."""
+    size = compute_size(0.99, 0.01, bankroll=100_000, max_position_pct=1.0, max_trade_usd=10.0)
+    assert size <= 10.0
+
+
+def test_compute_size_fixed_one_dollar_on_any_positive_edge():
+    """min_trade_usd=max_trade_usd=1 → flat $1 on every valid signal."""
+    size = compute_size(0.70, 0.55, bankroll=43.0, min_trade_usd=1.0, max_trade_usd=1.0)
+    assert size == 1.0
+
+
+def test_compute_size_zero_bankroll_returns_zero():
+    """Bankroll=0 always returns 0 regardless of min_trade_usd."""
+    size = compute_size(0.8, 0.5, bankroll=0.0, min_trade_usd=1.0)
     assert size == 0.0
 
 
-def test_compute_size_hard_cap_at_ten():
-    """Size is always capped at $10."""
-    size = compute_size(0.99, 0.01, bankroll=100_000, max_position_pct=1.0)
-    assert size <= 10.0
+def test_compute_size_negative_bankroll_returns_zero():
+    """Negative bankroll always returns 0."""
+    size = compute_size(0.8, 0.5, bankroll=-500.0, min_trade_usd=1.0)
+    assert size == 0.0
 
 
 def test_compute_size_model_prob_p_zero():

@@ -28,6 +28,8 @@ def compute_size(
     bankroll: float,
     kelly_mult: float = 0.25,
     max_position_pct: float = 0.01,
+    min_trade_usd: float = 1.0,
+    max_trade_usd: float = 10.0,
 ) -> float:
     """Compute position size in USD.
 
@@ -37,11 +39,15 @@ def compute_size(
         bankroll: Current bankroll in USD.
         kelly_mult: Kelly multiplier (0.25 = quarter Kelly).
         max_position_pct: Maximum fraction of bankroll per trade.
+        min_trade_usd: Minimum trade size in USD (Polymarket minimum is $1).
+        max_trade_usd: Hard cap per trade in USD.
 
     Returns:
         Position size in USD (0 if no bet).
     """
     if market_price <= 0 or market_price >= 1:
+        return 0.0
+    if bankroll <= 0:
         return 0.0
 
     # Net odds: if we pay 0.60, we win 0.40 profit → b = 0.40/0.60
@@ -51,9 +57,12 @@ def compute_size(
     if f <= 0:
         return 0.0
 
-    # Apply cap
+    # Apply bankroll % cap
     f = min(f, max_position_pct)
     size = round(f * bankroll, 2)
-    # Polymarket minimum order is $1; cap at $10 to limit risk per trade
-    size = min(size, 10.0)
-    return size if size >= 1.0 else 0.0
+
+    # Apply hard caps — min_trade_usd acts as floor (always bet at least this
+    # much when there's positive edge), max_trade_usd prevents outsized bets.
+    size = max(size, min_trade_usd)
+    size = min(size, max_trade_usd)
+    return size

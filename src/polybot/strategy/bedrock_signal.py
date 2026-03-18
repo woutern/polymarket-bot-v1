@@ -1,13 +1,13 @@
 """AWS Bedrock (Claude Sonnet 4.6) AI signal layer.
 
-Calls Bedrock once per entry zone (max 1 call/window) to get an AI-driven
+Calls Bedrock once per entry zone (max 1 call/20s per window) to get an AI-driven
 probability adjustment on top of the Bayesian estimate.
 
-The AI receives: asset, pct_move, seconds_remaining, yes_ask, no_ask, p_up_bayesian
-and returns a JSON object with: {"p_up_ai": 0.65, "confidence": "medium", "reason": "..."}
+The AI receives full context: asset, price action, market prices, base rates, Bayesian estimate.
+Returns JSON: {"p_up": float, "confidence": 1-5, "key_factor": "<5 words"}
 
-This is additive — the final probability is a weighted blend:
-  p_final = 0.7 * p_bayesian + 0.3 * p_ai
+Final probability is a weighted blend:
+  p_final = (1 - ai_weight) * p_bayesian + ai_weight * p_ai
 """
 
 from __future__ import annotations
@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 
 # Model: cross-region inference in eu-west-1
 _MODEL_ID = "eu.anthropic.claude-sonnet-4-6-20251001-v1:0"
-_MAX_TOKENS = 120
+_MAX_TOKENS = 150
 _LAST_CALL: dict[str, float] = {}  # key → timestamp, rate-limit per key
-_MIN_INTERVAL = 60.0  # at most once per 60s per asset key
+_MIN_INTERVAL = 20.0  # at most once per 20s per window key (down from 60s)
 
 _client = None
 
@@ -41,6 +41,29 @@ def _get_client():
     return _client
 
 
+def _momentum_description(pct_move: float, seconds_remaining: float) -> str:
+    """Human-readable momentum label for the prompt."""
+    abs_move = abs(pct_move)
+    direction = "up" if pct_move > 0 else "down"
+    if abs_move >= 0.5:
+        strength = "strong"
+    elif abs_move >= 0.2:
+        strength = "moderate"
+    else:
+        strength = "mild"
+    time_label = "late" if seconds_remaining < 30 else "mid" if seconds_remaining < 90 else "early"
+    return f"{strength} {direction}move, {time_label}-window"
+
+
+def _liquidity_description(spread: float) -> str:
+    if spread < 0.03:
+        return "tight — good liquidity"
+    elif spread < 0.08:
+        return "moderate"
+    else:
+        return "wide — thin book"
+
+
 def get_ai_probability(
     asset: str,
     window_key: str,
@@ -48,7 +71,11 @@ def get_ai_probability(
     seconds_remaining: float,
     yes_ask: float,
     no_ask: float,
+    yes_bid: float,
+    no_bid: float,
     p_bayesian: float,
+    open_price: float,
+    current_price: float,
 ) -> float | None:
     """Query Bedrock for an AI probability estimate.
 
@@ -66,18 +93,25 @@ def get_ai_probability(
         return None
 
     direction = "UP" if pct_move >= 0 else "DOWN"
+    spread = yes_ask - yes_bid if direction == "UP" else no_ask - no_bid
+    momentum_desc = _momentum_description(pct_move, seconds_remaining)
+    liquidity_desc = _liquidity_description(spread)
+
     prompt = (
-        f"You are a crypto prediction market specialist. Analyze this Polymarket binary market:\n\n"
-        f"Asset: {asset}/USD\n"
-        f"Current price move from window open: {pct_move:+.3f}%\n"
-        f"Direction: {direction}\n"
-        f"Seconds remaining in 5/15-min window: {seconds_remaining:.0f}s\n"
-        f"YES token ask price: {yes_ask:.3f} (market implies {yes_ask*100:.1f}% prob UP)\n"
-        f"NO token ask price: {no_ask:.3f} (market implies {no_ask*100:.1f}% prob DOWN)\n"
-        f"Bayesian model p(UP): {p_bayesian:.4f}\n\n"
-        f"Resolution: UP if price at window close >= price at window open (Chainlink oracle).\n\n"
-        f"Respond ONLY with valid JSON: "
-        f'{{\"p_up\": <float 0-1>, \"confidence\": \"low|medium|high\", \"reason\": \"<10 words max>\"}}'
+        f"Asset: {asset}/USD | Direction: {direction} | Seconds remaining: {seconds_remaining:.0f}s\n\n"
+        f"PRICE ACTION:\n"
+        f"  Move from window open: {pct_move:+.3f}% ({momentum_desc})\n"
+        f"  Open: {open_price:.2f} | Current: {current_price:.2f}\n\n"
+        f"MARKET PRICES (Polymarket):\n"
+        f"  YES ask: {yes_ask:.3f} (implied {yes_ask*100:.1f}% prob UP)\n"
+        f"  NO ask:  {no_ask:.3f}\n"
+        f"  Spread:  {spread:.3f} — {liquidity_desc}\n\n"
+        f"BAYESIAN MODEL:\n"
+        f"  Current estimate: P(close_up) = {p_bayesian:.4f}\n"
+        f"  Evidence: {seconds_remaining:.0f}s of {asset} price data in this window\n\n"
+        f"Estimate P(close_up) using Chainlink resolution (not Coinbase). "
+        f"Return JSON only: "
+        f'{{\"p_up\": <float 0-1>, \"confidence\": <1-5>, \"key_factor\": \"<5 words max>\"}}'
     )
 
     try:
@@ -92,13 +126,15 @@ def get_ai_probability(
         parsed = json.loads(text)
         p_ai = float(parsed.get("p_up", p_bayesian))
         p_ai = max(0.01, min(0.99, p_ai))
-        logger.debug(
+        logger.info(
             "bedrock_signal",
             extra={
                 "asset": asset,
                 "p_ai": round(p_ai, 4),
+                "p_bayesian": round(p_bayesian, 4),
                 "confidence": parsed.get("confidence"),
-                "reason": parsed.get("reason"),
+                "key_factor": parsed.get("key_factor"),
+                "window_key": window_key,
             },
         )
         return p_ai

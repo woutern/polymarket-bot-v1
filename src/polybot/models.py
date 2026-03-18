@@ -13,9 +13,7 @@ class Direction(Enum):
 
 
 class SignalSource(Enum):
-    ARBITRAGE = "arbitrage"
     DIRECTIONAL = "directional"
-    WALLET = "wallet"
 
 
 SLUG_PREFIXES = {
@@ -41,6 +39,12 @@ class Window:
     condition_id: str = ""
     yes_token_id: str = ""
     no_token_id: str = ""
+    # Signal tracking
+    signals_fired: int = 0
+    trades_executed: int = 0
+    rejection_reason: str = ""
+    polymarket_winner: str | None = None  # "YES" | "NO" once verified
+    max_pct_move: float = 0.0  # Max price move seen in this window
 
     @property
     def resolved_direction(self) -> Direction | None:
@@ -80,16 +84,27 @@ class OrderbookSnapshot:
 
 @dataclass
 class Signal:
-    """A trading signal from a strategy."""
+    """A trading signal from the directional strategy."""
 
     source: SignalSource
     direction: Direction
-    model_prob: float
-    market_price: float
-    ev: float
+    model_prob: float        # Final blended probability
+    market_price: float      # Ask price at entry
+    ev: float                # (model_prob - market_price) / market_price
     size_usd: float = 0.0
     window_slug: str = ""
     asset: str = "BTC"
+    # Component probabilities (for analysis / AI improvement)
+    p_bayesian: float = 0.0          # Pure Bayesian component (before AI blend)
+    p_ai: float | None = None        # AI component (None if Bedrock skipped)
+    # Price context at signal time
+    pct_move: float = 0.0            # % price move from window open
+    seconds_remaining: float = 0.0  # How many seconds left in window
+    yes_ask: float = 0.0             # YES token ask at signal time
+    no_ask: float = 0.0              # NO token ask at signal time
+    yes_bid: float = 0.0             # YES token bid (for spread calc)
+    no_bid: float = 0.0              # NO token bid
+    open_price: float = 0.0         # Window open price
 
 
 @dataclass
@@ -108,6 +123,18 @@ class TradeRecord:
     fill_price: float | None = None
     pnl: float | None = None
     resolved: bool = False
+    mode: str = "paper"
+    # Signal metadata at entry (for analysis)
+    p_bayesian: float = 0.0
+    p_ai: float | None = None
+    p_final: float = 0.0
+    pct_move: float = 0.0
+    seconds_remaining: float = 0.0
+    ev: float = 0.0
+    # Outcome verification (filled async after window closes)
+    outcome_source: str = "coinbase_inferred"   # "coinbase_inferred" | "polymarket_verified"
+    polymarket_winner: str | None = None         # "YES" | "NO" | None (pending)
+    correct_prediction: bool | None = None       # Did our direction match Polymarket outcome?
 
 
 @dataclass
@@ -121,19 +148,3 @@ class MarketInfo:
     no_token_id: str = ""
     end_date: str = ""
     active: bool = False
-
-
-@dataclass
-class DailyStats:
-    """Daily performance tracking."""
-
-    date: str = ""
-    trades: int = 0
-    wins: int = 0
-    losses: int = 0
-    gross_pnl: float = 0.0
-    fees: float = 0.0
-    net_pnl: float = 0.0
-    max_drawdown: float = 0.0
-    bankroll_start: float = 0.0
-    bankroll_end: float = 0.0

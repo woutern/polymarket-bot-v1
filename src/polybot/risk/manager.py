@@ -18,6 +18,8 @@ class RiskManager:
     bankroll: float = 1000.0
     daily_loss_cap_pct: float = 0.05
     max_position_pct: float = 0.01
+    min_trade_usd: float = 1.0
+    max_trade_usd: float = 10.0
 
     # Internal state
     daily_pnl: float = 0.0

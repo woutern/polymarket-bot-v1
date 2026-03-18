@@ -30,7 +30,6 @@ class LiveTrader:
     Order strategy:
       - FOK (Fill-or-Kill): preferred for T-10s entries — either fills
         immediately at the ask or doesn't fill at all. No partial hangers.
-      - GTC fallback for arbitrage (both legs placed as limits).
     """
 
     def __init__(self, settings: Settings, risk: RiskManager, db: Database):
@@ -78,14 +77,13 @@ class LiveTrader:
             bankroll=self.risk.bankroll,
             kelly_mult=self.settings.kelly_fraction,
             max_position_pct=self.settings.max_position_pct,
+            min_trade_usd=self.settings.min_trade_usd,
+            max_trade_usd=self.settings.max_trade_usd,
         )
         if size <= 0:
             return None
 
-        if signal.source.value == "arbitrage":
-            return await self._execute_arbitrage(signal, yes_token_id, no_token_id, size)
-        else:
-            return await self._execute_directional(signal, yes_token_id, no_token_id, size)
+        return await self._execute_directional(signal, yes_token_id, no_token_id, size)
 
     async def _execute_directional(
         self,
@@ -151,33 +149,6 @@ class LiveTrader:
         except Exception as e:
             logger.error("live_order_failed", error=str(e), side=side, slug=signal.window_slug)
             return None
-
-    async def _execute_arbitrage(
-        self,
-        signal: Signal,
-        yes_token_id: str,
-        no_token_id: str,
-        size: float,
-    ) -> TradeRecord | None:
-        """Place both YES and NO legs for arbitrage.
-
-        Buys YES and NO simultaneously. If YES fills but NO doesn't,
-        we're left with a one-sided position — acceptable given the
-        locked profit on the YES leg vs a small NO miss.
-        """
-        yes_price = signal.market_price  # total_cost is stored as market_price
-        # For arb, the signal.market_price is YES_ask + NO_ask (total cost)
-        # We need individual prices — re-derive from the orderbook
-        # TODO: pass individual prices through Signal for arb case
-        logger.info(
-            "arb_order_placing",
-            total_cost=signal.market_price,
-            size_usd=size,
-            slug=signal.window_slug,
-        )
-        # Simplified: execute as a single YES order for now
-        # Full arb requires atomic execution of both legs
-        return await self._execute_directional(signal, yes_token_id, no_token_id, size / 2)
 
     async def resolve_window(self, window_slug: str, went_up: bool):
         """Record resolution of a window's positions (P&L calculation).

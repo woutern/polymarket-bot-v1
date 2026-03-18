@@ -1,4 +1,4 @@
-"""SQLite storage for trades, windows, and daily stats.
+"""SQLite storage for trades and windows.
 
 Also mirrors writes to DynamoDB for dashboard access.
 """
@@ -22,8 +22,17 @@ CREATE TABLE IF NOT EXISTS trades (
     fill_price REAL,
     pnl REAL,
     resolved INTEGER DEFAULT 0,
-    mode TEXT DEFAULT 'live',
-    asset TEXT
+    mode TEXT DEFAULT 'paper',
+    asset TEXT,
+    p_bayesian REAL DEFAULT 0,
+    p_ai REAL,
+    p_final REAL DEFAULT 0,
+    pct_move REAL DEFAULT 0,
+    seconds_remaining REAL DEFAULT 0,
+    ev REAL DEFAULT 0,
+    outcome_source TEXT DEFAULT 'coinbase_inferred',
+    polymarket_winner TEXT,
+    correct_prediction INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS windows (
@@ -33,21 +42,32 @@ CREATE TABLE IF NOT EXISTS windows (
     open_price REAL,
     close_price REAL,
     direction TEXT,
-    condition_id TEXT
-);
-
-CREATE TABLE IF NOT EXISTS daily_stats (
-    date TEXT PRIMARY KEY,
-    trades INTEGER,
-    wins INTEGER,
-    losses INTEGER,
-    gross_pnl REAL,
-    net_pnl REAL,
-    max_drawdown REAL,
-    bankroll_start REAL,
-    bankroll_end REAL
+    condition_id TEXT,
+    asset TEXT,
+    signals_fired INTEGER DEFAULT 0,
+    trades_executed INTEGER DEFAULT 0,
+    rejection_reason TEXT DEFAULT '',
+    polymarket_winner TEXT
 );
 """
+
+# Migration: add new columns to existing tables if they don't exist
+_MIGRATIONS = [
+    "ALTER TABLE trades ADD COLUMN p_bayesian REAL DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN p_ai REAL",
+    "ALTER TABLE trades ADD COLUMN p_final REAL DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN pct_move REAL DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN seconds_remaining REAL DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN ev REAL DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN outcome_source TEXT DEFAULT 'coinbase_inferred'",
+    "ALTER TABLE trades ADD COLUMN polymarket_winner TEXT",
+    "ALTER TABLE trades ADD COLUMN correct_prediction INTEGER",
+    "ALTER TABLE windows ADD COLUMN asset TEXT",
+    "ALTER TABLE windows ADD COLUMN signals_fired INTEGER DEFAULT 0",
+    "ALTER TABLE windows ADD COLUMN trades_executed INTEGER DEFAULT 0",
+    "ALTER TABLE windows ADD COLUMN rejection_reason TEXT DEFAULT ''",
+    "ALTER TABLE windows ADD COLUMN polymarket_winner TEXT",
+]
 
 
 class Database:
@@ -63,6 +83,13 @@ class Database:
         self._db = await aiosqlite.connect(self.path)
         await self._db.executescript(SCHEMA)
         await self._db.commit()
+        # Run migrations (ignore errors for columns that already exist)
+        for sql in _MIGRATIONS:
+            try:
+                await self._db.execute(sql)
+                await self._db.commit()
+            except Exception:
+                pass  # Column already exists
 
     async def close(self):
         if self._db:
@@ -71,10 +98,27 @@ class Database:
     async def insert_trade(self, trade: dict):
         await self._db.execute(
             """INSERT OR REPLACE INTO trades
-               (id, timestamp, window_slug, source, direction, side, price, size_usd, fill_price, pnl, resolved, mode, asset)
-               VALUES (:id, :timestamp, :window_slug, :source, :direction, :side, :price, :size_usd, :fill_price, :pnl, :resolved,
-                       :mode, :asset)""",
-            {**trade, "mode": trade.get("mode", "live"), "asset": trade.get("asset", "")},
+               (id, timestamp, window_slug, source, direction, side, price, size_usd, fill_price,
+                pnl, resolved, mode, asset, p_bayesian, p_ai, p_final, pct_move, seconds_remaining,
+                ev, outcome_source, polymarket_winner, correct_prediction)
+               VALUES (:id, :timestamp, :window_slug, :source, :direction, :side, :price, :size_usd,
+                       :fill_price, :pnl, :resolved, :mode, :asset, :p_bayesian, :p_ai, :p_final,
+                       :pct_move, :seconds_remaining, :ev, :outcome_source, :polymarket_winner,
+                       :correct_prediction)""",
+            {
+                "mode": "paper",
+                "asset": "",
+                "p_bayesian": 0.0,
+                "p_ai": None,
+                "p_final": 0.0,
+                "pct_move": 0.0,
+                "seconds_remaining": 0.0,
+                "ev": 0.0,
+                "outcome_source": "coinbase_inferred",
+                "polymarket_winner": None,
+                "correct_prediction": None,
+                **trade,
+            },
         )
         await self._db.commit()
         if self._dynamo:
@@ -86,18 +130,20 @@ class Database:
     async def insert_window(self, window: dict):
         await self._db.execute(
             """INSERT OR REPLACE INTO windows
-               (slug, open_ts, close_ts, open_price, close_price, direction, condition_id)
-               VALUES (:slug, :open_ts, :close_ts, :open_price, :close_price, :direction, :condition_id)""",
-            window,
-        )
-        await self._db.commit()
-
-    async def insert_daily_stats(self, stats: dict):
-        await self._db.execute(
-            """INSERT OR REPLACE INTO daily_stats
-               (date, trades, wins, losses, gross_pnl, net_pnl, max_drawdown, bankroll_start, bankroll_end)
-               VALUES (:date, :trades, :wins, :losses, :gross_pnl, :net_pnl, :max_drawdown, :bankroll_start, :bankroll_end)""",
-            stats,
+               (slug, open_ts, close_ts, open_price, close_price, direction, condition_id,
+                asset, signals_fired, trades_executed, rejection_reason, polymarket_winner)
+               VALUES (:slug, :open_ts, :close_ts, :open_price, :close_price, :direction,
+                       :condition_id, :asset, :signals_fired, :trades_executed,
+                       :rejection_reason, :polymarket_winner)""",
+            {
+                "condition_id": "",
+                "asset": "",
+                "signals_fired": 0,
+                "trades_executed": 0,
+                "rejection_reason": "",
+                "polymarket_winner": None,
+                **window,
+            },
         )
         await self._db.commit()
 
@@ -115,10 +161,22 @@ class Database:
         cols = [d[0] for d in cursor.description]
         return [dict(zip(cols, row)) for row in rows]
 
-    async def get_daily_stats(self, days: int = 30) -> list[dict]:
-        cursor = await self._db.execute(
-            "SELECT * FROM daily_stats ORDER BY date DESC LIMIT ?", (days,)
+    async def update_trade_outcome(
+        self,
+        trade_id: str,
+        polymarket_winner: str,
+        correct_prediction: bool,
+        outcome_source: str = "polymarket_verified",
+    ):
+        """Update a trade record with verified Polymarket outcome."""
+        await self._db.execute(
+            """UPDATE trades
+               SET polymarket_winner = ?, correct_prediction = ?, outcome_source = ?
+               WHERE id = ?""",
+            (polymarket_winner, int(correct_prediction), outcome_source, trade_id),
         )
-        rows = await cursor.fetchall()
-        cols = [d[0] for d in cursor.description]
-        return [dict(zip(cols, row)) for row in rows]
+        await self._db.commit()
+
+    async def get_daily_stats(self, days: int = 30) -> list[dict]:
+        # daily_stats table removed; return empty for backwards compat
+        return []

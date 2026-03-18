@@ -25,6 +25,8 @@ def _make_trader():
     risk.can_trade.return_value = True
     risk.bankroll = 1000.0
     risk.max_position_pct = 0.01
+    risk.min_trade_usd = 1.0
+    risk.max_trade_usd = 10.0
     db = MagicMock()
     db.insert_trade = AsyncMock()
     return PaperTrader(risk=risk, db=db)

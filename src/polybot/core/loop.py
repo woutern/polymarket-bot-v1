@@ -19,7 +19,6 @@ from polybot.execution.live_trader import LiveTrader
 from polybot.execution.paper_trader import PaperTrader
 from polybot.feeds.coinbase_ws import CoinbaseWS
 from polybot.feeds.polymarket_rest import get_orderbook
-from polybot.market.balance_checker import BalanceChecker
 from polybot.market.market_resolver import resolve_window
 from polybot.market.window_tracker import WindowState, WindowTracker
 from polybot.models import Direction, OrderbookSnapshot, Window
@@ -112,6 +111,8 @@ class TradingLoop:
             bankroll=settings.bankroll,
             daily_loss_cap_pct=settings.daily_loss_cap_pct,
             max_position_pct=settings.max_position_pct,
+            min_trade_usd=settings.min_trade_usd,
+            max_trade_usd=settings.max_trade_usd,
         )
         self.db = Database()
         self.dynamo = DynamoStore()
@@ -142,9 +143,7 @@ class TradingLoop:
                     bayesian=BayesianUpdater(base_rates[asset]),
                 )
 
-        self.balance_checker = BalanceChecker()
         self._wallet_address: str = settings.polymarket_funder or ""
-        self._last_balance_check: float = 0.0
         self._last_claim_check: float = 0.0
         self._last_strategy_review: float = 0.0
         self._running = False
@@ -159,21 +158,18 @@ class TradingLoop:
 
         await self.db.connect()
 
-        if self._wallet_address and self.settings.mode == "live":
+        # Balance check at startup only (no longer in hot loop)
+        if self._wallet_address:
             try:
-                balances = await self.balance_checker.check(self._wallet_address)
+                from polybot.market.balance_checker import BalanceChecker
+                checker = BalanceChecker()
+                balances = await checker.check(self._wallet_address)
                 logger.info("wallet_balance", **balances)
-                polygon_usdc = balances.get("polygon_usdc", 0.0)
-                if polygon_usdc > 0 and abs(polygon_usdc - self.risk.bankroll) > 0.50:
-                    self.risk.bankroll = polygon_usdc
-                    logger.info("bankroll_updated_from_balance", bankroll=round(polygon_usdc, 2))
-            except Exception as e:
-                logger.warning("startup_balance_check_failed", error=str(e))
-        elif self._wallet_address:
-            # Paper mode: check balance for display only, don't override bankroll
-            try:
-                balances = await self.balance_checker.check(self._wallet_address)
-                logger.info("wallet_balance", **balances)
+                if self.settings.mode == "live":
+                    polygon_usdc = balances.get("polygon_usdc", 0.0)
+                    if polygon_usdc > 0 and abs(polygon_usdc - self.risk.bankroll) > 0.50:
+                        self.risk.bankroll = polygon_usdc
+                        logger.info("bankroll_updated_from_balance", bankroll=round(polygon_usdc, 2))
             except Exception as e:
                 logger.warning("startup_balance_check_failed", error=str(e))
 
@@ -247,24 +243,6 @@ class TradingLoop:
                 _last_price_log = time.time()  # reset so we don't spam
 
             await asyncio.sleep(0.25)
-
-            # Periodic balance refresh every 5 minutes
-            if self._wallet_address and (time.time() - self._last_balance_check) >= 300:
-                self._last_balance_check = time.time()
-                try:
-                    balances = await self.balance_checker.check(self._wallet_address)
-                    logger.info("wallet_balance", **balances)
-                    if self.settings.mode == "live":
-                        polygon_usdc = balances.get("polygon_usdc", 0.0)
-                        if polygon_usdc > 0 and abs(polygon_usdc - self.risk.bankroll) > 0.50:
-                            logger.info(
-                                "bankroll_updated_from_balance",
-                                old=round(self.risk.bankroll, 2),
-                                new=round(polygon_usdc, 2),
-                            )
-                            self.risk.bankroll = polygon_usdc
-                except Exception as e:
-                    logger.warning("periodic_balance_check_failed", error=str(e))
 
             # Periodic auto-claim every 10 minutes — live mode only
             if (
@@ -391,6 +369,10 @@ class TradingLoop:
 
         await self.trader.resolve_window(window.slug, went_up)
 
+        # Schedule Polymarket outcome verification 30s after window close
+        slug = window.slug
+        asyncio.create_task(self._verify_outcome_after_delay(slug, 30), name=f"verify_{slug}")
+
         window_record = {
             "slug": window.slug,
             "open_ts": window.open_ts,
@@ -406,6 +388,31 @@ class TradingLoop:
             self.dynamo.put_window(window_record)
         except Exception as e:
             logger.warning("dynamo_write_failed", error=str(e))
+
+    async def _verify_outcome_after_delay(self, window_slug: str, delay_seconds: int):
+        """Wait, then query Polymarket for the authoritative outcome."""
+        await asyncio.sleep(delay_seconds)
+        if isinstance(self.trader, PaperTrader):
+            await self.trader.verify_and_update(window_slug)
+        elif isinstance(self.trader, LiveTrader):
+            # LiveTrader already uses Gamma API in resolve_window — re-check for accuracy
+            try:
+                from polybot.feeds.polymarket_rest import get_market_outcome
+                from polybot.storage.db import Database
+                winner, source = await get_market_outcome(window_slug)
+                if winner:
+                    trades = await self.db.get_trades(window_slug=window_slug)
+                    for t in trades:
+                        if t.get("resolved"):
+                            correct = (t.get("side", "") == winner)
+                            await self.db.update_trade_outcome(
+                                trade_id=t["id"],
+                                polymarket_winner=winner,
+                                correct_prediction=correct,
+                                outcome_source=source,
+                            )
+            except Exception as e:
+                logger.warning("live_verify_failed", slug=window_slug, error=str(e))
 
     async def _execute(self, signal, state: AssetState):
         if isinstance(self.trader, LiveTrader):
@@ -426,13 +433,12 @@ class TradingLoop:
             logger.warning("auto_claim_failed", error=str(e))
 
     async def _strategy_review(self):
-        """Hourly learning loop: analyse recent trades, log strategy insights.
+        """Hourly learning loop: analyse recent trades, call Bedrock for actionable suggestions.
 
-        Queries DynamoDB for the last 60 minutes of resolved trades and logs:
-        - Win rate per asset
-        - Average EV vs actual outcome
-        - Best/worst performing asset × window combinations
-        - Calls Bedrock for strategic commentary (paper/live)
+        Queries DynamoDB for the last hour of resolved trades and:
+        - Breaks down win rate per asset × timeframe
+        - Tracks AI vs Bayesian-only accuracy
+        - Asks Bedrock for one specific parameter change to test
         """
         try:
             trades = self.dynamo.get_recent_trades(limit=200)
@@ -457,19 +463,36 @@ class TradingLoop:
             total_pnl = sum(float(t.get("pnl", 0) or 0) for t in recent)
             win_rate = wins / total if total else 0
 
-            # Per-asset breakdown
+            # Count rejection reasons from signals
+            signals_fired = sum(int(t.get("signals_fired", 0) or 0) for t in recent)
+            trades_executed = len(recent)
+
+            # Per-asset × timeframe breakdown
             asset_stats: dict[str, dict] = {}
             for t in recent:
                 a = str(t.get("asset", "BTC") or "BTC")
                 if isinstance(a, dict):
                     a = a.get("S", "BTC")
-                if a not in asset_stats:
-                    asset_stats[a] = {"wins": 0, "total": 0, "pnl": 0.0}
-                asset_stats[a]["total"] += 1
+                slug = str(t.get("window_slug", "") or "")
+                tf = "15m" if "15m" in slug else "5m"
+                key = f"{a} {tf}"
+                if key not in asset_stats:
+                    asset_stats[key] = {"wins": 0, "total": 0, "pnl": 0.0}
+                asset_stats[key]["total"] += 1
                 p = float(t.get("pnl", 0) or 0)
-                asset_stats[a]["pnl"] += p
+                asset_stats[key]["pnl"] += p
                 if p > 0:
-                    asset_stats[a]["wins"] += 1
+                    asset_stats[key]["wins"] += 1
+
+            # AI vs Bayesian accuracy
+            ai_trades = [t for t in recent if t.get("p_ai") is not None]
+            bayesian_only = [t for t in recent if t.get("p_ai") is None]
+            ai_wr = (sum(1 for t in ai_trades if float(t.get("pnl", 0) or 0) > 0) / len(ai_trades)
+                     if ai_trades else None)
+            bayes_wr = (sum(1 for t in bayesian_only if float(t.get("pnl", 0) or 0) > 0) / len(bayesian_only)
+                        if bayesian_only else None)
+
+            avg_ev = (sum(float(t.get("ev", 0) or 0) for t in recent) / total) if total else 0
 
             logger.info(
                 "strategy_review",
@@ -479,48 +502,62 @@ class TradingLoop:
                 win_rate=round(win_rate, 3),
                 pnl=round(total_pnl, 4),
                 bankroll=round(self.risk.bankroll, 2),
-                per_asset={
-                    a: {
+                avg_ev=round(avg_ev, 4),
+                ai_trades=len(ai_trades),
+                ai_wr=round(ai_wr, 3) if ai_wr is not None else None,
+                bayesian_only_wr=round(bayes_wr, 3) if bayes_wr is not None else None,
+                per_segment={
+                    k: {
                         "wr": round(v["wins"] / v["total"], 3) if v["total"] else 0,
                         "pnl": round(v["pnl"], 4),
                         "n": v["total"],
                     }
-                    for a, v in asset_stats.items()
+                    for k, v in asset_stats.items()
                 },
             )
 
-            # Call Bedrock for strategy commentary using recent performance
+            # Bedrock strategy review — actionable parameter suggestion
             try:
                 from polybot.strategy.bedrock_signal import _get_client
                 client = _get_client()
                 if client:
                     import json
-                    import boto3
-                    asset_summary = "; ".join(
-                        f"{a}: {v['wins']}/{v['total']} wins, P&L ${v['pnl']:.2f}"
-                        for a, v in asset_stats.items()
+                    segment_summary = "\n".join(
+                        f"  {k}: {v['wins']}/{v['total']} wins ({v['wins']/v['total']*100:.0f}% WR), P&L ${v['pnl']:.2f}"
+                        for k, v in asset_stats.items() if v["total"] > 0
                     )
+                    ai_section = ""
+                    if ai_wr is not None and bayes_wr is not None:
+                        ai_section = (
+                            f"\nAI CONTRIBUTION:\n"
+                            f"  AI-assisted trades: {len(ai_trades)}/{total} | WR: {ai_wr:.1%}\n"
+                            f"  Bayesian-only trades: {len(bayesian_only)}/{total} | WR: {bayes_wr:.1%}\n"
+                        )
                     prompt = (
-                        f"You are a systematic trading advisor. Analyse this 1-hour performance for a "
-                        f"Polymarket binary prediction bot (5m/15m UP/DOWN markets on BTC/ETH/SOL):\n\n"
-                        f"Win rate: {win_rate:.1%} ({wins}/{total} trades)\n"
-                        f"P&L: ${total_pnl:.4f}\n"
-                        f"Per-asset: {asset_summary}\n"
-                        f"Bankroll: ${self.risk.bankroll:.2f}\n\n"
-                        f"In 2-3 sentences, what is working and what should change? "
-                        f"Be specific about thresholds (EV, price move, entry timing)."
+                        f"You are analyzing a systematic trading strategy on Polymarket 5/15-min markets.\n\n"
+                        f"LAST HOUR PERFORMANCE:\n"
+                        f"  Trades: {total} | Wins: {wins} | Win rate: {win_rate:.1%}\n"
+                        f"  P&L: ${total_pnl:.4f} | Avg EV: {avg_ev:.1%}\n"
+                        f"  Bankroll: ${self.risk.bankroll:.2f}\n\n"
+                        f"BY SEGMENT:\n{segment_summary}\n"
+                        f"{ai_section}\n"
+                        f"CURRENT PARAMETERS:\n"
+                        f"  BTC min_move: 0.08% | ETH: 0.10% | SOL: 0.14%\n"
+                        f"  max_market_price: 0.75 | min_ev: 0.06 | obi_spread: 0.15\n\n"
+                        f"Provide: (1) one specific parameter change to test next hour, "
+                        f"(2) whether AI is adding value vs Bayesian-only, "
+                        f"(3) one signal pattern to investigate. Be specific and concise."
                     )
-                    import json as _json
-                    body = _json.dumps({
+                    body = json.dumps({
                         "anthropic_version": "bedrock-2023-05-31",
-                        "max_tokens": 200,
+                        "max_tokens": 300,
                         "messages": [{"role": "user", "content": prompt}],
                     })
                     resp = client.invoke_model(
                         modelId="eu.anthropic.claude-sonnet-4-6-20251001-v1:0",
                         body=body,
                     )
-                    result = _json.loads(resp["body"].read())
+                    result = json.loads(resp["body"].read())
                     commentary = result["content"][0]["text"].strip()
                     logger.info("strategy_review_ai_commentary", commentary=commentary)
             except Exception as e:

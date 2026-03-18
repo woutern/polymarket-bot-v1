@@ -57,6 +57,7 @@ def generate_directional_signal(
         market_price = orderbook.no_best_ask
 
     # AI signal: query Bedrock for additional probability estimate
+    p_ai: float | None = None
     if use_ai:
         p_ai = get_ai_probability(
             asset=asset,
@@ -65,7 +66,11 @@ def generate_directional_signal(
             seconds_remaining=seconds_remaining,
             yes_ask=orderbook.yes_best_ask,
             no_ask=orderbook.no_best_ask,
+            yes_bid=orderbook.yes_best_bid,
+            no_bid=orderbook.no_best_bid,
             p_bayesian=p_bayesian,
+            open_price=open_price,
+            current_price=current_price,
         )
         model_prob = blend_probabilities(p_bayesian, p_ai)
         if p_ai is not None:
@@ -76,6 +81,8 @@ def generate_directional_signal(
                 p_ai=round(p_ai, 4),
                 p_final=round(model_prob, 4),
             )
+        else:
+            logger.debug("bedrock_skipped_rate_limited", asset=asset, slug=window_slug)
     else:
         model_prob = p_bayesian
 
@@ -151,6 +158,8 @@ def generate_directional_signal(
         ev=round(ev, 4),
         pct_move=round(pct_move, 4),
         seconds_remaining=round(seconds_remaining, 1),
+        p_bayesian=round(p_bayesian, 4),
+        p_ai=round(p_ai, 4) if p_ai is not None else None,
         slug=window_slug,
         asset=asset,
     )
@@ -163,4 +172,13 @@ def generate_directional_signal(
         ev=ev,
         window_slug=window_slug,
         asset=asset,
+        p_bayesian=p_bayesian,
+        p_ai=p_ai,
+        pct_move=pct_move,
+        seconds_remaining=seconds_remaining,
+        yes_ask=orderbook.yes_best_ask,
+        no_ask=orderbook.no_best_ask,
+        yes_bid=orderbook.yes_best_bid,
+        no_bid=orderbook.no_best_bid,
+        open_price=open_price,
     )

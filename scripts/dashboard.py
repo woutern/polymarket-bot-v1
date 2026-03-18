@@ -1,4 +1,4 @@
-"""Live dashboard — multi-asset view with strategy tracking."""
+"""Live dashboard — strategy analysis desk view."""
 
 import sys
 sys.path.insert(0, "src")
@@ -66,28 +66,47 @@ def _sqlite_query(sql: str, params=()):
         return []
 
 
-def get_trades(limit=50):
+def get_trades(limit=100, asset=None, tf=None):
     if _USE_DYNAMO:
-        resp  = _trades_table.scan(Limit=limit)
+        resp  = _trades_table.scan(Limit=max(limit, 500))
         items = resp.get("Items", [])
         items.sort(key=lambda x: float(x.get("timestamp", 0)), reverse=True)
+        if asset:
+            items = [t for t in items if _extract_field(t, "asset", "").upper() == asset.upper()]
+        if tf:
+            items = [t for t in items if (tf == "15m") == ("15m" in _extract_field(t, "window_slug", ""))]
         return items[:limit]
-    rows = _sqlite_query(
-        "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?", (limit,)
-    )
-    return rows
+    sql = "SELECT * FROM trades WHERE 1=1"
+    params = []
+    if asset:
+        sql += " AND UPPER(asset) = ?"
+        params.append(asset.upper())
+    if tf:
+        if tf == "15m":
+            sql += " AND window_slug LIKE '%15m%'"
+        else:
+            sql += " AND window_slug NOT LIKE '%15m%'"
+    sql += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
+    return _sqlite_query(sql, tuple(params))
 
 
-def get_windows(limit=30):
+def get_windows(limit=30, asset=None):
     if _USE_DYNAMO:
-        resp  = _windows_table.scan(Limit=limit)
+        resp  = _windows_table.scan(Limit=max(limit, 200))
         items = resp.get("Items", [])
         items.sort(key=lambda x: int(x.get("open_ts", 0)), reverse=True)
+        if asset:
+            items = [w for w in items if _extract_field(w, "asset", "").upper() == asset.upper()]
         return items[:limit]
-    rows = _sqlite_query(
-        "SELECT * FROM windows ORDER BY open_ts DESC LIMIT ?", (limit,)
-    )
-    return rows
+    sql = "SELECT * FROM windows WHERE 1=1"
+    params = []
+    if asset:
+        sql += " AND UPPER(asset) = ?"
+        params.append(asset.upper())
+    sql += " ORDER BY open_ts DESC LIMIT ?"
+    params.append(limit)
+    return _sqlite_query(sql, tuple(params))
 
 
 def get_logs(lines=100):
@@ -137,18 +156,30 @@ def _extract_field(t, key: str, default="") -> str:
     return str(v) if v is not None else default
 
 
+def _float_field(t, key: str, default: float = 0.0) -> float:
+    v = t.get(key, default)
+    if isinstance(v, dict):
+        v = v.get("N", default)
+    try:
+        return float(v) if v is not None else default
+    except Exception:
+        return default
+
+
+# ── API endpoints ─────────────────────────────────────────────────────────────
+
 @app.get("/api/data")
 def api_data(_: str = Depends(_require_auth)):
-    trades = get_trades()
-    windows = get_windows()
+    trades = get_trades(limit=100)
+    windows = get_windows(limit=30)
     log_lines = get_logs()
 
-    # Filter trades to current mode only — keeps paper and live P&L completely separate
+    # Filter trades to current mode only
     mode_trades = [t for t in trades if _extract_field(t, "mode", "live") == _TRADE_MODE]
 
-    total_pnl = sum(float(t.get("pnl", 0) or 0) for t in mode_trades if t.get("resolved"))
-    wins = sum(1 for t in mode_trades if t.get("resolved") and float(t.get("pnl", 0) or 0) > 0)
-    losses = sum(1 for t in mode_trades if t.get("resolved") and float(t.get("pnl", 0) or 0) <= 0)
+    total_pnl = sum(_float_field(t, "pnl") for t in mode_trades if t.get("resolved"))
+    wins = sum(1 for t in mode_trades if t.get("resolved") and _float_field(t, "pnl") > 0)
+    losses = sum(1 for t in mode_trades if t.get("resolved") and _float_field(t, "pnl") <= 0)
     open_trades = sum(1 for t in mode_trades if not t.get("resolved"))
 
     # Per-asset window counts
@@ -156,8 +187,6 @@ def api_data(_: str = Depends(_require_auth)):
     asset_windows_15m = {}
     for w in windows:
         slug = w.get("slug", "") or ""
-        # Extract asset from slug (e.g. "eth-updown-5m-..." → "ETH")
-        # Fall back to stored asset field if present
         slug_upper = slug.upper()
         if slug_upper.startswith("ETH"):
             asset = "ETH"
@@ -173,7 +202,7 @@ def api_data(_: str = Depends(_require_auth)):
         else:
             asset_windows[asset] = asset_windows.get(asset, 0) + 1
 
-    # Per-asset × timeframe breakdown (e.g. "BTC 5m", "ETH 15m")
+    # Per-asset × timeframe breakdown
     strategy_pnl = {}
     for t in mode_trades:
         if not t.get("resolved"):
@@ -182,7 +211,7 @@ def api_data(_: str = Depends(_require_auth)):
         slug = _extract_field(t, "window_slug", "")
         tf = "15m" if "15m" in slug else "5m"
         key = f"{asset} {tf}"
-        p = float(t.get("pnl", 0) or 0)
+        p = _float_field(t, "pnl")
         if key not in strategy_pnl:
             strategy_pnl[key] = {"pnl": 0, "count": 0, "wins": 0}
         strategy_pnl[key]["pnl"] += p
@@ -212,6 +241,166 @@ def api_data(_: str = Depends(_require_auth)):
     }
 
 
+@app.get("/api/trades")
+def api_trades(
+    asset: str = None,
+    tf: str = None,
+    limit: int = 100,
+    _: str = Depends(_require_auth),
+):
+    """Filtered, paginated trade list."""
+    trades = get_trades(limit=limit, asset=asset, tf=tf)
+    return {"trades": trades, "count": len(trades)}
+
+
+@app.get("/api/windows")
+def api_windows(
+    asset: str = None,
+    limit: int = 30,
+    _: str = Depends(_require_auth),
+):
+    """Recent windows with signal/trade counts."""
+    windows = get_windows(limit=limit, asset=asset)
+    return {"windows": windows, "count": len(windows)}
+
+
+@app.get("/api/strategy-stats")
+def api_strategy_stats(_: str = Depends(_require_auth)):
+    """Win rates by asset × timeframe × hour-of-day segment."""
+    trades = get_trades(limit=500)
+    resolved = [t for t in trades if t.get("resolved")]
+
+    # By asset × tf
+    by_segment: dict[str, dict] = {}
+    by_hour: dict[int, dict] = {}
+    by_pct_move_bucket: dict[str, dict] = {}
+
+    for t in resolved:
+        asset = _extract_field(t, "asset", "BTC").upper() or "BTC"
+        slug = _extract_field(t, "window_slug", "")
+        tf = "15m" if "15m" in slug else "5m"
+        seg_key = f"{asset} {tf}"
+        pnl = _float_field(t, "pnl")
+        won = pnl > 0
+
+        # Segment breakdown
+        if seg_key not in by_segment:
+            by_segment[seg_key] = {"wins": 0, "total": 0, "pnl": 0.0}
+        by_segment[seg_key]["total"] += 1
+        by_segment[seg_key]["pnl"] += pnl
+        if won:
+            by_segment[seg_key]["wins"] += 1
+
+        # Hour of day
+        ts = _float_field(t, "timestamp")
+        if ts:
+            hour = datetime.fromtimestamp(ts, tz=timezone.utc).hour
+            if hour not in by_hour:
+                by_hour[hour] = {"wins": 0, "total": 0}
+            by_hour[hour]["total"] += 1
+            if won:
+                by_hour[hour]["wins"] += 1
+
+        # pct_move bucket
+        pct_move = abs(_float_field(t, "pct_move"))
+        if pct_move < 0.1:
+            bucket = "0.0-0.1%"
+        elif pct_move < 0.2:
+            bucket = "0.1-0.2%"
+        elif pct_move < 0.4:
+            bucket = "0.2-0.4%"
+        else:
+            bucket = "0.4%+"
+        if bucket not in by_pct_move_bucket:
+            by_pct_move_bucket[bucket] = {"wins": 0, "total": 0}
+        by_pct_move_bucket[bucket]["total"] += 1
+        if won:
+            by_pct_move_bucket[bucket]["wins"] += 1
+
+    def wr(d):
+        return round(d["wins"] / d["total"], 3) if d["total"] else 0
+
+    return {
+        "by_segment": {k: {**v, "wr": wr(v)} for k, v in by_segment.items()},
+        "by_hour": {str(h): {**v, "wr": wr(v)} for h, v in sorted(by_hour.items())},
+        "by_pct_move": {k: {**v, "wr": wr(v)} for k, v in by_pct_move_bucket.items()},
+        "total_resolved": len(resolved),
+    }
+
+
+@app.get("/api/calibration")
+def api_calibration(_: str = Depends(_require_auth)):
+    """p_final buckets vs actual win rate — model calibration curve."""
+    trades = get_trades(limit=500)
+    resolved = [t for t in trades if t.get("resolved")]
+
+    buckets: dict[str, dict] = {}
+    bucket_edges = [0.5, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 1.0]
+
+    for t in resolved:
+        p = _float_field(t, "p_final")
+        if p == 0.0:
+            p = _float_field(t, "p_bayesian")  # fallback for older records
+        if p == 0.0:
+            continue
+        pnl = _float_field(t, "pnl")
+        # Find bucket
+        label = None
+        for i in range(len(bucket_edges) - 1):
+            if bucket_edges[i] <= p < bucket_edges[i + 1]:
+                label = f"{bucket_edges[i]:.2f}-{bucket_edges[i+1]:.2f}"
+                break
+        if label is None:
+            continue
+        if label not in buckets:
+            buckets[label] = {"wins": 0, "total": 0, "p_avg": 0.0, "p_sum": 0.0}
+        buckets[label]["total"] += 1
+        buckets[label]["p_sum"] += p
+        if pnl > 0:
+            buckets[label]["wins"] += 1
+
+    result = {}
+    for label, d in sorted(buckets.items()):
+        result[label] = {
+            "wins": d["wins"],
+            "total": d["total"],
+            "actual_wr": round(d["wins"] / d["total"], 3) if d["total"] else 0,
+            "model_p_avg": round(d["p_sum"] / d["total"], 3) if d["total"] else 0,
+        }
+    return result
+
+
+@app.get("/api/signal-feed")
+def api_signal_feed(limit: int = 20, _: str = Depends(_require_auth)):
+    """Last N trades (signals that were executed) with full metadata."""
+    trades = get_trades(limit=limit)
+    enriched = []
+    for t in trades:
+        enriched.append({
+            "id": _extract_field(t, "id"),
+            "timestamp": _float_field(t, "timestamp"),
+            "asset": _extract_field(t, "asset", "BTC"),
+            "window_slug": _extract_field(t, "window_slug"),
+            "direction": _extract_field(t, "direction"),
+            "side": _extract_field(t, "side"),
+            "fill_price": _float_field(t, "fill_price"),
+            "size_usd": _float_field(t, "size_usd"),
+            "pnl": _float_field(t, "pnl") if t.get("resolved") else None,
+            "resolved": bool(t.get("resolved")),
+            "p_bayesian": _float_field(t, "p_bayesian"),
+            "p_ai": _float_field(t, "p_ai") if t.get("p_ai") is not None else None,
+            "p_final": _float_field(t, "p_final"),
+            "pct_move": _float_field(t, "pct_move"),
+            "seconds_remaining": _float_field(t, "seconds_remaining"),
+            "ev": _float_field(t, "ev"),
+            "outcome_source": _extract_field(t, "outcome_source", "coinbase_inferred"),
+            "polymarket_winner": _extract_field(t, "polymarket_winner", ""),
+            "correct_prediction": t.get("correct_prediction"),
+            "mode": _extract_field(t, "mode", "paper"),
+        })
+    return {"signals": enriched, "count": len(enriched)}
+
+
 @app.get("/api/pnl-history")
 def api_pnl_history(_: str = Depends(_require_auth)):
     """Return hourly P&L buckets from resolved trades."""
@@ -223,10 +412,9 @@ def api_pnl_history(_: str = Depends(_require_auth)):
         ts = t.get("timestamp")
         if not ts:
             continue
-        pnl = float(t.get("pnl", 0) or 0)
+        pnl = _float_field(t, "pnl")
         try:
             dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
-            # Round down to the hour
             hour_key = dt.strftime("%Y-%m-%dT%H:00")
             buckets[hour_key] += pnl
         except Exception:
@@ -241,14 +429,11 @@ def api_pnl_history(_: str = Depends(_require_auth)):
 @app.get("/api/balance")
 async def api_balance(_: str = Depends(_require_auth)):
     """Return wallet USDC balances."""
-    import os
     try:
         from polybot.config import Settings
         from polybot.market.balance_checker import BalanceChecker
 
         settings = Settings()
-        # Use the funder/proxy wallet address (shown in Polymarket UI) if set,
-        # otherwise fall back to deriving EOA from private key.
         address = settings.polymarket_funder or None
         if not address and settings.polymarket_private_key:
             from eth_account import Account
@@ -263,12 +448,14 @@ async def api_balance(_: str = Depends(_require_auth)):
         return {"polymarket_value": 0.0, "polygon_usdc": 0.0, "error": str(e)}
 
 
+# ── HTML dashboard ─────────────────────────────────────────────────────────────
+
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Polymarket Bot — Live Dashboard</title>
+<title>Polymarket Bot — Trading Desk</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -303,6 +490,7 @@ HTML = r"""<!DOCTYPE html>
     --eth-bg:     #edf2ff;
     --sol:        #9945ff;
     --sol-bg:     #f3f0ff;
+    --orange:     #d9480f;
     --shadow-sm:  0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
     --shadow-md:  0 4px 12px rgba(0,0,0,.08), 0 2px 4px rgba(0,0,0,.04);
     --radius:     10px;
@@ -324,7 +512,7 @@ HTML = r"""<!DOCTYPE html>
     background: var(--border);
     position: fixed;
     top: 0; left: 0; right: 0;
-    z-index: 100;
+    z-index: 200;
   }
   #refresh-progress {
     height: 100%;
@@ -351,7 +539,6 @@ HTML = r"""<!DOCTYPE html>
     display: flex;
     align-items: center;
     gap: 10px;
-    text-decoration: none;
   }
   .nav-logo {
     width: 30px; height: 30px;
@@ -361,42 +548,53 @@ HTML = r"""<!DOCTYPE html>
     font-size: 15px; color: #fff; font-weight: 800;
   }
   .nav-title {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--text);
-    letter-spacing: -0.3px;
+    font-size: 16px; font-weight: 700; color: var(--text); letter-spacing: -0.3px;
   }
   .nav-title span { color: var(--blue); }
-  .nav-right {
+  .nav-tabs {
     display: flex;
-    align-items: center;
-    gap: 16px;
+    gap: 2px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 3px;
   }
-  .nav-meta {
-    font-size: 12px;
+  .nav-tab {
+    padding: 5px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
     color: var(--text-3);
+    cursor: pointer;
+    transition: all .15s;
+    border: none;
+    background: none;
+  }
+  .nav-tab:hover { color: var(--text-2); background: var(--border); }
+  .nav-tab.active {
+    color: var(--text);
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+  }
+  .nav-right {
     display: flex;
     align-items: center;
     gap: 12px;
   }
+  .nav-meta {
+    font-size: 12px; color: var(--text-3);
+    display: flex; align-items: center; gap: 10px;
+  }
   .nav-meta .sep { color: var(--border-2); }
   .status-dot {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--green);
-    background: var(--green-bg);
-    border: 1px solid var(--green-bd);
-    padding: 3px 10px;
-    border-radius: 20px;
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600; color: var(--green);
+    background: var(--green-bg); border: 1px solid var(--green-bd);
+    padding: 3px 10px; border-radius: 20px;
   }
   .status-dot::before {
-    content: '';
-    width: 7px; height: 7px;
-    background: var(--green);
-    border-radius: 50%;
+    content: ''; width: 7px; height: 7px;
+    background: var(--green); border-radius: 50%;
     animation: pulse 2s infinite;
   }
   @keyframes pulse {
@@ -404,7 +602,9 @@ HTML = r"""<!DOCTYPE html>
     50% { opacity: 0.6; transform: scale(0.85); }
   }
 
-  /* ── Layout ── */
+  /* ── Pages ── */
+  .page-content { display: none; }
+  .page-content.active { display: block; }
   .page { max-width: 1440px; margin: 0 auto; padding: 20px 24px 40px; }
 
   /* ── Stats row ── */
@@ -422,238 +622,133 @@ HTML = r"""<!DOCTYPE html>
     box-shadow: var(--shadow-sm);
     transition: box-shadow .15s, transform .15s;
   }
-  .stat-card:hover {
-    box-shadow: var(--shadow-md);
-    transform: translateY(-1px);
-  }
+  .stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
   .stat-label {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    color: var(--text-3);
-    margin-bottom: 8px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.8px; color: var(--text-3); margin-bottom: 8px;
   }
   .stat-value {
-    font-size: 26px;
-    font-weight: 800;
-    letter-spacing: -0.5px;
-    color: var(--text);
-    line-height: 1;
+    font-size: 26px; font-weight: 800; letter-spacing: -0.5px;
+    color: var(--text); line-height: 1;
   }
   .stat-value.green { color: var(--green); }
   .stat-value.red   { color: var(--red); }
   .stat-value.blue  { color: var(--blue); }
   .stat-value.gold  { color: var(--gold); }
-  .stat-sub {
-    font-size: 11px;
-    color: var(--text-3);
-    margin-top: 5px;
-    font-weight: 500;
-  }
+  .stat-sub { font-size: 11px; color: var(--text-3); margin-top: 5px; font-weight: 500; }
 
   /* ── Section headers ── */
   .section-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 12px;
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;
   }
   .section-title {
-    font-size: 13px;
-    font-weight: 700;
-    color: var(--text-2);
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
+    font-size: 13px; font-weight: 700; color: var(--text-2);
+    text-transform: uppercase; letter-spacing: 0.6px;
   }
   .section-badge {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-3);
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    padding: 2px 8px;
-    border-radius: 20px;
+    font-size: 11px; font-weight: 600; color: var(--text-3);
+    background: var(--surface-2); border: 1px solid var(--border);
+    padding: 2px 8px; border-radius: 20px;
   }
 
   /* ── Strategy cards ── */
   .strategy-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-    margin-bottom: 20px;
-  }
-  #strategy-section {
-    display: contents;
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 20px;
   }
   .strat-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 16px 18px;
-    box-shadow: var(--shadow-sm);
-  }
-  .strat-card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 10px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow-sm);
   }
   .strat-name {
-    font-size: 12px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-    color: var(--text-2);
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.6px; color: var(--text-2); margin-bottom: 6px;
   }
   .strat-pnl {
-    font-size: 20px;
-    font-weight: 800;
-    letter-spacing: -0.4px;
-    margin-bottom: 8px;
+    font-size: 18px; font-weight: 800; letter-spacing: -0.4px; margin-bottom: 6px;
   }
-  .strat-meta {
-    font-size: 11px;
-    color: var(--text-3);
-    margin-bottom: 8px;
-    font-weight: 500;
-  }
-  .win-bar-wrap {
-    height: 5px;
-    background: var(--surface-2);
-    border-radius: 3px;
-    overflow: hidden;
-  }
+  .strat-meta { font-size: 11px; color: var(--text-3); margin-bottom: 6px; }
+  .win-bar-wrap { height: 4px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
   .win-bar-fill {
-    height: 100%;
-    border-radius: 3px;
+    height: 100%; border-radius: 3px;
     background: linear-gradient(90deg, #2f9e44, #51cf66);
     transition: width .6s cubic-bezier(.4,0,.2,1);
   }
 
   /* ── Chart card ── */
   .chart-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 20px 22px;
-    box-shadow: var(--shadow-sm);
-    margin-bottom: 20px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px 22px;
+    box-shadow: var(--shadow-sm); margin-bottom: 20px;
   }
   .chart-card .section-header { margin-bottom: 16px; }
-  #pnl-chart-wrap { height: 200px; }
+  #pnl-chart-wrap { height: 180px; }
 
   /* ── Two-column panels ── */
   .panels-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    margin-bottom: 20px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;
   }
   .panel-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow-sm);
-    overflow: hidden;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow-sm); overflow: hidden;
   }
   .panel-head {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
     background: var(--surface);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+    display: flex; align-items: center; justify-content: space-between;
   }
 
   /* ── Tables ── */
-  .scroll-wrap { max-height: 340px; overflow-y: auto; }
+  .scroll-wrap { max-height: 320px; overflow-y: auto; }
   table { width: 100%; border-collapse: collapse; }
   thead { position: sticky; top: 0; z-index: 1; }
   th {
-    text-align: left;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-3);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    padding: 9px 14px;
-    background: var(--surface-2);
-    border-bottom: 1px solid var(--border);
-    white-space: nowrap;
+    text-align: left; font-size: 11px; font-weight: 600;
+    color: var(--text-3); text-transform: uppercase; letter-spacing: 0.5px;
+    padding: 9px 12px; background: var(--surface-2);
+    border-bottom: 1px solid var(--border); white-space: nowrap;
   }
   td {
-    padding: 9px 14px;
-    border-bottom: 1px solid var(--border);
-    font-size: 13px;
-    color: var(--text-2);
-    vertical-align: middle;
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+    font-size: 12px; color: var(--text-2); vertical-align: middle;
   }
   tbody tr:last-child td { border-bottom: none; }
   tbody tr:hover td { background: var(--surface-2); }
   .empty-row td {
-    color: var(--text-3);
-    text-align: center;
-    padding: 32px 16px;
-    font-style: italic;
-    font-size: 13px;
+    color: var(--text-3); text-align: center; padding: 28px 16px;
+    font-style: italic; font-size: 12px;
   }
 
-  /* ── Tags / badges ── */
+  /* ── Tags ── */
   .tag {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.3px;
-    white-space: nowrap;
+    display: inline-block; padding: 2px 7px; border-radius: 4px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;
   }
   .tag-up    { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-bd); }
   .tag-down  { background: var(--red-bg);   color: var(--red);   border: 1px solid var(--red-bd); }
   .tag-open  { background: var(--blue-bg);  color: var(--blue);  border: 1px solid var(--blue-bd); }
+  .tag-warn  { background: var(--gold-bg);  color: var(--gold);  border: 1px solid var(--gold-bd); }
   .tag-btc   { background: var(--btc-bg);   color: var(--btc);   border: 1px solid #ffd8a8; }
   .tag-eth   { background: var(--eth-bg);   color: var(--eth);   border: 1px solid #bac8ff; }
   .tag-sol   { background: var(--sol-bg);   color: var(--sol);   border: 1px solid #d0bfff; }
-  .tag-dir   { background: var(--blue-bg);  color: var(--blue);  border: 1px solid var(--blue-bd); }
-  .tag-arb   { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-bd); }
-  .tag-copy  { background: var(--btc-bg);   color: var(--btc);   border: 1px solid #ffd8a8; }
-  .tag-news  { background: var(--sol-bg);   color: var(--sol);   border: 1px solid #d0bfff; }
+
+  /* ── Outcome badges ── */
+  .outcome-verified   { color: var(--green); font-weight: 700; }
+  .outcome-coinbase   { color: var(--gold);  font-weight: 700; }
+  .outcome-pending    { color: var(--text-3); }
 
   /* ── Logs ── */
-  .logs-card {
-    background: #1a1b26;
-    border: 1px solid #2a2b3d;
-    border-radius: var(--radius);
-    overflow: hidden;
-    box-shadow: var(--shadow-sm);
-  }
+  .logs-card { background: #1a1b26; border: 1px solid #2a2b3d; border-radius: var(--radius); overflow: hidden; }
   .logs-head {
-    padding: 12px 16px;
-    border-bottom: 1px solid #2a2b3d;
-    background: #16172a;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid #2a2b3d; background: #16172a;
+    display: flex; align-items: center; justify-content: space-between;
   }
   .logs-head .section-title { color: #a9b1d6; }
-  .logs-head .section-badge {
-    background: #2a2b3d;
-    border-color: #3a3b4d;
-    color: #565f89;
-  }
+  .logs-head .section-badge { background: #2a2b3d; border-color: #3a3b4d; color: #565f89; }
   #logs {
-    background: #1a1b26;
-    padding: 12px 16px;
-    max-height: 240px;
-    overflow-y: auto;
+    background: #1a1b26; padding: 12px 16px; max-height: 220px; overflow-y: auto;
     font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, monospace;
-    font-size: 12px;
-    line-height: 1.9;
+    font-size: 11.5px; line-height: 1.9;
   }
-  #logs::-webkit-scrollbar { width: 6px; }
-  #logs::-webkit-scrollbar-track { background: #1a1b26; }
-  #logs::-webkit-scrollbar-thumb { background: #2a2b3d; border-radius: 3px; }
   .log-line { white-space: pre-wrap; word-break: break-all; padding-left: 10px; border-left: 2px solid transparent; }
   .log-line.error  { color: #f7768e; border-left-color: #f7768e; }
   .log-line.warn   { color: #e0af68; border-left-color: #e0af68; }
@@ -663,23 +758,28 @@ HTML = r"""<!DOCTYPE html>
   .log-line.window { color: #565f89; }
   .log-line.info   { color: #3b4261; }
 
+  /* ── Analytics tables ── */
+  .analytics-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;
+  }
+  .analytics-grid.wide { grid-template-columns: 1fr; }
+  .calibration-bar-wrap { width: 60px; display: inline-block; vertical-align: middle; }
+  .calibration-bar { height: 8px; border-radius: 4px; background: var(--green); display: inline-block; }
+
   /* ── Responsive ── */
-  @media (max-width: 1100px) {
+  @media (max-width: 1200px) {
     .stats-grid { grid-template-columns: repeat(4, 1fr); }
-    .strategy-grid { grid-template-columns: repeat(2, 1fr); }
+    .strategy-grid { grid-template-columns: repeat(3, 1fr); }
   }
   @media (max-width: 768px) {
     .page { padding: 12px 16px 32px; }
     nav { padding: 0 16px; }
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
-    .strategy-grid { grid-template-columns: 1fr 1fr; }
-    .panels-grid { grid-template-columns: 1fr; }
+    .strategy-grid { grid-template-columns: repeat(2, 1fr); }
+    .panels-grid, .analytics-grid { grid-template-columns: 1fr; }
     .nav-meta { display: none; }
     .stat-value { font-size: 22px; }
-  }
-  @media (max-width: 480px) {
-    .stats-grid { grid-template-columns: repeat(2, 1fr); }
-    .strategy-grid { grid-template-columns: 1fr; }
+    .nav-tabs { display: none; }
   }
 </style>
 </head>
@@ -691,6 +791,11 @@ HTML = r"""<!DOCTYPE html>
   <div class="nav-brand">
     <div class="nav-logo">P</div>
     <span class="nav-title">Polymarket <span>Bot</span></span>
+  </div>
+  <div class="nav-tabs">
+    <button class="nav-tab active" onclick="showPage('overview')">Overview</button>
+    <button class="nav-tab" onclick="showPage('tradelog')">Trade Log</button>
+    <button class="nav-tab" onclick="showPage('analytics')">Analytics</button>
   </div>
   <div class="nav-right">
     <div class="nav-meta">
@@ -704,6 +809,8 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </nav>
 
+<!-- ══════════════════════════ PAGE 1: OVERVIEW ══════════════════════════ -->
+<div id="page-overview" class="page-content active">
 <div class="page">
 
   <!-- Stats row -->
@@ -741,11 +848,6 @@ HTML = r"""<!DOCTYPE html>
       <div class="stat-value" id="s-eth">—</div>
       <div class="stat-sub" id="s-eth-sub">5m + 15m</div>
     </div>
-    <div class="stat-card">
-      <div class="stat-label">SOL Windows</div>
-      <div class="stat-value" id="s-sol">—</div>
-      <div class="stat-sub" id="s-sol-sub">5m + 15m</div>
-    </div>
   </div>
 
   <!-- Strategy cards -->
@@ -775,8 +877,8 @@ HTML = r"""<!DOCTYPE html>
       <div class="scroll-wrap">
         <table>
           <thead><tr>
-            <th>Time</th><th>Asset</th><th>Side</th><th>Strategy</th>
-            <th>Price</th><th>Size</th><th>P&amp;L</th><th>Status</th><th>Market</th>
+            <th>Time</th><th>Asset</th><th>Side</th>
+            <th>Price</th><th>Size</th><th>P&amp;L</th><th>Outcome</th>
           </tr></thead>
           <tbody id="trades-body"></tbody>
         </table>
@@ -807,83 +909,141 @@ HTML = r"""<!DOCTYPE html>
     <div id="logs"></div>
   </div>
 
-</div><!-- /page -->
+</div>
+</div>
+
+<!-- ══════════════════════════ PAGE 2: TRADE LOG ══════════════════════════ -->
+<div id="page-tradelog" class="page-content">
+<div class="page">
+
+  <div class="section-header">
+    <span class="section-title">Trade Log</span>
+    <div style="display:flex;gap:8px">
+      <select id="tl-asset" onchange="loadTradeLog()" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface)">
+        <option value="">All assets</option>
+        <option value="BTC">BTC</option>
+        <option value="ETH">ETH</option>
+        <option value="SOL">SOL</option>
+      </select>
+      <select id="tl-tf" onchange="loadTradeLog()" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface)">
+        <option value="">All timeframes</option>
+        <option value="5m">5m</option>
+        <option value="15m">15m</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="panel-card">
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Time</th><th>Asset</th><th>TF</th><th>Dir</th><th>Side</th>
+          <th>Fill</th><th>Size</th><th>P(bay)</th><th>P(AI)</th><th>P(final)</th>
+          <th>EV</th><th>Move%</th><th>T-left</th><th>P&amp;L</th><th>Outcome</th>
+        </tr></thead>
+        <tbody id="tl-body">
+          <tr class="empty-row"><td colspan="15">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<!-- ══════════════════════════ PAGE 3: ANALYTICS ══════════════════════════ -->
+<div id="page-analytics" class="page-content">
+<div class="page">
+
+  <div class="analytics-grid">
+    <!-- By segment -->
+    <div class="panel-card">
+      <div class="panel-head"><span class="section-title">Win Rate by Segment</span></div>
+      <div style="overflow-y:auto;max-height:280px">
+        <table>
+          <thead><tr><th>Segment</th><th>Trades</th><th>Win Rate</th><th>P&amp;L</th></tr></thead>
+          <tbody id="seg-body"><tr class="empty-row"><td colspan="4">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- By pct_move bucket -->
+    <div class="panel-card">
+      <div class="panel-head"><span class="section-title">Win Rate by Move %</span></div>
+      <div style="overflow-y:auto;max-height:280px">
+        <table>
+          <thead><tr><th>Move Bucket</th><th>Trades</th><th>Win Rate</th></tr></thead>
+          <tbody id="move-body"><tr class="empty-row"><td colspan="3">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="analytics-grid">
+    <!-- By hour of day -->
+    <div class="panel-card">
+      <div class="panel-head"><span class="section-title">Win Rate by Hour (UTC)</span></div>
+      <div style="padding:16px 16px 8px">
+        <canvas id="hour-chart" height="180"></canvas>
+      </div>
+    </div>
+
+    <!-- Model calibration -->
+    <div class="panel-card">
+      <div class="panel-head"><span class="section-title">Model Calibration (p_final vs Actual WR)</span></div>
+      <div style="overflow-y:auto;max-height:280px">
+        <table>
+          <thead><tr><th>p_final bucket</th><th>N</th><th>Model P</th><th>Actual WR</th><th>Calibration</th></tr></thead>
+          <tbody id="cal-body"><tr class="empty-row"><td colspan="5">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>
 
 <script>
 const REFRESH_MS = 4000;
 
-// ── Chart.js cumulative P&L area chart ──────────────────────────────────────
+// ── Page navigation ───────────────────────────────────────────────────────────
+function showPage(name) {
+  document.querySelectorAll('.page-content').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  event.target.classList.add('active');
+  if (name === 'analytics') loadAnalytics();
+  if (name === 'tradelog') loadTradeLog();
+}
+
+// ── Chart.js cumulative P&L ───────────────────────────────────────────────────
 let pnlChart = null;
+let hourChart = null;
 
 function initChart() {
   const ctx = document.getElementById('pnl-chart').getContext('2d');
-
-  // Gradient fill
-  const gradient = ctx.createLinearGradient(0, 0, 0, 200);
-  gradient.addColorStop(0,   'rgba(47,158,68,.28)');
-  gradient.addColorStop(0.6, 'rgba(47,158,68,.06)');
+  const gradient = ctx.createLinearGradient(0, 0, 0, 180);
+  gradient.addColorStop(0,   'rgba(47,158,68,.26)');
+  gradient.addColorStop(0.6, 'rgba(47,158,68,.04)');
   gradient.addColorStop(1,   'rgba(47,158,68,0)');
 
   pnlChart = new Chart(ctx, {
     type: 'line',
-    data: {
-      labels: [],
-      datasets: [{
-        label: 'Cumulative P&L ($)',
-        data: [],
-        borderColor: '#2f9e44',
-        borderWidth: 2,
-        backgroundColor: gradient,
-        pointBackgroundColor: '#2f9e44',
-        pointBorderColor: '#fff',
-        pointBorderWidth: 1.5,
-        pointRadius: 3,
-        pointHoverRadius: 5,
-        tension: 0.4,
-        fill: true,
-      }]
-    },
+    data: { labels: [], datasets: [{ label: 'Cumulative P&L ($)', data: [], borderColor: '#2f9e44', borderWidth: 2, backgroundColor: gradient, pointRadius: 3, tension: 0.4, fill: true }] },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
+      responsive: true, maintainAspectRatio: false, animation: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: '#fff',
-          borderColor: '#dee2e6',
-          borderWidth: 1,
-          titleColor: '#868e96',
-          bodyColor: '#212529',
-          padding: 10,
-          callbacks: {
-            label: ctx => {
-              const v = ctx.raw;
-              return (v >= 0 ? '+' : '') + '$' + v.toFixed(4);
-            },
-          },
+          backgroundColor: '#fff', borderColor: '#dee2e6', borderWidth: 1,
+          titleColor: '#868e96', bodyColor: '#212529', padding: 10,
+          callbacks: { label: ctx => (ctx.raw >= 0 ? '+' : '') + '$' + ctx.raw.toFixed(4) },
         },
       },
       scales: {
-        x: {
-          ticks: {
-            color: '#868e96',
-            font: { size: 11, family: 'Inter' },
-            maxTicksLimit: 10,
-          },
-          grid: { color: '#f1f3f5' },
-          border: { color: '#dee2e6' },
-        },
-        y: {
-          ticks: {
-            color: '#868e96',
-            font: { size: 11, family: 'Inter' },
-            callback: v => (v >= 0 ? '+' : '') + '$' + v.toFixed(2),
-          },
-          grid: { color: '#f1f3f5' },
-          border: { color: '#dee2e6' },
-        },
+        x: { ticks: { color: '#868e96', font: { size: 10 }, maxTicksLimit: 8 }, grid: { color: '#f1f3f5' } },
+        y: { ticks: { color: '#868e96', font: { size: 10 }, callback: v => (v>=0?'+':'')+'$'+v.toFixed(2) }, grid: { color: '#f1f3f5' } },
       },
     },
   });
@@ -894,82 +1054,77 @@ async function refreshChart() {
     const resp = await fetch('/api/pnl-history');
     const data = await resp.json();
     if (!pnlChart) return;
-
-    // Compute cumulative values from hourly buckets
     const cumulative = [];
     let running = 0;
-    for (const v of data.values) {
-      running += v;
-      cumulative.push(parseFloat(running.toFixed(4)));
-    }
-
-    pnlChart.data.labels = data.labels.map(l => l.substring(5).replace('T', ' ')); // MM-DD HH:00
+    for (const v of data.values) { running += v; cumulative.push(parseFloat(running.toFixed(4))); }
+    pnlChart.data.labels = data.labels.map(l => l.substring(5).replace('T', ' '));
     pnlChart.data.datasets[0].data = cumulative;
-
-    // Dynamic color: green if final equity positive, red if negative
     const finalVal = cumulative.length ? cumulative[cumulative.length - 1] : 0;
     const posColor = finalVal >= 0 ? '#2f9e44' : '#c92a2a';
-    const ctx = document.getElementById('pnl-chart').getContext('2d');
-    const gradient = ctx.createLinearGradient(0, 0, 0, 200);
-    if (finalVal >= 0) {
-      gradient.addColorStop(0,   'rgba(47,158,68,.28)');
-      gradient.addColorStop(0.6, 'rgba(47,158,68,.06)');
-      gradient.addColorStop(1,   'rgba(47,158,68,0)');
-    } else {
-      gradient.addColorStop(0,   'rgba(201,42,42,.22)');
-      gradient.addColorStop(0.6, 'rgba(201,42,42,.04)');
-      gradient.addColorStop(1,   'rgba(201,42,42,0)');
-    }
     pnlChart.data.datasets[0].borderColor = posColor;
     pnlChart.data.datasets[0].pointBackgroundColor = posColor;
-    pnlChart.data.datasets[0].backgroundColor = gradient;
     pnlChart.update('none');
-
-    // Update badge
-    const badge = document.getElementById('chart-badge');
-    badge.textContent = data.labels.length + ' hourly buckets';
-  } catch(e) { /* non-fatal */ }
+    document.getElementById('chart-badge').textContent = data.labels.length + ' hourly buckets';
+  } catch(e) {}
 }
 
-// ── Balance (every 30s) ──────────────────────────────────────────────────────
+// ── Balance ───────────────────────────────────────────────────────────────────
 let lastBalanceFetch = 0;
-
 async function refreshBalance() {
   if (Date.now() - lastBalanceFetch < 30000) return;
   lastBalanceFetch = Date.now();
   try {
     const resp = await fetch('/api/balance');
     const d = await resp.json();
-    const polygon = d.polygon_usdc || 0;
-    const pmval = d.polymarket_value || 0;
-    const total = polygon + pmval;
+    const total = (d.polygon_usdc || 0) + (d.polymarket_value || 0);
     document.getElementById('s-balance').textContent = '$' + total.toFixed(2);
     document.getElementById('s-balance-sub').textContent =
-      'USDC $' + polygon.toFixed(2) + ' + positions $' + pmval.toFixed(2);
-  } catch(e) { /* non-fatal */ }
+      'USDC $' + (d.polygon_usdc||0).toFixed(2) + ' + pos $' + (d.polymarket_value||0).toFixed(2);
+  } catch(e) {}
 }
 
-// ── Formatters ───────────────────────────────────────────────────────────────
+// ── Formatters ────────────────────────────────────────────────────────────────
 function assetTag(a) {
   const m = { BTC: 'tag-btc', ETH: 'tag-eth', SOL: 'tag-sol' };
-  return `<span class="tag ${m[a]||''}">${a||'BTC'}</span>`;
-}
-function stratTag(s) {
-  const m = { directional:'tag-dir', arbitrage:'tag-arb', copy:'tag-copy', news:'tag-news' };
-  return `<span class="tag ${m[s]||''}">${s||'—'}</span>`;
+  return `<span class="tag ${m[a]||''}">${a||'?'}</span>`;
 }
 function dirTag(d) {
   if (!d) return '—';
-  const up = d === 'YES' || d === 'up';
+  const up = d === 'YES' || d === 'up' || d === 'UP';
   return `<span class="tag ${up ? 'tag-up' : 'tag-down'}">${d}</span>`;
+}
+function outcomeTag(t) {
+  const src = dval(t, 'outcome_source') || 'coinbase_inferred';
+  const winner = dval(t, 'polymarket_winner') || '';
+  const correct = t.correct_prediction;
+  const resolved = t.resolved || dval(t, 'resolved');
+  const pnl = parseFloat(dval(t, 'pnl') || 0);
+
+  if (!resolved) return '<span class="tag tag-open">OPEN</span>';
+  if (src === 'polymarket_verified') {
+    const won = correct == 1 || correct === true;
+    return `<span class="outcome-verified">${won ? '✓ WIN' : '✗ LOSS'} <span style="font-size:10px;color:var(--text-3)">(PM)</span></span>`;
+  }
+  // Coinbase inferred
+  const won = pnl > 0;
+  return `<span class="outcome-coinbase">${won ? '✓ WIN' : '✗ LOSS'} <span style="font-size:10px">⚠</span></span>`;
 }
 function fmtTs(ts)  { return ts ? new Date(parseFloat(ts)*1000).toLocaleTimeString() : '—'; }
 function fmtTs2(ts) { return ts ? new Date(parseInt(ts)*1000).toLocaleTimeString() : '—'; }
 function fmtPnl(p) {
-  if (p == null) return '—';
+  if (p == null || p === '') return '—';
   const v = parseFloat(p);
   const c = v >= 0 ? '#2f9e44' : '#c92a2a';
   return `<span style="color:${c};font-weight:600">${v>=0?'+':''}$${v.toFixed(4)}</span>`;
+}
+function fmtProb(p) {
+  if (p == null || p === 0) return '—';
+  return (parseFloat(p)*100).toFixed(1)+'%';
+}
+function fmtPct(p) {
+  if (p == null || p === 0) return '—';
+  const v = parseFloat(p);
+  return (v >= 0 ? '+' : '') + v.toFixed(3) + '%';
 }
 function fmtPrice(p, asset) {
   if (!p) return '—';
@@ -985,26 +1140,25 @@ function dval(item, key) {
   return v;
 }
 
-// ── Main refresh ─────────────────────────────────────────────────────────────
+// ── Main refresh (Overview) ───────────────────────────────────────────────────
 async function refresh() {
   try {
     const resp = await fetch('/api/data');
     const data = await resp.json();
     const s = data.stats;
 
-    // Mode badge + bankroll
     const mode = (s.mode || 'paper').toUpperCase();
     const modeBadge = document.getElementById('mode-badge');
     modeBadge.textContent = mode;
-    modeBadge.style.background = mode === 'LIVE' ? '#c92a2a' : '#1971c2';
+    modeBadge.style.background = mode === 'LIVE' ? '#c92a2a22' : '#1971c222';
+    modeBadge.style.color = mode === 'LIVE' ? '#c92a2a' : '#1971c2';
+    modeBadge.style.borderColor = mode === 'LIVE' ? '#ffc9c9' : '#a5d8ff';
 
-    const bankrollEl = document.getElementById('s-bankroll');
-    bankrollEl.textContent = '$' + (s.current_bankroll || s.starting_bankroll || 0).toFixed(2);
+    document.getElementById('s-bankroll').textContent = '$' + (s.current_bankroll || s.starting_bankroll || 0).toFixed(2);
     document.getElementById('bankroll-label').textContent = mode === 'LIVE' ? 'Bankroll' : 'Virtual Bankroll';
     document.getElementById('s-bankroll-sub').textContent = mode === 'LIVE' ? 'Live trading' : 'Paper trading';
     document.getElementById('s-starting').textContent = (s.starting_bankroll || 1000).toFixed(0);
 
-    // Stats
     const pnl = s.total_pnl;
     const pnlEl = document.getElementById('s-pnl');
     pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(4);
@@ -1015,10 +1169,8 @@ async function refresh() {
     const w15 = s.asset_windows_15m || {};
     document.getElementById('s-btc').textContent = (s.asset_windows.BTC || 0);
     document.getElementById('s-eth').textContent = (s.asset_windows.ETH || 0);
-    document.getElementById('s-sol').textContent = (s.asset_windows.SOL || 0);
     document.getElementById('s-btc-sub').textContent = `5m: ${s.asset_windows.BTC||0}  15m: ${w15.BTC||0}`;
     document.getElementById('s-eth-sub').textContent = `5m: ${s.asset_windows.ETH||0}  15m: ${w15.ETH||0}`;
-    document.getElementById('s-sol-sub').textContent = `5m: ${s.asset_windows.SOL||0}  15m: ${w15.SOL||0}`;
 
     // Per-asset × timeframe performance cards
     const strats = s.strategy_pnl || {};
@@ -1030,11 +1182,9 @@ async function refresh() {
       const pnlColor = d.pnl >= 0 ? '#2f9e44' : '#c92a2a';
       scHtml += `
         <div class="strat-card">
-          <div class="strat-card-header">
-            <span class="strat-name">${st}</span>
-          </div>
+          <div class="strat-name">${st}</div>
           <div class="strat-pnl" style="color:${pnlColor}">${d.pnl>=0?'+':''}$${d.pnl.toFixed(2)}</div>
-          <div class="strat-meta">${d.count} trades &nbsp;&middot;&nbsp; ${wr}% win rate</div>
+          <div class="strat-meta">${d.count} trades &middot; ${wr}% WR</div>
           <div class="win-bar-wrap">
             <div class="win-bar-fill" style="width:${wr}%;${d.pnl<0?'background:linear-gradient(90deg,#c92a2a,#fa5252)':''}"></div>
           </div>
@@ -1045,38 +1195,25 @@ async function refresh() {
     document.getElementById('trade-count').textContent  = data.trades.length + ' trades';
     document.getElementById('window-count').textContent = data.windows.length + ' windows';
 
-    // Trades table
+    // Trades table (overview: compact)
     const tbody = document.getElementById('trades-body');
     tbody.innerHTML = '';
     if (data.trades.length === 0) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="8">Waiting for first trade signal...</td></tr>';
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">Waiting for first trade signal...</td></tr>';
     } else {
       for (const t of data.trades.slice(0, 20)) {
-        const asset    = dval(t,'asset')  || 'BTC';
-        const side     = dval(t,'side')   || '';
-        const source   = dval(t,'source') || '';
+        const asset = dval(t,'asset') || 'BTC';
+        const side  = dval(t,'side') || '';
         const resolved = t.resolved || dval(t,'resolved');
-        const pnlv     = dval(t,'pnl');
-        const status   = resolved
-          ? (parseFloat(pnlv||0) >= 0
-              ? '<span class="tag tag-up">WIN</span>'
-              : '<span class="tag tag-down">LOSS</span>')
-          : '<span class="tag tag-open">OPEN</span>';
-        const slug = dval(t,'window_slug') || '';
-        const pmUrl = slug ? `https://polymarket.com/event/${slug}` : null;
-        const slugCell = pmUrl
-          ? `<a href="${pmUrl}" target="_blank" style="color:var(--blue);font-size:11px;text-decoration:none;font-family:monospace" title="${slug}">${slug.substring(0,22)}…</a>`
-          : '—';
+        const pnlv = resolved ? _float_or_null(dval(t,'pnl')) : null;
         tbody.innerHTML += `<tr>
           <td>${fmtTs(dval(t,'timestamp'))}</td>
           <td>${assetTag(asset)}</td>
           <td>${dirTag(side)}</td>
-          <td>${stratTag(source)}</td>
           <td>$${parseFloat(dval(t,'price')||0).toFixed(3)}</td>
           <td>$${parseFloat(dval(t,'size_usd')||0).toFixed(2)}</td>
           <td>${fmtPnl(pnlv)}</td>
-          <td>${status}</td>
-          <td>${slugCell}</td>
+          <td>${outcomeTag(t)}</td>
         </tr>`;
       }
     }
@@ -1095,9 +1232,7 @@ async function refresh() {
         const move  = op > 0 ? ((cp - op) / op * 100).toFixed(3) + '%' : '—';
         const moveColor = cp >= op ? '#2f9e44' : '#c92a2a';
         const dirBadge  = dir
-          ? (dir === 'up'
-              ? '<span class="tag tag-up">UP</span>'
-              : '<span class="tag tag-down">DOWN</span>')
+          ? (dir === 'up' ? '<span class="tag tag-up">UP</span>' : '<span class="tag tag-down">DOWN</span>')
           : '—';
         wbody.innerHTML += `<tr>
           <td>${fmtTs2(dval(w,'open_ts'))}</td>
@@ -1121,12 +1256,12 @@ async function refresh() {
       try {
         const obj = JSON.parse(line);
         const ev = obj.event || '';
-        if (obj.level === 'error')                               cls = 'log-line error';
-        else if (obj.level === 'warning')                        cls = 'log-line warn';
-        else if (ev.includes('signal') || ev.includes('arb'))   cls = 'log-line signal';
-        else if (ev.includes('order') || ev.includes('trade'))  cls = 'log-line trade';
-        else if (ev.includes('entry_zone'))                      cls = 'log-line entry';
-        else if (ev.includes('window_'))                         cls = 'log-line window';
+        if (obj.level === 'error')                                cls = 'log-line error';
+        else if (obj.level === 'warning')                         cls = 'log-line warn';
+        else if (ev.includes('signal') || ev.includes('blend'))   cls = 'log-line signal';
+        else if (ev.includes('order') || ev.includes('trade'))    cls = 'log-line trade';
+        else if (ev.includes('entry_zone'))                       cls = 'log-line entry';
+        else if (ev.includes('window_'))                          cls = 'log-line window';
         const ts    = obj.timestamp ? obj.timestamp.substring(11,19) : '';
         const asset = obj.asset ? `[${obj.asset}]` : '';
         const rest  = Object.entries(obj)
@@ -1140,6 +1275,170 @@ async function refresh() {
     logsEl.scrollTop = logsEl.scrollHeight;
 
     document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+  } catch(e) { console.error(e); }
+}
+
+function _float_or_null(v) {
+  if (v == null) return null;
+  const f = parseFloat(v);
+  return isNaN(f) ? null : f;
+}
+
+// ── Trade Log page ────────────────────────────────────────────────────────────
+async function loadTradeLog() {
+  const asset = document.getElementById('tl-asset').value;
+  const tf    = document.getElementById('tl-tf').value;
+  let url = `/api/trades?limit=200`;
+  if (asset) url += `&asset=${asset}`;
+  if (tf)    url += `&tf=${tf}`;
+  try {
+    const resp = await fetch(url);
+    const data = await resp.json();
+    const tbody = document.getElementById('tl-body');
+    tbody.innerHTML = '';
+    if (!data.trades.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="15">No trades found</td></tr>';
+      return;
+    }
+    for (const t of data.trades) {
+      const asset_v = dval(t, 'asset') || 'BTC';
+      const slug    = dval(t, 'window_slug') || '';
+      const tf_v    = slug.includes('15m') ? '15m' : '5m';
+      const resolved = t.resolved || dval(t, 'resolved');
+      const pnlv = resolved ? _float_or_null(dval(t,'pnl')) : null;
+      const pAI = _float_or_null(dval(t, 'p_ai'));
+      tbody.innerHTML += `<tr>
+        <td style="white-space:nowrap">${fmtTs(dval(t,'timestamp'))}</td>
+        <td>${assetTag(asset_v)}</td>
+        <td><span style="font-size:10px;color:var(--text-3)">${tf_v}</span></td>
+        <td>${dirTag(dval(t,'direction'))}</td>
+        <td>${dirTag(dval(t,'side'))}</td>
+        <td>$${parseFloat(dval(t,'fill_price')||dval(t,'price')||0).toFixed(3)}</td>
+        <td>$${parseFloat(dval(t,'size_usd')||0).toFixed(2)}</td>
+        <td>${fmtProb(dval(t,'p_bayesian'))}</td>
+        <td>${pAI != null ? fmtProb(pAI) : '<span style="color:var(--text-3)">—</span>'}</td>
+        <td>${fmtProb(dval(t,'p_final') || dval(t,'p_bayesian'))}</td>
+        <td>${fmtProb(dval(t,'ev'))}</td>
+        <td style="${parseFloat(dval(t,'pct_move')||0)>=0?'color:#2f9e44':'color:#c92a2a'}">${fmtPct(dval(t,'pct_move'))}</td>
+        <td>${dval(t,'seconds_remaining') ? parseFloat(dval(t,'seconds_remaining')).toFixed(0)+'s' : '—'}</td>
+        <td>${fmtPnl(pnlv)}</td>
+        <td>${outcomeTag(t)}</td>
+      </tr>`;
+    }
+  } catch(e) { console.error(e); }
+}
+
+// ── Analytics page ────────────────────────────────────────────────────────────
+async function loadAnalytics() {
+  try {
+    const [statsResp, calResp] = await Promise.all([
+      fetch('/api/strategy-stats'),
+      fetch('/api/calibration'),
+    ]);
+    const stats = await statsResp.json();
+    const cal   = await calResp.json();
+
+    // By segment
+    const segBody = document.getElementById('seg-body');
+    segBody.innerHTML = '';
+    const segs = Object.entries(stats.by_segment || {}).sort((a,b) => b[1].total - a[1].total);
+    if (segs.length === 0) {
+      segBody.innerHTML = '<tr class="empty-row"><td colspan="4">No data yet</td></tr>';
+    } else {
+      for (const [k, v] of segs) {
+        const wr = v.wr * 100;
+        const pnlColor = v.pnl >= 0 ? '#2f9e44' : '#c92a2a';
+        segBody.innerHTML += `<tr>
+          <td><strong>${k}</strong></td>
+          <td>${v.total}</td>
+          <td>
+            <span style="font-weight:700;color:${wr>60?'#2f9e44':wr<40?'#c92a2a':'#e67700'}">${wr.toFixed(0)}%</span>
+            <div style="width:60px;height:4px;background:var(--surface-2);border-radius:2px;display:inline-block;vertical-align:middle;margin-left:8px">
+              <div style="width:${wr}%;height:100%;background:${wr>60?'#2f9e44':wr<40?'#c92a2a':'#e67700'};border-radius:2px"></div>
+            </div>
+          </td>
+          <td style="color:${pnlColor};font-weight:600">${v.pnl>=0?'+':''}$${v.pnl.toFixed(2)}</td>
+        </tr>`;
+      }
+    }
+
+    // By pct_move bucket
+    const moveBody = document.getElementById('move-body');
+    moveBody.innerHTML = '';
+    const moves = Object.entries(stats.by_pct_move || {});
+    if (moves.length === 0) {
+      moveBody.innerHTML = '<tr class="empty-row"><td colspan="3">No data yet</td></tr>';
+    } else {
+      for (const [bucket, v] of moves) {
+        const wr = v.wr * 100;
+        moveBody.innerHTML += `<tr>
+          <td><code style="font-size:11px">${bucket}</code></td>
+          <td>${v.total}</td>
+          <td><span style="font-weight:700;color:${wr>60?'#2f9e44':wr<40?'#c92a2a':'#e67700'}">${wr.toFixed(0)}%</span></td>
+        </tr>`;
+      }
+    }
+
+    // Hourly chart
+    const hourData = stats.by_hour || {};
+    const hours = Array.from({length:24}, (_,i) => i);
+    const hourWRs = hours.map(h => {
+      const d = hourData[String(h)];
+      return d && d.total > 0 ? Math.round(d.wr * 100) : null;
+    });
+    if (!hourChart) {
+      const ctx = document.getElementById('hour-chart').getContext('2d');
+      hourChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: hours.map(h => h+'h'),
+          datasets: [{
+            label: 'Win Rate %',
+            data: hourWRs,
+            backgroundColor: hourWRs.map(v => v === null ? '#e9ecef' : v >= 60 ? 'rgba(47,158,68,.7)' : v < 40 ? 'rgba(201,42,42,.7)' : 'rgba(230,119,0,.7)'),
+            borderRadius: 4,
+          }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: '#868e96', font: { size: 10 } }, grid: { display: false } },
+            y: { min: 0, max: 100, ticks: { color: '#868e96', font: { size: 10 }, callback: v => v+'%' }, grid: { color: '#f1f3f5' } },
+          },
+        },
+      });
+    } else {
+      hourChart.data.datasets[0].data = hourWRs;
+      hourChart.data.datasets[0].backgroundColor = hourWRs.map(v => v === null ? '#e9ecef' : v >= 60 ? 'rgba(47,158,68,.7)' : v < 40 ? 'rgba(201,42,42,.7)' : 'rgba(230,119,0,.7)');
+      hourChart.update('none');
+    }
+
+    // Calibration table
+    const calBody = document.getElementById('cal-body');
+    calBody.innerHTML = '';
+    const calEntries = Object.entries(cal);
+    if (calEntries.length === 0) {
+      calBody.innerHTML = '<tr class="empty-row"><td colspan="5">Need more trades to calibrate</td></tr>';
+    } else {
+      for (const [bucket, v] of calEntries) {
+        const diff = v.actual_wr - v.model_p_avg;
+        const diffColor = Math.abs(diff) < 0.05 ? '#2f9e44' : Math.abs(diff) < 0.1 ? '#e67700' : '#c92a2a';
+        const barW = Math.round(v.actual_wr * 100);
+        calBody.innerHTML += `<tr>
+          <td><code style="font-size:11px">${bucket}</code></td>
+          <td>${v.total}</td>
+          <td>${(v.model_p_avg*100).toFixed(1)}%</td>
+          <td><strong>${(v.actual_wr*100).toFixed(1)}%</strong></td>
+          <td>
+            <div style="width:80px;height:6px;background:var(--surface-2);border-radius:3px;display:inline-block;vertical-align:middle">
+              <div style="width:${barW}%;height:100%;background:${diffColor};border-radius:3px"></div>
+            </div>
+            <span style="font-size:10px;color:${diffColor};margin-left:6px">${diff>=0?'+':''}${(diff*100).toFixed(1)}%</span>
+          </td>
+        </tr>`;
+      }
+    }
   } catch(e) { console.error(e); }
 }
 
@@ -1157,8 +1456,8 @@ function animateBar() {
 initChart();
 refresh(); refreshChart(); refreshBalance(); animateBar();
 setInterval(() => { refresh(); animateBar(); }, REFRESH_MS);
-setInterval(refreshChart, 60000);   // P&L chart: every 60s
-setInterval(refreshBalance, 30000); // Balance: every 30s
+setInterval(refreshChart, 60000);
+setInterval(refreshBalance, 30000);
 </script>
 </body>
 </html>"""

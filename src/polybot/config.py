@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     max_position_pct: float = 0.01
     daily_loss_cap_pct: float = 0.05
     kelly_fraction: float = 0.25
+    min_trade_usd: float = 1.0    # Floor — always bet at least this when there's edge (Polymarket min is $1)
+    max_trade_usd: float = 10.0   # Hard cap per trade
     min_ev_threshold: float = 0.05
     directional_entry_seconds: int = 60  # T-60s — enter before market reprices
     directional_min_move_pct: float = 0.08  # default; overridden per-asset below
