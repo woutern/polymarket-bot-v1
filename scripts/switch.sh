@@ -80,6 +80,17 @@ NEW_TASK=$(aws --profile "$PROFILE" ecs run-task \
     --region "$REGION" \
     --query 'tasks[0].taskArn' --output text)
 
+# 5. Restart dashboard container with correct MODE
+echo "  Updating dashboard..."
+INSTANCE_ID="i-0ee28e7e5fab27497"
+DASHBOARD_BANKROLL=$( [ "$MODE" = "live" ] && echo "43.0" || echo "1000.0" )
+aws --profile "$PROFILE" ssm send-command \
+    --instance-ids "$INSTANCE_ID" \
+    --document-name "AWS-RunShellScript" \
+    --parameters "commands=[\"docker stop dashboard && docker rm dashboard && docker run -d --name dashboard -p 8888:8888 -e MODE=$MODE -e BANKROLL=$DASHBOARD_BANKROLL --restart unless-stopped 688567279867.dkr.ecr.eu-west-1.amazonaws.com/polymarket-dashboard:latest\"]" \
+    --region "$REGION" > /dev/null
+echo "  Dashboard restarted with MODE=$MODE"
+
 echo ""
 echo "==> Done! Bot is now in $MODE mode."
 echo "    Task: ${NEW_TASK##*/}"
