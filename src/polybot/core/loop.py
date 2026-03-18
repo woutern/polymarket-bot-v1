@@ -639,7 +639,8 @@ class TradingLoop:
 
         # Schedule Polymarket outcome verification 90s after window close (retry 3x at 60s)
         slug = window.slug
-        asyncio.create_task(self._verify_outcome_after_delay(slug, 90), name=f"verify_{slug}")
+        task = asyncio.create_task(self._verify_outcome_after_delay(slug, 90), name=f"verify_{slug}")
+        task.add_done_callback(lambda t: logger.error("verify_task_exception", error=str(t.exception())) if t.exception() else None)
 
         window_record = {
             "slug": window.slug,
