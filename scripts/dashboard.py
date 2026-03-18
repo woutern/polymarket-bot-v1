@@ -127,16 +127,27 @@ def _require_auth(creds: HTTPBasicCredentials = Depends(_security)):
     return creds.username
 
 
+def _extract_field(t, key: str, default="") -> str:
+    """Extract a field that may be a plain value or a DynamoDB {'S': value} dict."""
+    v = t.get(key, default)
+    if isinstance(v, dict):
+        return v.get("S", v.get("N", default))
+    return str(v) if v is not None else default
+
+
 @app.get("/api/data")
 def api_data(_: str = Depends(_require_auth)):
     trades = get_trades()
     windows = get_windows()
     log_lines = get_logs()
 
-    total_pnl = sum(float(t.get("pnl", 0) or 0) for t in trades if t.get("resolved"))
-    wins = sum(1 for t in trades if t.get("resolved") and float(t.get("pnl", 0) or 0) > 0)
-    losses = sum(1 for t in trades if t.get("resolved") and float(t.get("pnl", 0) or 0) <= 0)
-    open_trades = sum(1 for t in trades if not t.get("resolved"))
+    # Filter trades to current mode only — keeps paper and live P&L completely separate
+    mode_trades = [t for t in trades if _extract_field(t, "mode", "live") == _TRADE_MODE]
+
+    total_pnl = sum(float(t.get("pnl", 0) or 0) for t in mode_trades if t.get("resolved"))
+    wins = sum(1 for t in mode_trades if t.get("resolved") and float(t.get("pnl", 0) or 0) > 0)
+    losses = sum(1 for t in mode_trades if t.get("resolved") and float(t.get("pnl", 0) or 0) <= 0)
+    open_trades = sum(1 for t in mode_trades if not t.get("resolved"))
 
     # Per-asset window counts
     asset_windows = {}
@@ -160,20 +171,22 @@ def api_data(_: str = Depends(_require_auth)):
         else:
             asset_windows[asset] = asset_windows.get(asset, 0) + 1
 
-    # Per-strategy P&L
+    # Per-asset × timeframe breakdown (e.g. "BTC 5m", "ETH 15m")
     strategy_pnl = {}
-    for t in trades:
+    for t in mode_trades:
         if not t.get("resolved"):
             continue
-        src = t.get("source", "unknown")
-        source = src.get("S", "unknown") if isinstance(src, dict) else str(src) if src else "unknown"
+        asset = _extract_field(t, "asset", "BTC").upper() or "BTC"
+        slug = _extract_field(t, "window_slug", "")
+        tf = "15m" if "15m" in slug else "5m"
+        key = f"{asset} {tf}"
         p = float(t.get("pnl", 0) or 0)
-        if source not in strategy_pnl:
-            strategy_pnl[source] = {"pnl": 0, "count": 0, "wins": 0}
-        strategy_pnl[source]["pnl"] += p
-        strategy_pnl[source]["count"] += 1
+        if key not in strategy_pnl:
+            strategy_pnl[key] = {"pnl": 0, "count": 0, "wins": 0}
+        strategy_pnl[key]["pnl"] += p
+        strategy_pnl[key]["count"] += 1
         if p > 0:
-            strategy_pnl[source]["wins"] += 1
+            strategy_pnl[key]["wins"] += 1
 
     current_bankroll = _BANKROLL + total_pnl
 
@@ -1005,10 +1018,9 @@ async function refresh() {
     document.getElementById('s-eth-sub').textContent = `5m: ${s.asset_windows.ETH||0}  15m: ${w15.ETH||0}`;
     document.getElementById('s-sol-sub').textContent = `5m: ${s.asset_windows.SOL||0}  15m: ${w15.SOL||0}`;
 
-    // Strategy cards
+    // Per-asset × timeframe performance cards
     const strats = s.strategy_pnl || {};
-    const all_strats = ['directional'];
-    const stratLabels = { directional: 'Directional' };
+    const all_strats = ['BTC 5m', 'ETH 5m', 'SOL 5m', 'BTC 15m', 'ETH 15m', 'SOL 15m'];
     let scHtml = '';
     for (const st of all_strats) {
       const d = strats[st] || { pnl: 0, count: 0, wins: 0 };
@@ -1017,8 +1029,7 @@ async function refresh() {
       scHtml += `
         <div class="strat-card">
           <div class="strat-card-header">
-            <span class="strat-name">${stratLabels[st]||st}</span>
-            ${stratTag(st)}
+            <span class="strat-name">${st}</span>
           </div>
           <div class="strat-pnl" style="color:${pnlColor}">${d.pnl>=0?'+':''}$${d.pnl.toFixed(2)}</div>
           <div class="strat-meta">${d.count} trades &nbsp;&middot;&nbsp; ${wr}% win rate</div>

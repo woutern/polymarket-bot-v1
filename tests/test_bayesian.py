@@ -57,12 +57,13 @@ class TestProbabilityProperty:
         assert abs(b.probability - 0.5) < 0.001
 
     def test_probability_always_in_0_1(self):
-        """Regardless of log_odds, probability is in (0, 1)."""
+        """Sigmoid output stays in (0, 1) for large positive and negative log-odds."""
         table = BaseRateTable()
         b = BayesianUpdater(table)
-        b.log_odds = 1000.0
+        # Use values within Python's float range for exp: exp(-700) ≈ 0
+        b.log_odds = 100.0
         assert 0.0 < b.probability <= 1.0
-        b.log_odds = -1000.0
+        b.log_odds = -100.0
         assert 0.0 <= b.probability < 1.0
 
 

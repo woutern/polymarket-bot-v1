@@ -61,6 +61,7 @@ class PaperTrader:
             price=signal.market_price,
             size_usd=size,
             fill_price=signal.market_price,  # Paper: fill at ask
+            asset=signal.asset,
         )
 
         self.open_positions.append(trade)
@@ -78,6 +79,8 @@ class PaperTrader:
                 "fill_price": trade.fill_price,
                 "pnl": None,
                 "resolved": 0,
+                "mode": "paper",
+                "asset": trade.asset,
             }
         )
 
@@ -127,6 +130,8 @@ class PaperTrader:
                     "fill_price": trade.fill_price,
                     "pnl": trade.pnl,
                     "resolved": 1,
+                    "mode": "paper",
+                    "asset": trade.asset,
                 }
             )
 

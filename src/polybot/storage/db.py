@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS trades (
     size_usd REAL,
     fill_price REAL,
     pnl REAL,
-    resolved INTEGER DEFAULT 0
+    resolved INTEGER DEFAULT 0,
+    mode TEXT DEFAULT 'live',
+    asset TEXT
 );
 
 CREATE TABLE IF NOT EXISTS windows (
@@ -69,9 +71,10 @@ class Database:
     async def insert_trade(self, trade: dict):
         await self._db.execute(
             """INSERT OR REPLACE INTO trades
-               (id, timestamp, window_slug, source, direction, side, price, size_usd, fill_price, pnl, resolved)
-               VALUES (:id, :timestamp, :window_slug, :source, :direction, :side, :price, :size_usd, :fill_price, :pnl, :resolved)""",
-            trade,
+               (id, timestamp, window_slug, source, direction, side, price, size_usd, fill_price, pnl, resolved, mode, asset)
+               VALUES (:id, :timestamp, :window_slug, :source, :direction, :side, :price, :size_usd, :fill_price, :pnl, :resolved,
+                       :mode, :asset)""",
+            {**trade, "mode": trade.get("mode", "live"), "asset": trade.get("asset", "")},
         )
         await self._db.commit()
         if self._dynamo:

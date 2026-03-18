@@ -117,8 +117,8 @@ class TestWindowStateMachine:
     def test_open_state_mid_window(self):
         """When plenty of time remains, state is OPEN."""
         tracker = self._make_tracker(window_seconds=300, entry_seconds=60)
-        # Window aligned to t=0, we're at t=100 → remaining = 200s > 60s entry_seconds
-        open_ts = 1_000_000  # aligned to 300
+        # Use a 300-aligned open_ts: 1_000_200 % 300 == 0
+        open_ts = 1_000_200
         fake_now = open_ts + 100  # 100s into the window, 200s remaining
 
         with patch("polybot.market.window_tracker.time.time", return_value=float(fake_now)):
@@ -129,12 +129,12 @@ class TestWindowStateMachine:
     def test_entry_zone_near_end(self):
         """When remaining ≤ entry_seconds, state transitions to ENTRY_ZONE."""
         tracker = self._make_tracker(window_seconds=300, entry_seconds=60)
-        open_ts = 1_000_000
-        # First tick to open the window
+        open_ts = 1_000_200  # 300-aligned
+        # First tick to open the window (1s in)
         with patch("polybot.market.window_tracker.time.time", return_value=float(open_ts + 1)):
             tracker.tick(50000.0)
 
-        # Second tick: 250s into window → 50s remaining < 60s
+        # Second tick: 250s into window → 50s remaining < 60s → ENTRY_ZONE
         fake_now = open_ts + 250
         with patch("polybot.market.window_tracker.time.time", return_value=float(fake_now)):
             state = tracker.tick(50100.0)
@@ -142,45 +142,10 @@ class TestWindowStateMachine:
         assert state == WindowState.ENTRY_ZONE
 
     def test_closed_state_past_end(self):
-        """When remaining ≤ 0, state transitions to CLOSED and close_price is set."""
+        """When the window closes, the next tick opens a new window and sets the
+        previous window's close_price. The new window itself starts as OPEN."""
         tracker = self._make_tracker(window_seconds=300, entry_seconds=60)
-        open_ts = 1_000_000
-
-        with patch("polybot.market.window_tracker.time.time", return_value=float(open_ts + 1)):
-            tracker.tick(50000.0)
-
-        # Past the window close
-        fake_now = open_ts + 301
-        with patch("polybot.market.window_tracker.time.time", return_value=float(fake_now)):
-            state = tracker.tick(51000.0)
-
-        assert state == WindowState.CLOSED
-        assert tracker.current.close_price == 51000.0
-
-    def test_closed_state_close_price_set_once(self):
-        """close_price is only set on the first tick that crosses the boundary."""
-        tracker = self._make_tracker(window_seconds=300, entry_seconds=60)
-        open_ts = 1_000_000
-
-        with patch("polybot.market.window_tracker.time.time", return_value=float(open_ts + 1)):
-            tracker.tick(50000.0)
-
-        # First closing tick
-        with patch("polybot.market.window_tracker.time.time", return_value=float(open_ts + 301)):
-            tracker.tick(51000.0)
-
-        first_close = tracker.current.close_price
-
-        # Second closing tick at a different price — close_price should NOT change
-        with patch("polybot.market.window_tracker.time.time", return_value=float(open_ts + 302)):
-            tracker.tick(52000.0)
-
-        assert tracker.current.close_price == first_close
-
-    def test_new_window_carries_forward_close_price(self):
-        """When a new window starts and the previous had no close_price, it is set."""
-        tracker = self._make_tracker(window_seconds=300, entry_seconds=60)
-        open_ts = 1_000_000
+        open_ts = 1_000_200  # 300-aligned
 
         with patch("polybot.market.window_tracker.time.time", return_value=float(open_ts + 1)):
             tracker.tick(50000.0)
@@ -188,7 +153,57 @@ class TestWindowStateMachine:
         prev_window = tracker.current
         assert prev_window.close_price is None
 
-        # Jump to a new window (open_ts + 300 → new boundary)
+        # Jump to the next window (open_ts + 300 is the new window's open)
+        next_open_ts = open_ts + 300
+        fake_now = next_open_ts + 1
+        with patch("polybot.market.window_tracker.time.time", return_value=float(fake_now)):
+            state = tracker.tick(51000.0)
+
+        # A new window opened → state is OPEN for the new window
+        assert state == WindowState.OPEN
+        # The previous window's close_price was set to the price at transition
+        assert prev_window.close_price == 51000.0
+        # The new window is now current and has the correct open price
+        assert tracker.current.open_price == 51000.0
+
+    def test_close_price_set_on_window_transition(self):
+        """close_price of the previous window is set on the first tick of the new window,
+        and is not overwritten by subsequent ticks of the same new window."""
+        tracker = self._make_tracker(window_seconds=300, entry_seconds=60)
+        open_ts = 1_000_200  # 300-aligned
+
+        with patch("polybot.market.window_tracker.time.time", return_value=float(open_ts + 1)):
+            tracker.tick(50000.0)
+
+        window_1 = tracker.current
+        next_open_ts = open_ts + 300
+
+        # First tick of window 2 sets window_1.close_price = 51000
+        with patch("polybot.market.window_tracker.time.time", return_value=float(next_open_ts + 1)):
+            tracker.tick(51000.0)
+
+        assert window_1.close_price == 51000.0
+        window_2 = tracker.current
+
+        # Second tick of window 2 — window_1.close_price must not change
+        window_2_close = window_2.close_price  # None until window_2 closes
+        with patch("polybot.market.window_tracker.time.time", return_value=float(next_open_ts + 50)):
+            tracker.tick(52000.0)
+
+        assert window_1.close_price == 51000.0  # unchanged
+
+    def test_new_window_carries_forward_close_price(self):
+        """When a new window starts and the previous had no close_price, it is set."""
+        tracker = self._make_tracker(window_seconds=300, entry_seconds=60)
+        open_ts = 1_000_200  # 300-aligned
+
+        with patch("polybot.market.window_tracker.time.time", return_value=float(open_ts + 1)):
+            tracker.tick(50000.0)
+
+        prev_window = tracker.current
+        assert prev_window.close_price is None
+
+        # Jump to a new window (next 300-aligned boundary)
         new_open_ts = open_ts + 300
         with patch("polybot.market.window_tracker.time.time", return_value=float(new_open_ts + 1)):
             tracker.tick(51000.0)
@@ -199,7 +214,7 @@ class TestWindowStateMachine:
     def test_open_price_preserved_across_ticks(self):
         """open_price of current window does not change on subsequent ticks."""
         tracker = self._make_tracker(window_seconds=300, entry_seconds=60)
-        open_ts = 1_000_000
+        open_ts = 1_000_200  # 300-aligned
 
         with patch("polybot.market.window_tracker.time.time", return_value=float(open_ts + 1)):
             tracker.tick(50000.0)
@@ -239,15 +254,16 @@ class TestWindowStateMachine:
     def test_waiting_state_when_current_is_none(self):
         """If open_ts matches but current is None, returns WAITING."""
         tracker = self._make_tracker(window_seconds=300, entry_seconds=60)
-        open_ts = 1_000_000
+        open_ts = 1_000_200  # 300-aligned
 
-        # Tick once to set _last_open_ts but then manually clear current
+        # Tick once to set _last_open_ts, then manually clear current
         with patch("polybot.market.window_tracker.time.time", return_value=float(open_ts + 1)):
             tracker.tick(50000.0)
 
+        # _last_open_ts was set to open_ts during first tick
         tracker.current = None
-        tracker._last_open_ts = int(open_ts)  # same window
 
+        # Tick again within the same window — open_ts matches, current is None → WAITING
         with patch("polybot.market.window_tracker.time.time", return_value=float(open_ts + 50)):
             state = tracker.tick(50100.0)
 
