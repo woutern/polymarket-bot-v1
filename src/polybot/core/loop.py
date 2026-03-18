@@ -320,13 +320,16 @@ class TradingLoop:
             no_ask=round(state.orderbook.no_best_ask, 4),
         )
 
+        # Use per-asset × per-duration threshold (research-calibrated)
+        min_move = self.settings.min_move_for(state.asset, state.tracker.window_seconds)
+
         signal = generate_directional_signal(
             bayesian=state.bayesian,
             orderbook=state.orderbook,
             current_price=price,
             open_price=window.open_price,
             seconds_remaining=remaining,
-            min_move_pct=self.settings.directional_min_move_pct,
+            min_move_pct=min_move,
             min_ev_threshold=self.settings.min_ev_threshold,
             max_market_price=self.settings.max_market_price,
             window_slug=window.slug,
