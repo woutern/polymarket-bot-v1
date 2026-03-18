@@ -34,10 +34,10 @@ class Settings(BaseSettings):
     pairs: str = ""
 
     # Per-asset move thresholds (T+2s-T+15s early entry with quality filters)
-    min_move_btc_5m: float = 0.05   # BTC 5m: aligned with pre-filter
-    min_move_eth_5m: float = 0.05   # ETH 5m: same
-    min_move_sol_5m: float = 0.05   # SOL 5m: same (prev_window filter handles vol)
-    min_move_btc_15m: float = 0.05  # 15m: same
+    min_move_btc_5m: float = 0.02   # BTC 5m: lowered to see more signals
+    min_move_eth_5m: float = 0.02   # ETH 5m: same
+    min_move_sol_5m: float = 0.02   # SOL 5m: same
+    min_move_btc_15m: float = 0.05  # 15m: keep higher
     min_move_eth_15m: float = 0.05
     min_move_sol_15m: float = 0.05
 

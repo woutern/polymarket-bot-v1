@@ -1122,7 +1122,7 @@ HTML = r"""<!DOCTYPE html>
     <div class="stat-card">
       <div class="stat-label">Open Positions</div>
       <div class="stat-value blue" id="s-open">&mdash;</div>
-      <div class="stat-sub" id="s-open-sub">awaiting resolution</div>
+      <div class="stat-sub" id="s-open-sub"></div>
     </div>
   </div>
 

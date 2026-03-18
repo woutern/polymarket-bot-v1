@@ -78,13 +78,14 @@ def redeem_all(settings: Settings, dry_run: bool = False):
         timeout=10,
     )
     positions = resp.json()
-    claimable = [p for p in positions if p.get("currentValue", 0) > 0.5]
+    # Redeem ALL positions (including $0 losers to clean up portfolio)
+    claimable = [p for p in positions if p.get("conditionId")]
 
     if not claimable:
-        print("No claimable positions.")
+        print("No positions to redeem.")
         return
 
-    print(f"\nClaimable: {len(claimable)} positions")
+    print(f"\nPositions to redeem: {len(claimable)}")
     total_value = sum(p.get("currentValue", 0) for p in claimable)
     print(f"Total value: ${total_value:.2f}")
 
@@ -131,7 +132,7 @@ def redeem_all(settings: Settings, dry_run: bool = False):
                 safe_nonce,
             ).call()
 
-            sig = eoa.signHash(tx_hash_safe)
+            sig = eoa.unsafe_sign_hash(tx_hash_safe)
             signature = (
                 sig.r.to_bytes(32, "big")
                 + sig.s.to_bytes(32, "big")

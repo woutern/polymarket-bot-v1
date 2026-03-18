@@ -469,36 +469,58 @@ class TradingLoop:
         pct_move = state.tracker.pct_move(price) or 0.0
         state.bayesian.update(price, remaining)
 
-        # FILTER 1: Momentum strength — move > 0.05% (stronger moves hold direction)
-        if abs(pct_move) < 0.05:
+        tf = "15m" if "15m" in window.slug else "5m"
+        seconds_since_open = time.time() - window.open_ts
+
+        # Compute all filter values upfront for logging
+        vol = compute_realized_vol(list(state.price_history))
+        vol_ma = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol
+        vol_ratio = vol / vol_ma if vol_ma > 0 else 1.0
+        hl_range = state.window_high - state.window_low
+        body = abs(price - (window.open_price or price))
+        body_ratio = body / hl_range if hl_range > 0 else 0.5
+        min_move = self.settings.min_move_for(state.asset, state.tracker.window_seconds)
+
+        # FILTER 1: Momentum strength
+        if abs(pct_move) < min_move:
+            logger.info("signal_rejected", asset=state.asset, timeframe=tf,
+                        seconds_since_open=round(seconds_since_open, 1),
+                        move_pct=round(pct_move, 4), vol_ratio=round(vol_ratio, 3),
+                        body_ratio=round(body_ratio, 3), reason="move_too_small",
+                        threshold=min_move)
             return
 
-        # FILTER 3: Previous window continuation — skip if prev window direction disagrees
+        # FILTER 3: Previous window continuation
         if state.prev_window and state.prev_window.open_price and state.prev_window.close_price:
             prev_up = state.prev_window.close_price >= state.prev_window.open_price
             current_up = pct_move > 0
             if prev_up != current_up:
-                logger.debug("filter_prev_window_disagree", asset=state.asset, slug=window.slug)
+                logger.info("signal_rejected", asset=state.asset, timeframe=tf,
+                            seconds_since_open=round(seconds_since_open, 1),
+                            move_pct=round(pct_move, 4), vol_ratio=round(vol_ratio, 3),
+                            body_ratio=round(body_ratio, 3), reason="prev_window_disagree")
                 return
 
-        # FILTER 2: Volatility ratio — skip if too quiet or too wild
-        vol = compute_realized_vol(list(state.price_history))
-        vol_ma = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol
-        vol_ratio = vol / vol_ma if vol_ma > 0 else 1.0
-
+        # FILTER 2: Volatility ratio
         if vol_ratio < 0.5:
-            logger.debug("filter_vol_quiet", asset=state.asset, vol_ratio=round(vol_ratio, 3))
+            logger.info("signal_rejected", asset=state.asset, timeframe=tf,
+                        seconds_since_open=round(seconds_since_open, 1),
+                        move_pct=round(pct_move, 4), vol_ratio=round(vol_ratio, 3),
+                        body_ratio=round(body_ratio, 3), reason="vol_too_low")
             return
         if vol_ratio > 3.0:
-            logger.debug("filter_vol_wild", asset=state.asset, vol_ratio=round(vol_ratio, 3))
+            logger.info("signal_rejected", asset=state.asset, timeframe=tf,
+                        seconds_since_open=round(seconds_since_open, 1),
+                        move_pct=round(pct_move, 4), vol_ratio=round(vol_ratio, 3),
+                        body_ratio=round(body_ratio, 3), reason="vol_too_high")
             return
 
-        # FILTER 5: Body ratio — skip indecisive candles
-        hl_range = state.window_high - state.window_low
-        body = abs(price - (window.open_price or price))
-        body_ratio = body / hl_range if hl_range > 0 else 0.5
+        # FILTER 5: Body ratio
         if body_ratio < 0.4:
-            logger.debug("filter_body_indecisive", asset=state.asset, body_ratio=round(body_ratio, 3))
+            logger.info("signal_rejected", asset=state.asset, timeframe=tf,
+                        seconds_since_open=round(seconds_since_open, 1),
+                        move_pct=round(pct_move, 4), vol_ratio=round(vol_ratio, 3),
+                        body_ratio=round(body_ratio, 3), reason="body_too_small")
             return
 
         await self._refresh_orderbook(state)
