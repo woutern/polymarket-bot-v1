@@ -871,19 +871,14 @@ HTML = r"""<!DOCTYPE html>
   <!-- Stats row -->
   <div class="stats-grid">
     <div class="stat-card">
-      <div class="stat-label" id="bankroll-label">Virtual Bankroll</div>
-      <div class="stat-value gold" id="s-bankroll">—</div>
-      <div class="stat-sub" id="s-bankroll-sub">Paper trading</div>
+      <div class="stat-label">Wallet Balance</div>
+      <div class="stat-value gold" id="s-balance">—</div>
+      <div class="stat-sub" id="s-balance-sub">USDC on Polymarket</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Total P&amp;L</div>
       <div class="stat-value" id="s-pnl">—</div>
-      <div class="stat-sub" id="s-pnl-sub">vs $<span id="s-starting">—</span> start</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Live Wallet</div>
-      <div class="stat-value" id="s-balance">—</div>
-      <div class="stat-sub" id="s-balance-sub">USDC on-chain</div>
+      <div class="stat-sub" id="s-pnl-sub">since reset</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Win / Loss</div>
@@ -902,6 +897,11 @@ HTML = r"""<!DOCTYPE html>
       <div class="stat-label">ETH Windows</div>
       <div class="stat-value" id="s-eth">—</div>
       <div class="stat-sub" id="s-eth-sub">5m + 15m</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">SOL Windows</div>
+      <div class="stat-value" id="s-sol">—</div>
+      <div class="stat-sub" id="s-sol-sub">5m + 15m</div>
     </div>
   </div>
 
@@ -1152,7 +1152,7 @@ async function refreshBalance() {
     const total = (d.polygon_usdc || 0) + (d.polymarket_value || 0);
     document.getElementById('s-balance').textContent = '$' + total.toFixed(2);
     document.getElementById('s-balance-sub').textContent =
-      'USDC $' + (d.polygon_usdc||0).toFixed(2) + ' + pos $' + (d.polymarket_value||0).toFixed(2);
+      'Cash $' + (d.polygon_usdc||0).toFixed(2) + ' + positions $' + (d.polymarket_value||0).toFixed(2);
   } catch(e) {}
 }
 
@@ -1227,10 +1227,7 @@ async function refresh() {
     modeBadge.style.color = mode === 'LIVE' ? '#c92a2a' : '#1971c2';
     modeBadge.style.borderColor = mode === 'LIVE' ? '#ffc9c9' : '#a5d8ff';
 
-    document.getElementById('s-bankroll').textContent = '$' + (s.current_bankroll || s.starting_bankroll || 0).toFixed(2);
-    document.getElementById('bankroll-label').textContent = mode === 'LIVE' ? 'Bankroll' : 'Virtual Bankroll';
-    document.getElementById('s-bankroll-sub').textContent = mode === 'LIVE' ? 'Live trading' : 'Paper trading';
-    document.getElementById('s-starting').textContent = (s.starting_bankroll || 1000).toFixed(0);
+    // Bankroll cards removed — wallet balance is the primary metric
 
     const pnl = s.total_pnl;
     const pnlEl = document.getElementById('s-pnl');
@@ -1242,8 +1239,10 @@ async function refresh() {
     const w15 = s.asset_windows_15m || {};
     document.getElementById('s-btc').textContent = (s.asset_windows.BTC || 0);
     document.getElementById('s-eth').textContent = (s.asset_windows.ETH || 0);
+    document.getElementById('s-sol').textContent = (s.asset_windows.SOL || 0);
     document.getElementById('s-btc-sub').textContent = `5m: ${s.asset_windows.BTC||0}  15m: ${w15.BTC||0}`;
     document.getElementById('s-eth-sub').textContent = `5m: ${s.asset_windows.ETH||0}  15m: ${w15.ETH||0}`;
+    document.getElementById('s-sol-sub').textContent = `5m: ${s.asset_windows.SOL||0}  15m: ${w15.SOL||0}`;
 
     // Per-asset × timeframe performance cards
     const strats = s.strategy_pnl || {};
