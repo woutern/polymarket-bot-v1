@@ -1,6 +1,6 @@
 """Late-window directional signal generator.
 
-Checks for price moves in the entry zone (T-60s to T-0s) and generates
+Checks for price moves in the entry zone (T+2s to T+15s) and generates
 signals when:
 1. Price moved > threshold from window open
 2. Market hasn't fully priced it in yet (ask < max_market_price)

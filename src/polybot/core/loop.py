@@ -1,7 +1,7 @@
 """Main async event loop — multi-asset, multi-timeframe directional trading.
 
-Strategy: Late-window directional (T-60s to T-15s) across BTC/ETH/SOL
-on both 5-minute and 15-minute windows.
+Strategy: Early entry (T+2s to T+15s) across BTC/ETH/SOL
+on both 5-minute and 15-minute windows with LightGBM + quality filters.
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ class AssetState:
 class TradingLoop:
     """Multi-asset, multi-timeframe directional trading bot.
 
-    Single strategy: late-window momentum entry (T-60s to T-15s).
+    Single strategy: early entry (T+2s to T+15s) with LightGBM + filters.
     Uses Bayesian updater + historical base rates to estimate P(UP).
     Quarter-Kelly sizing capped at $1 per trade.
     """
@@ -972,7 +972,7 @@ class TradingLoop:
                         f"BY SEGMENT:\n{segment_summary}\n"
                         f"{ai_section}\n"
                         f"CURRENT PARAMETERS:\n"
-                        f"  BTC min_move: 0.08% | ETH: 0.10% | SOL: 0.14%\n"
+                        f"  min_move: 0.02% | max_ask: 0.60 | lgbm_threshold: 0.55\n"
                         f"  max_market_price: 0.75 | min_ev: 0.06 | obi_spread: 0.15\n\n"
                         f"Provide: (1) one specific parameter change to test next hour, "
                         f"(2) whether AI is adding value vs Bayesian-only, "
