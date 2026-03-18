@@ -426,24 +426,22 @@ def api_pnl_history(_: str = Depends(_require_auth)):
     }
 
 
+_WALLET_ADDRESS = _os.getenv(
+    "POLYMARKET_FUNDER", "0x5ca439d661c9b44337E91fC681ec4b006C473610"
+)
+
+
 @app.get("/api/balance")
 async def api_balance(_: str = Depends(_require_auth)):
     """Return wallet USDC balances."""
     try:
-        from polybot.config import Settings
         from polybot.market.balance_checker import BalanceChecker
 
-        settings = Settings()
-        address = settings.polymarket_funder or None
-        if not address and settings.polymarket_private_key:
-            from eth_account import Account
-            address = Account.from_key(settings.polymarket_private_key).address
-
-        if not address:
+        if not _WALLET_ADDRESS:
             return {"polymarket_value": 0.0, "polygon_usdc": 0.0, "error": "no_address"}
 
         checker = BalanceChecker()
-        return await checker.check(address)
+        return await checker.check(_WALLET_ADDRESS)
     except Exception as e:
         return {"polymarket_value": 0.0, "polygon_usdc": 0.0, "error": str(e)}
 
@@ -655,6 +653,7 @@ HTML = r"""<!DOCTYPE html>
   .strategy-grid {
     display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 20px;
   }
+  #strategy-section { display: contents; }
   .strat-card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow-sm);
