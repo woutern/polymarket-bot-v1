@@ -183,6 +183,9 @@ class TradingLoop:
             except Exception as e:
                 logger.warning("startup_balance_check_failed", error=str(e))
 
+        # Resolve orphan trades from previous sessions
+        await self._resolve_orphan_trades()
+
         self._running = True
 
         tasks = [
@@ -297,9 +300,10 @@ class TradingLoop:
         ):
             await self._try_tier_a_entry(state, price, window, oracle, remaining)
 
-        # Tier B (PRIMARY): Enter T-180s to T-90s when direction established AND ask still cheap
+        # Tier B (PRIMARY): Enter T+2s to T+15s with multi-filter validation
+        seconds_since_open = time.time() - window.open_ts
         if (
-            90 <= remaining <= 180
+            2.0 <= seconds_since_open <= 15.0
             and not state.traded_this_window
             and window.open_price
             and window.open_price > 0
@@ -426,14 +430,41 @@ class TradingLoop:
 
         remaining = window.seconds_remaining()
 
-        # Hard cutoff: only enter T-180s to T-90s (direction established, ask may be cheap)
-        if remaining < 90 or remaining > 180:
-            return
+        # No hard time cutoff — time filtering done in _tick_asset (T+2s to T+15s)
 
         pct_move = state.tracker.pct_move(price) or 0.0
         state.bayesian.update(price, remaining)
 
+        # FILTER 1: Momentum strength — move > 0.05% (stronger moves hold direction)
+        if abs(pct_move) < 0.05:
+            return
+
+        # FILTER 3: Previous window continuation — skip if prev window direction disagrees
+        if state.prev_window and state.prev_window.open_price and state.prev_window.close_price:
+            prev_up = state.prev_window.close_price >= state.prev_window.open_price
+            current_up = pct_move > 0
+            if prev_up != current_up:
+                logger.debug("filter_prev_window_disagree", asset=state.asset, slug=window.slug)
+                return
+
+        # FILTER 2: Volatility — skip if vol is spiking (>3x rolling average)
+        vol = compute_realized_vol(list(state.price_history))
+        if len(state.price_history) > 50 and vol > 0:
+            # Simple check: if vol > 2.0 annualized (extreme), skip
+            if vol > 2.0:
+                logger.debug("filter_vol_spike", asset=state.asset, vol=round(vol, 4))
+                return
+
         await self._refresh_orderbook(state)
+
+        # FILTER 4: Spread — skip if bid-ask spread > $0.10
+        if pct_move > 0:
+            spread = state.orderbook.yes_best_ask - state.orderbook.yes_best_bid
+        else:
+            spread = state.orderbook.no_best_ask - state.orderbook.no_best_bid
+        if spread > 0.10:
+            logger.debug("filter_wide_spread", asset=state.asset, spread=round(spread, 4))
+            return
 
         logger.info(
             "entry_zone",
@@ -445,6 +476,8 @@ class TradingLoop:
             t_minus=round(remaining, 1),
             yes_ask=round(state.orderbook.yes_best_ask, 4),
             no_ask=round(state.orderbook.no_best_ask, 4),
+            prev_window_agrees=True,
+            spread=round(spread, 4),
         )
 
         # Use per-asset × per-duration threshold (research-calibrated)
@@ -628,6 +661,41 @@ class TradingLoop:
                 logger.warning("verify_failed", slug=window_slug, attempt=attempt, error=str(e))
                 if attempt < 3:
                     await asyncio.sleep(60)
+
+    async def _resolve_orphan_trades(self):
+        """On startup, resolve any trades left unresolved from previous sessions."""
+        try:
+            trades = await self.db.get_trades(limit=50)
+            orphans = [t for t in trades if not t.get("resolved")]
+            if not orphans:
+                logger.info("orphan_check_clean", count=0)
+                return
+
+            logger.info("orphan_check_found", count=len(orphans))
+            from polybot.feeds.polymarket_rest import get_market_outcome
+
+            for t in orphans:
+                slug = t.get("window_slug", "")
+                if not slug:
+                    continue
+                winner, source = await get_market_outcome(slug)
+                if winner is None:
+                    continue
+                side = t.get("side", "")
+                correct = (side == winner)
+                fill = float(t.get("fill_price", 0) or 0)
+                size = float(t.get("size_usd", 0) or 0)
+                pnl = round((size / fill) * (1 - fill), 2) if correct and fill > 0 else round(-size, 2)
+
+                self.risk.record_trade(pnl)
+                await self.db.update_trade_verified(
+                    trade_id=t["id"], pnl=pnl,
+                    polymarket_winner=winner, correct_prediction=correct,
+                    outcome_source=source,
+                )
+                logger.info("orphan_resolved", id=t["id"], slug=slug, winner=winner, pnl=round(pnl, 2))
+        except Exception as e:
+            logger.warning("orphan_check_failed", error=str(e))
 
     async def _execute(self, signal, state: AssetState, signal_ms: float = 0, bedrock_ms: float = 0):
         if isinstance(self.trader, LiveTrader):
