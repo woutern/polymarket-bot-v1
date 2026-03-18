@@ -110,41 +110,46 @@ class PaperTrader:
         return trade
 
     async def resolve_window(self, window_slug: str, went_up: bool):
-        """Resolve all open positions for a completed window (Coinbase-based)."""
+        """Mark window as closed but do NOT resolve P&L yet.
+
+        Coinbase-based direction is unreliable (diverges from Chainlink ~3.5%).
+        Real resolution happens in verify_and_update() after Gamma API confirms.
+        """
         to_resolve = [p for p in self.open_positions if p.window_slug == window_slug]
 
         for trade in to_resolve:
+            # Preliminary P&L from Coinbase (may be overridden by Gamma API)
             won = (trade.side == "YES" and went_up) or (trade.side == "NO" and not went_up)
             if won:
-                # Bought at `price`, pays out $1 per share
                 shares = trade.size_usd / trade.fill_price
                 pnl = shares * (1.0 - trade.fill_price)
             else:
                 pnl = -trade.size_usd
 
             trade.pnl = pnl
-            trade.resolved = True
-            self.risk.record_trade(pnl)
+            trade.outcome_source = "coinbase_inferred"
+            # NOT resolved yet — wait for Gamma API verification
+            # resolved stays False until verify_and_update confirms
 
             await self.db.insert_trade(self._trade_to_dict(trade))
 
             logger.info(
-                "paper_trade_resolved",
+                "paper_trade_pending",
                 id=trade.id,
                 side=trade.side,
-                won=pnl > 0,
-                pnl=round(pnl, 4),
+                preliminary_won=pnl > 0,
+                preliminary_pnl=round(pnl, 4),
                 slug=trade.window_slug,
-                outcome_source=trade.outcome_source,
+                note="awaiting Gamma API verification",
             )
 
         self.open_positions = [p for p in self.open_positions if p.window_slug != window_slug]
 
     async def verify_and_update(self, window_slug: str):
-        """Query Polymarket Gamma API to verify actual outcome and update trade records.
+        """Query Polymarket Gamma API to verify actual outcome and finalize P&L.
 
-        Called 30s after window close — overrides Coinbase-inferred resolution
-        with the authoritative Chainlink-based result from Polymarket.
+        Called 30s after window close. This is the ONLY place trades get marked
+        as resolved=1 with final P&L. Coinbase-inferred P&L is preliminary only.
         """
         try:
             winner, source = await get_market_outcome(window_slug)
@@ -154,23 +159,37 @@ class PaperTrader:
 
             trades = await self.db.get_trades(window_slug=window_slug)
             for t in trades:
-                if not t.get("resolved"):
-                    continue
+                if t.get("resolved"):
+                    continue  # already finalized
                 side = t.get("side", "")
                 correct = (side == winner)
-                await self.db.update_trade_outcome(
+                fill_price = float(t.get("fill_price", 0) or 0)
+                size_usd = float(t.get("size_usd", 0) or 0)
+
+                # Final P&L based on Polymarket resolution
+                if correct and fill_price > 0:
+                    shares = size_usd / fill_price
+                    pnl = shares * (1.0 - fill_price)
+                else:
+                    pnl = -size_usd
+
+                self.risk.record_trade(pnl)
+
+                await self.db.update_trade_verified(
                     trade_id=t["id"],
+                    pnl=pnl,
                     polymarket_winner=winner,
                     correct_prediction=correct,
                     outcome_source=source,
                 )
                 logger.info(
-                    "outcome_verified",
+                    "trade_resolved",
                     id=t["id"],
                     slug=window_slug,
                     polymarket_winner=winner,
                     our_side=side,
                     correct=correct,
+                    pnl=round(pnl, 4),
                     source=source,
                 )
         except Exception as e:

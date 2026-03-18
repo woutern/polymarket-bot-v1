@@ -91,6 +91,25 @@ class DynamoStore:
             logger.debug("dynamo_get_signals_failed", extra={"error": str(e)})
             return []
 
+    def update_trade_resolved(self, trade_id: str, pnl: float, polymarket_winner: str, correct_prediction: bool, outcome_source: str):
+        if not self._available:
+            return
+        try:
+            from decimal import Decimal
+            self._trades.update_item(
+                Key={"id": trade_id},
+                UpdateExpression="SET resolved = :r, pnl = :p, polymarket_winner = :w, correct_prediction = :c, outcome_source = :s",
+                ExpressionAttributeValues={
+                    ":r": 1,
+                    ":p": Decimal(str(round(pnl, 6))),
+                    ":w": polymarket_winner,
+                    ":c": int(correct_prediction),
+                    ":s": outcome_source,
+                },
+            )
+        except Exception as e:
+            logger.debug("dynamo_update_trade_failed", extra={"error": str(e)})
+
     def get_trades_for_window(self, window_slug: str) -> list[dict]:
         if not self._available:
             return []

@@ -95,10 +95,11 @@ class TestApiData:
         s = data["stats"]
         assert s["mode"] == "live"
         assert s["starting_bankroll"] == 43.0
-        # t1 won $0.82, t2 lost $1.0 → net = -0.18
-        assert abs(s["total_pnl"] - (-0.18)) < 0.01
+        # Only polymarket_verified trades count as realized:
+        # t1 (verified, won $0.82), t2 (coinbase_inferred, not counted)
+        assert abs(s["total_pnl"] - 0.82) < 0.01
         assert s["wins"] == 1
-        assert s["losses"] == 1
+        assert s["losses"] == 0  # t2 is coinbase_inferred, not in verified count
         assert s["open_trades"] == 1  # t3 is unresolved
 
     def test_strategy_pnl_breakdown(self, client):

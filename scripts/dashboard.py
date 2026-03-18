@@ -265,10 +265,18 @@ def api_data(_: str = Depends(_require_auth)):
     # Filter trades to current mode only
     mode_trades = [t for t in trades if _extract_field(t, "mode", "live") == _TRADE_MODE]
 
-    total_pnl = sum(_float_field(t, "pnl") for t in mode_trades if t.get("resolved") or _bool_field(t, "resolved"))
-    wins = sum(1 for t in mode_trades if (t.get("resolved") or _bool_field(t, "resolved")) and _float_field(t, "pnl") > 0)
-    losses = sum(1 for t in mode_trades if (t.get("resolved") or _bool_field(t, "resolved")) and _float_field(t, "pnl") <= 0)
-    open_trades = sum(1 for t in mode_trades if not (t.get("resolved") or _bool_field(t, "resolved")))
+    resolved_trades = [t for t in mode_trades if t.get("resolved") or _bool_field(t, "resolved")]
+    open_trade_list = [t for t in mode_trades if not (t.get("resolved") or _bool_field(t, "resolved"))]
+    # Only count verified resolutions for realized P&L
+    verified = [t for t in resolved_trades if _extract_field(t, "outcome_source") == "polymarket_verified"]
+    total_pnl = sum(_float_field(t, "pnl") for t in verified)
+    # Include coinbase_inferred as preliminary (show separately)
+    preliminary_pnl = sum(_float_field(t, "pnl") for t in resolved_trades if _extract_field(t, "outcome_source") != "polymarket_verified")
+    wins = sum(1 for t in verified if _float_field(t, "pnl") > 0)
+    losses = sum(1 for t in verified if _float_field(t, "pnl") <= 0)
+    open_trades = len(open_trade_list)
+    # Unrealized: open positions with preliminary Coinbase P&L
+    unrealized_pnl = sum(_float_field(t, "pnl") for t in open_trade_list if _float_field(t, "pnl") != 0)
 
     # Per-asset window counts
     asset_windows = {}
@@ -332,6 +340,8 @@ def api_data(_: str = Depends(_require_auth)):
         "recent_signals": recent_signals,
         "stats": {
             "total_pnl": total_pnl,
+            "unrealized_pnl": unrealized_pnl,
+            "preliminary_pnl": preliminary_pnl,
             "wins": wins,
             "losses": losses,
             "open_trades": open_trades,
@@ -1520,9 +1530,12 @@ async function refreshOverview() {
     }
 
     const pnl = s.total_pnl;
+    const unrealized = s.unrealized_pnl || 0;
     const pnlEl = document.getElementById('s-pnl');
-    pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(4);
+    pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
     pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'green' : 'red');
+    document.getElementById('s-pnl-sub').textContent =
+      'Realized (verified)' + (unrealized ? ' | Unrealized: ' + (unrealized>=0?'+':'') + '$' + unrealized.toFixed(2) : '');
 
     const wr = s.total_resolved > 0 ? Math.round(s.wins / s.total_resolved * 100) : 0;
     document.getElementById('s-wl').textContent = s.wins + ' / ' + s.losses;

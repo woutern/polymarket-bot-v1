@@ -178,7 +178,7 @@ class Database:
         correct_prediction: bool,
         outcome_source: str = "polymarket_verified",
     ):
-        """Update a trade record with verified Polymarket outcome."""
+        """Update a trade record with verified Polymarket outcome (legacy — use update_trade_verified)."""
         await self._db.execute(
             """UPDATE trades
                SET polymarket_winner = ?, correct_prediction = ?, outcome_source = ?
@@ -186,6 +186,29 @@ class Database:
             (polymarket_winner, int(correct_prediction), outcome_source, trade_id),
         )
         await self._db.commit()
+
+    async def update_trade_verified(
+        self,
+        trade_id: str,
+        pnl: float,
+        polymarket_winner: str,
+        correct_prediction: bool,
+        outcome_source: str = "polymarket_verified",
+    ):
+        """Finalize a trade: set resolved=1, final P&L, and verified outcome."""
+        await self._db.execute(
+            """UPDATE trades
+               SET resolved = 1, pnl = ?, polymarket_winner = ?, correct_prediction = ?,
+                   outcome_source = ?
+               WHERE id = ?""",
+            (round(pnl, 6), polymarket_winner, int(correct_prediction), outcome_source, trade_id),
+        )
+        await self._db.commit()
+        if self._dynamo:
+            try:
+                self._dynamo.update_trade_resolved(trade_id, pnl, polymarket_winner, correct_prediction, outcome_source)
+            except Exception:
+                pass
 
     async def get_daily_stats(self, days: int = 30) -> list[dict]:
         # daily_stats table removed; return empty for backwards compat

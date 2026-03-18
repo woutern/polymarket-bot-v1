@@ -21,6 +21,7 @@ def _make_trader():
     db.insert_trade = AsyncMock()
     db.get_trades = AsyncMock()
     db.update_trade_outcome = AsyncMock()
+    db.update_trade_verified = AsyncMock()
     return PaperTrader(risk=risk, db=db)
 
 
@@ -54,7 +55,7 @@ class TestVerifyAndUpdate:
         """When Polymarket says YES won and we bought YES, correct=True."""
         trader = _make_trader()
         trader.db.get_trades.return_value = [
-            {"id": "abc1", "resolved": 1, "side": "YES", "pnl": 0.5},
+            {"id": "abc1", "resolved": 0, "side": "YES", "fill_price": 0.50, "size_usd": 1.0, "pnl": 0.5},
         ]
         with patch(
             "polybot.execution.paper_trader.get_market_outcome",
@@ -62,18 +63,18 @@ class TestVerifyAndUpdate:
         ):
             await trader.verify_and_update("btc-5m-1000")
 
-        trader.db.update_trade_outcome.assert_awaited_once_with(
-            trade_id="abc1",
-            polymarket_winner="YES",
-            correct_prediction=True,
-            outcome_source="polymarket_verified",
-        )
+        trader.db.update_trade_verified.assert_awaited_once()
+        call_kwargs = trader.db.update_trade_verified.call_args[1]
+        assert call_kwargs["trade_id"] == "abc1"
+        assert call_kwargs["polymarket_winner"] == "YES"
+        assert call_kwargs["correct_prediction"] == True
+        assert call_kwargs["pnl"] > 0  # win
 
     async def test_no_won_we_bought_yes_correct_false(self):
         """When Polymarket says NO won but we bought YES, correct=False."""
         trader = _make_trader()
         trader.db.get_trades.return_value = [
-            {"id": "abc2", "resolved": 1, "side": "YES", "pnl": -1.0},
+            {"id": "abc2", "resolved": 0, "side": "YES", "fill_price": 0.50, "size_usd": 1.0, "pnl": -1.0},
         ]
         with patch(
             "polybot.execution.paper_trader.get_market_outcome",
@@ -81,12 +82,12 @@ class TestVerifyAndUpdate:
         ):
             await trader.verify_and_update("btc-5m-1000")
 
-        trader.db.update_trade_outcome.assert_awaited_once_with(
-            trade_id="abc2",
-            polymarket_winner="NO",
-            correct_prediction=False,
-            outcome_source="polymarket_verified",
-        )
+        trader.db.update_trade_verified.assert_awaited_once()
+        call_kwargs = trader.db.update_trade_verified.call_args[1]
+        assert call_kwargs["trade_id"] == "abc2"
+        assert call_kwargs["polymarket_winner"] == "NO"
+        assert call_kwargs["correct_prediction"] == False
+        assert call_kwargs["pnl"] < 0  # loss
 
     async def test_pending_outcome_skips_update(self):
         """If Gamma API returns None (pending), no DB update is made."""
@@ -100,13 +101,13 @@ class TestVerifyAndUpdate:
         ):
             await trader.verify_and_update("btc-5m-1000")
 
-        trader.db.update_trade_outcome.assert_not_awaited()
+        trader.db.update_trade_verified.assert_not_awaited()
 
-    async def test_unresolved_trade_not_updated(self):
-        """Unresolved (open) trades are skipped — only resolved trades get outcome."""
+    async def test_already_resolved_trade_not_reprocessed(self):
+        """Already-resolved trades (resolved=1) are skipped — not re-verified."""
         trader = _make_trader()
         trader.db.get_trades.return_value = [
-            {"id": "abc4", "resolved": 0, "side": "YES"},
+            {"id": "abc4", "resolved": 1, "side": "YES"},
         ]
         with patch(
             "polybot.execution.paper_trader.get_market_outcome",
@@ -114,7 +115,7 @@ class TestVerifyAndUpdate:
         ):
             await trader.verify_and_update("btc-5m-1000")
 
-        trader.db.update_trade_outcome.assert_not_awaited()
+        trader.db.update_trade_verified.assert_not_awaited()
 
     async def test_api_exception_handled_silently(self):
         """If Gamma API raises, verify_and_update does not propagate the error."""
