@@ -1,142 +1,130 @@
-# Polymarket Bot
+# Polymarket Trading Bot
 
-Systematic directional trading bot for Polymarket BTC/ETH/SOL 5-minute and 15-minute Up/Down prediction markets.
+Algorithmic trading bot for Polymarket crypto binary prediction markets. Trades BTC/ETH/SOL on 5-minute and 15-minute Up/Down windows.
 
-**Status:** PAPER TRADING — $1000 virtual bankroll
-**Live dashboard:** http://54.155.183.45:8888/ (login: `admin` / `polybot2026`, **fixed Elastic IP — never changes**)
-**AWS region:** eu-west-1 (Ireland) — Bot on ECS Fargate, Dashboard on EC2 t3.micro (i-0ee28e7e5fab27497)
-**Last updated:** 2026-03-18
-
----
-
-## Strategy
-
-**Core edge:** At T-60s before a 5m/15m window closes, if price has moved >X% from the window open, the probability of reversal in the remaining 60 seconds is very low. Historical base rate: 96.4% win rate at 0.08% threshold (25,900 BTC windows, 90 days backtested).
-
-### Entry Conditions (all must be true)
-1. Price moved > threshold from window open (per-asset calibrated)
-2. Market ask < 0.75 (market hasn't priced in the move)
-3. EV > 6% = `(model_prob - ask) / ask`
-4. T-minus 15s–60s
-5. Orderbook fetched within last 30s (stale data guard)
-
-### Per-Asset Move Thresholds (research-calibrated)
-
-| Asset | 5-min | 15-min | Rationale |
-|-------|-------|--------|-----------|
-| BTC | 0.08% | 0.12% | Base case |
-| ETH | 0.10% | 0.14% | ~1.3x BTC volatility |
-| SOL | 0.14% | 0.18% | ~1.8x BTC volatility |
-
-15-min stricter: market makers have more time to price in momentum.
-
-### Signal Pipeline
-1. **Coinbase WS** → real-time BTC/ETH/SOL price
-2. **Bayesian updater** → P(UP) via EMA of price ticks + base rate prior
-3. **Bedrock Claude Sonnet 4.6** → optional 30% AI weight blend
-4. **EV filter** → only trade if edge > 6% over market price
-5. **Quarter-Kelly sizing** → max 1% bankroll, $10 hard cap
+**Status:** LIVE TRADING — $253 wallet, $1.25-$2.50 per trade (0.5-1% bankroll)
+**Dashboard:** http://54.155.183.45:8888/
+**Region:** us-east-1 (Virginia) — lower latency to Polymarket CLOB
+**Tests:** 214 passing
 
 ---
 
-## Backtest (90-day BTC, Dec 2025–Mar 2026, 25,900 windows)
+## How It Works
 
-| Threshold | Win Rate | Signals/day | EV at ask=0.65 |
-|-----------|----------|-------------|----------------|
-| 0.05% | 93.9% | 159 | +86% |
-| **0.08%** | **96.4%** | **113** | **+43%** |
-| 0.10% | 97.3% | 91 | +43% |
-| 0.15% | 98.4% | 54 | +43% |
+1. **Coinbase WebSocket** feeds live BTC/ETH/SOL prices every 250ms
+2. **Window tracker** monitors 5m/15m prediction windows
+3. **Entry zone** (T-60s to T-15s) — evaluates potential trade
+4. **Signal guards** — move threshold, EV > 6%, ask < $0.75, OBI spread < 0.15
+5. **Probability** = 70% Bayesian model + 30% Claude AI (AWS Bedrock)
+6. **Execution** = FOK limit order on Polymarket CLOB (`create_order` with `tick_size='0.01'`)
+7. **Verification** = Polymarket Gamma API checks Chainlink oracle outcome 30s after close
 
-EV stays ~40-50% for asks 0.65-0.70 across all thresholds. `max_market_price=0.75` is the binding frequency constraint. Strategy is profitable up to a 43% fee rate.
+### Per-Asset Move Thresholds
+
+| Asset | 5-min | 15-min |
+|-------|-------|--------|
+| BTC   | 0.08% | 0.12%  |
+| ETH   | 0.10% | 0.14%  |
+| SOL   | 0.14% | 0.18%  |
 
 ---
 
 ## Architecture
 
 ```
-AWS eu-west-1
-├── Bot — ECS Fargate (redeploy anytime, IP changes are fine)
-│   ├── CoinbaseWS        — real-time BTC/ETH/SOL price feed
-│   ├── WindowTracker     — 5m/15m window state machine
-│   ├── BayesianUpdater   — P(UP) with base rate prior
-│   ├── Bedrock AI        — Claude Sonnet 4.6 probability blend (30%)
-│   ├── DirectionalSignal — entry decision
-│   ├── QuarterKelly      — position sizing
-│   ├── PaperTrader       — simulated fills
-│   └── DynamoDB          — polymarket-bot-trades, polymarket-bot-windows
+us-east-1 (Virginia)
+├── Bot — ECS Fargate (always-on, 250ms tick loop)
+│   ├── CoinbaseWS         — real-time price feed
+│   ├── WindowTracker      — 5m/15m state machine (6 pairs)
+│   ├── BayesianUpdater    — P(UP) with base rate prior
+│   ├── Bedrock Claude     — native us-east-1 (anthropic.claude-sonnet-4-6)
+│   ├── SignalEvaluation   — logs every evaluation (fired + rejected)
+│   ├── LiveTrader         — FOK orders via py-clob-client
+│   └── DynamoDB           — trades, windows, signals tables
 │
-└── Dashboard — EC2 t3.micro + Elastic IP 54.155.183.45 (PERMANENT)
-    ├── Dockerfile.dashboard (separate from bot image)
-    ├── FastAPI + HTTP Basic Auth :8888
-    ├── DynamoDB reads (paper trades only, mode filter)
-    ├── Bedrock hourly strategy review
-    └── Auto-pulls latest image every hour via cron
-```
-
-**Deploying dashboard updates** (no bot restart needed):
-```bash
-# 1. Build and push dashboard image
-docker build --platform linux/amd64 -f Dockerfile.dashboard -t polymarket-dashboard:latest .
-docker tag polymarket-dashboard:latest 688567279867.dkr.ecr.eu-west-1.amazonaws.com/polymarket-dashboard:latest
-docker push 688567279867.dkr.ecr.eu-west-1.amazonaws.com/polymarket-dashboard:latest
-# 2. EC2 auto-updates every hour via cron, or manually trigger:
-ssh ec2-user@54.155.183.45 'sudo /usr/local/bin/dashboard-update.sh'
+├── Dashboard — EC2 (54.155.183.45:8888)
+│   ├── 4 pages: Overview, Trade Log, Signals, Analytics
+│   ├── Signal funnel + rejection breakdown
+│   └── Reads from us-east-1 DynamoDB
+│
+└── Storage
+    ├── polymarket-bot-trades    — every executed trade with full metadata
+    ├── polymarket-bot-windows   — window outcomes
+    └── polymarket-bot-signals   — every signal evaluation (fired + rejected)
 ```
 
 ---
 
-## Test Coverage — 149/149 passing
-
-```
-tests/test_sizing.py          23 tests  Kelly formula, edge cases
-tests/test_bayesian.py        19 tests  probability updates, bounds
-tests/test_window_tracker.py  13 tests  state machine transitions
-tests/test_directional.py     20 tests  signal conditions (incl. min price floor 0.20)
-tests/test_risk_manager.py    24 tests  circuit breaker, daily P&L
-tests/test_latency_monitor.py 21 tests  p50/p95 latency stats
-tests/test_base_rate.py        8 tests  base rate table
-tests/test_paper_trader.py     5 tests  dedup guard, price floor, circuit breaker
-```
-
----
-
-## Deploy
+## Quick Commands
 
 ```bash
+# Switch between paper/live mode
+./scripts/switch.sh live
+./scripts/switch.sh paper
+
+# Force a test trade
+uv run python scripts/force_trade.py --asset BTC --amount 1.50
+uv run python scripts/force_trade.py --asset SOL --side NO --dry-run
+
+# Run tests
+uv run pytest tests/ -q
+
+# Deploy bot
 docker build --platform linux/amd64 -t polymarket-bot:latest .
-aws --profile playground ecr get-login-password --region eu-west-1 | \
-  docker login --username AWS --password-stdin 688567279867.dkr.ecr.eu-west-1.amazonaws.com
-docker tag polymarket-bot:latest 688567279867.dkr.ecr.eu-west-1.amazonaws.com/polymarket-bot:latest
-docker push 688567279867.dkr.ecr.eu-west-1.amazonaws.com/polymarket-bot:latest
+aws --profile playground ecr get-login-password --region us-east-1 | \
+  docker login --username AWS --password-stdin 688567279867.dkr.ecr.us-east-1.amazonaws.com
+docker tag polymarket-bot:latest 688567279867.dkr.ecr.us-east-1.amazonaws.com/polymarket-bot:latest
+docker push 688567279867.dkr.ecr.us-east-1.amazonaws.com/polymarket-bot:latest
 
-aws --profile playground ecs run-task \
-  --cluster polymarket-bot --task-definition polymarket-bot:9 \
-  --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[subnet-09d92195326f57aaa],securityGroups=[sg-02d37542b9d600034],assignPublicIp=ENABLED}" \
-  --region eu-west-1
+# Deploy dashboard
+docker build --platform linux/amd64 -f Dockerfile.dashboard -t polymarket-dashboard:latest .
+docker tag polymarket-dashboard:latest 688567279867.dkr.ecr.us-east-1.amazonaws.com/polymarket-dashboard:latest
+docker push 688567279867.dkr.ecr.us-east-1.amazonaws.com/polymarket-dashboard:latest
 ```
 
 ---
 
-## Research Roadmap (priority order)
+## Test Coverage — 214 tests
 
-- [x] OBI spread veto (bid-ask > 0.15 → skip)
-- [x] Per-asset×timeframe thresholds (BTC/ETH/SOL × 5m/15m)
-- [x] Dedup guard (one trade per window_slug, prevents duplicate fills)
-- [x] Min price floor 0.20 (prevents orderbook-init ghost trades)
-- [ ] ETH/SOL-specific base rate tables (currently uses BTC base rates for all)
-- [ ] Chainlink price feed for signals (recovers 3.5% WR from oracle divergence)
-- [ ] A/B test Bedrock blend vs pure Bayesian
-- [ ] Raise Kelly to 0.33 after 200+ trades confirmed ≥ 90% WR
+| File | Tests | What |
+|------|-------|------|
+| test_sizing.py | 25 | Kelly formula, min/max trade USD, bankroll edge cases |
+| test_bayesian.py | 19 | Probability updates, EMA blending, bounds |
+| test_window_tracker.py | 13 | 5m/15m state machine transitions |
+| test_directional.py | 26 | Signal guards, SignalEvaluation rejections, OBI veto |
+| test_risk_manager.py | 24 | Circuit breaker, daily P&L cap |
+| test_latency_monitor.py | 21 | p50/p95 latency stats |
+| test_base_rate.py | 8 | Base rate table lookup |
+| test_paper_trader.py | 5 | Dedup guard, price floor, circuit breaker |
+| test_outcome_verification.py | 17 | Gamma API outcome, DB update, JSON parsing |
+| test_live_trader.py | 9 | create_order (not create_market_order), tick_size, metadata |
+| test_storage.py | 10 | SQLite CRUD, migrations, outcome update |
+| test_dashboard_api.py | 14 | API endpoints, filtering, auth, stats correctness |
+| test_region_config.py | 6 | No eu-west-1 in code, native Bedrock model ID |
+| test_latency_fields.py | 4 | Timing fields stored on trades |
+| test_force_trade.py | 9 | Dynamic sizing (0.5-1%), signal evaluation reasons |
 
-## Trade Audit (2026-03-18)
+---
 
-| Category | Trades | Net P&L | Notes |
-|----------|--------|---------|-------|
-| Bug trades (fill=0.001) | 3 | -$30.00 | Fixed: min_price=0.20 + orderbook guard |
-| Suspicious ETH 15m (fill=0.14/0.22) | 2 | +$96.88 | Likely early orderbook init; dedup guard prevents recurrence |
-| Clean legitimate trades | 10 | +$65.83 | BTC/SOL 01:59 onwards, fills 0.37-0.75 |
-| **Total reported** | **15** | **+$132.71** | Win rate 12/15 = 80% |
+## Roadmap
 
-Real edge (clean trades only): **10 wins / 0 losses = 100% WR**, +$65.83 from $100 deployed.
+### Completed
+- [x] us-east-1 migration (lower latency)
+- [x] Live trading with $1.25-$2.50 per trade
+- [x] Outcome verification via Polymarket Gamma API (Chainlink oracle)
+- [x] Signal evaluation logging (fired + rejected, with reasons)
+- [x] 4-page dashboard with signal funnel
+- [x] Per-pair enable/disable control
+- [x] Latency instrumentation (signal_ms, order_ms, bedrock_ms)
+
+### Next (Phase 5-9)
+- [ ] **RTDS oracle feed** — Binance vs Chainlink price lag = primary edge signal
+- [ ] **Black-Scholes probability** — compute our own binary price, enter on oracle dislocation
+- [ ] **Claude regime classifier** — 5-min regime calls (trending/choppy/post-move/pre-catalyst)
+- [ ] **LightGBM model** — 40+ microstructure features, replaces Bayesian
+- [ ] **River online learning** — adapts in real-time between LightGBM retrains
+- [ ] **Conformal prediction gate** — MAPIE confidence intervals, skip uncertain trades
+- [ ] **Thompson Sampling** — bandit optimization for model weight blending
+- [ ] **SPRT edge measurement** — statistical proof of edge before scaling position size
+- [ ] **Kelly sizing unlock** — dynamic sizing after 400+ trades with confirmed edge
+- [ ] **Edge Analytics dashboard** — SPRT monitor, Brier scores, oracle lag, model performance
