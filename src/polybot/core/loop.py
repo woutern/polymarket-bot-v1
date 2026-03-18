@@ -10,6 +10,7 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass, field
+from functools import partial
 
 import structlog
 
@@ -30,6 +31,19 @@ from polybot.strategy.bayesian import BayesianUpdater
 from polybot.strategy.directional import generate_directional_signal
 
 logger = structlog.get_logger()
+
+# Resolve the claim_winnings script path relative to this file so it works
+# regardless of the working directory.
+_SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts")
+
+def _import_claim_all():
+    """Lazily import claim_all from scripts/claim_winnings.py."""
+    import importlib.util
+    script_path = os.path.normpath(os.path.join(_SCRIPTS_DIR, "claim_winnings.py"))
+    spec = importlib.util.spec_from_file_location("claim_winnings", script_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.claim_all
 
 S3_BUCKET = "polymarket-bot-data-688567279867"
 S3_KEY = "candles/btc_usd_1min.parquet"
@@ -116,6 +130,7 @@ class TradingLoop:
         self._wallet_address: str = settings.polymarket_funder or ""
         self._last_balance_check: float = 0.0
         self._last_claim_check: float = 0.0
+        self._last_strategy_review: float = 0.0
         self._running = False
 
     async def start(self):
@@ -223,6 +238,22 @@ class TradingLoop:
                             self.risk.bankroll = polygon_usdc
                 except Exception as e:
                     logger.warning("periodic_balance_check_failed", error=str(e))
+
+            # Periodic auto-claim every 10 minutes — live mode only
+            if (
+                self.settings.mode == "live"
+                and self.settings.polymarket_private_key
+                and self.settings.polymarket_funder
+                and (time.time() - self._last_claim_check) >= 600
+            ):
+                self._last_claim_check = time.time()
+                asyncio.create_task(self._run_claim(), name="auto_claim")
+                logger.info("auto_claim_triggered")
+
+            # Hourly strategy review — learn from recent trades, log insights
+            if (time.time() - self._last_strategy_review) >= 3600:
+                self._last_strategy_review = time.time()
+                asyncio.create_task(self._strategy_review(), name="strategy_review")
 
     async def _tick_asset(self, state: AssetState, price: float):
         tracker = state.tracker
@@ -349,6 +380,120 @@ class TradingLoop:
             no_id = window.no_token_id if window else ""
             return await self.trader.execute(signal, yes_id, no_id)
         return await self.trader.execute(signal)
+
+    async def _run_claim(self):
+        """Run claim_all in a thread so it never blocks the event loop."""
+        try:
+            claim_all = _import_claim_all()
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, partial(claim_all, self.settings))
+            logger.info("auto_claim_completed")
+        except Exception as e:
+            logger.warning("auto_claim_failed", error=str(e))
+
+    async def _strategy_review(self):
+        """Hourly learning loop: analyse recent trades, log strategy insights.
+
+        Queries DynamoDB for the last 60 minutes of resolved trades and logs:
+        - Win rate per asset
+        - Average EV vs actual outcome
+        - Best/worst performing asset × window combinations
+        - Calls Bedrock for strategic commentary (paper/live)
+        """
+        try:
+            trades = self.dynamo.get_recent_trades(limit=200)
+            if not trades:
+                logger.info("strategy_review_no_trades")
+                return
+
+            now = time.time()
+            cutoff = now - 3600
+            recent = [
+                t for t in trades
+                if float(t.get("timestamp", 0) or 0) >= cutoff
+                and t.get("resolved")
+            ]
+
+            if not recent:
+                logger.info("strategy_review_no_recent_resolved", total_in_db=len(trades))
+                return
+
+            wins = sum(1 for t in recent if float(t.get("pnl", 0) or 0) > 0)
+            total = len(recent)
+            total_pnl = sum(float(t.get("pnl", 0) or 0) for t in recent)
+            win_rate = wins / total if total else 0
+
+            # Per-asset breakdown
+            asset_stats: dict[str, dict] = {}
+            for t in recent:
+                a = str(t.get("asset", "BTC") or "BTC")
+                if isinstance(a, dict):
+                    a = a.get("S", "BTC")
+                if a not in asset_stats:
+                    asset_stats[a] = {"wins": 0, "total": 0, "pnl": 0.0}
+                asset_stats[a]["total"] += 1
+                p = float(t.get("pnl", 0) or 0)
+                asset_stats[a]["pnl"] += p
+                if p > 0:
+                    asset_stats[a]["wins"] += 1
+
+            logger.info(
+                "strategy_review",
+                period_hours=1,
+                trades=total,
+                wins=wins,
+                win_rate=round(win_rate, 3),
+                pnl=round(total_pnl, 4),
+                bankroll=round(self.risk.bankroll, 2),
+                per_asset={
+                    a: {
+                        "wr": round(v["wins"] / v["total"], 3) if v["total"] else 0,
+                        "pnl": round(v["pnl"], 4),
+                        "n": v["total"],
+                    }
+                    for a, v in asset_stats.items()
+                },
+            )
+
+            # Call Bedrock for strategy commentary using recent performance
+            try:
+                from polybot.strategy.bedrock_signal import _get_client
+                client = _get_client()
+                if client:
+                    import json
+                    import boto3
+                    asset_summary = "; ".join(
+                        f"{a}: {v['wins']}/{v['total']} wins, P&L ${v['pnl']:.2f}"
+                        for a, v in asset_stats.items()
+                    )
+                    prompt = (
+                        f"You are a systematic trading advisor. Analyse this 1-hour performance for a "
+                        f"Polymarket binary prediction bot (5m/15m UP/DOWN markets on BTC/ETH/SOL):\n\n"
+                        f"Win rate: {win_rate:.1%} ({wins}/{total} trades)\n"
+                        f"P&L: ${total_pnl:.4f}\n"
+                        f"Per-asset: {asset_summary}\n"
+                        f"Bankroll: ${self.risk.bankroll:.2f}\n\n"
+                        f"In 2-3 sentences, what is working and what should change? "
+                        f"Be specific about thresholds (EV, price move, entry timing)."
+                    )
+                    import json as _json
+                    body = _json.dumps({
+                        "anthropic_version": "bedrock-2023-05-31",
+                        "max_tokens": 200,
+                        "messages": [{"role": "user", "content": prompt}],
+                    })
+                    resp = client.invoke_model(
+                        modelId="eu.anthropic.claude-sonnet-4-6-20251001-v1:0",
+                        body=body,
+                    )
+                    result = _json.loads(resp["body"].read())
+                    commentary = result["content"][0]["text"].strip()
+                    logger.info("strategy_review_ai_commentary", commentary=commentary)
+            except Exception as e:
+                logger.debug("strategy_review_bedrock_failed", error=str(e))
+
+        except Exception as e:
+            logger.warning("strategy_review_failed", error=str(e))
 
     async def _refresh_orderbook(self, state: AssetState):
         window = state.tracker.current

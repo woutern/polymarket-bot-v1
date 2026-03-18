@@ -13,6 +13,7 @@ import structlog
 
 from polybot.models import Direction, OrderbookSnapshot, Signal, SignalSource
 from polybot.strategy.bayesian import BayesianUpdater
+from polybot.strategy.bedrock_signal import blend_probabilities, get_ai_probability
 
 logger = structlog.get_logger()
 
@@ -28,6 +29,7 @@ def generate_directional_signal(
     max_market_price: float = 0.75,
     window_slug: str = "",
     asset: str = "BTC",
+    use_ai: bool = True,
 ) -> Signal | None:
     """Generate a directional signal if conditions are met.
 
@@ -47,12 +49,35 @@ def generate_directional_signal(
     # Determine direction from price movement
     if pct_move > 0:
         direction = Direction.UP
-        model_prob = bayesian.probability
+        p_bayesian = bayesian.probability
         market_price = orderbook.yes_best_ask
     else:
         direction = Direction.DOWN
-        model_prob = 1.0 - bayesian.probability
+        p_bayesian = 1.0 - bayesian.probability
         market_price = orderbook.no_best_ask
+
+    # AI signal: query Bedrock for additional probability estimate
+    if use_ai:
+        p_ai = get_ai_probability(
+            asset=asset,
+            window_key=window_slug,
+            pct_move=pct_move,
+            seconds_remaining=seconds_remaining,
+            yes_ask=orderbook.yes_best_ask,
+            no_ask=orderbook.no_best_ask,
+            p_bayesian=p_bayesian,
+        )
+        model_prob = blend_probabilities(p_bayesian, p_ai)
+        if p_ai is not None:
+            logger.info(
+                "bedrock_blend",
+                asset=asset,
+                p_bayesian=round(p_bayesian, 4),
+                p_ai=round(p_ai, 4),
+                p_final=round(model_prob, 4),
+            )
+    else:
+        model_prob = p_bayesian
 
     # Market efficiency filter: if ask > max_market_price, market already priced it in
     if market_price > max_market_price:

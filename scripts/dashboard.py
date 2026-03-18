@@ -47,6 +47,10 @@ if _USE_DYNAMO:
 
 _LOCAL_LOG = "/tmp/polybot_paper.log"
 
+# Trading mode + bankroll from env (matches bot settings)
+_TRADE_MODE = _os.getenv("MODE", "paper").lower()
+_BANKROLL = float(_os.getenv("BANKROLL", "1000.0"))
+
 
 def _sqlite_query(sql: str, params=()):
     import sqlite3
@@ -171,6 +175,8 @@ def api_data(_: str = Depends(_require_auth)):
         if p > 0:
             strategy_pnl[source]["wins"] += 1
 
+    current_bankroll = _BANKROLL + total_pnl
+
     return {
         "trades": trades,
         "windows": windows,
@@ -184,6 +190,9 @@ def api_data(_: str = Depends(_require_auth)):
             "asset_windows": asset_windows,
             "asset_windows_15m": asset_windows_15m,
             "strategy_pnl": strategy_pnl,
+            "mode": _TRADE_MODE,
+            "starting_bankroll": _BANKROLL,
+            "current_bankroll": current_bankroll,
         },
     }
 
@@ -676,7 +685,7 @@ HTML = r"""<!DOCTYPE html>
       <span class="sep">|</span>
       <span>Updated: <strong id="last-update">—</strong></span>
     </div>
-    <div class="status-dot">LIVE</div>
+    <div class="status-dot" id="mode-badge">PAPER</div>
   </div>
 </nav>
 
@@ -685,13 +694,19 @@ HTML = r"""<!DOCTYPE html>
   <!-- Stats row -->
   <div class="stats-grid">
     <div class="stat-card">
-      <div class="stat-label">Wallet Balance</div>
-      <div class="stat-value gold" id="s-balance">—</div>
-      <div class="stat-sub" id="s-balance-sub">USDC on-chain</div>
+      <div class="stat-label" id="bankroll-label">Virtual Bankroll</div>
+      <div class="stat-value gold" id="s-bankroll">—</div>
+      <div class="stat-sub" id="s-bankroll-sub">Paper trading</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Total P&amp;L</div>
       <div class="stat-value" id="s-pnl">—</div>
+      <div class="stat-sub" id="s-pnl-sub">vs $<span id="s-starting">—</span> start</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Live Wallet</div>
+      <div class="stat-value" id="s-balance">—</div>
+      <div class="stat-sub" id="s-balance-sub">USDC on-chain</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Win / Loss</div>
@@ -961,6 +976,18 @@ async function refresh() {
     const resp = await fetch('/api/data');
     const data = await resp.json();
     const s = data.stats;
+
+    // Mode badge + bankroll
+    const mode = (s.mode || 'paper').toUpperCase();
+    const modeBadge = document.getElementById('mode-badge');
+    modeBadge.textContent = mode;
+    modeBadge.style.background = mode === 'LIVE' ? '#c92a2a' : '#1971c2';
+
+    const bankrollEl = document.getElementById('s-bankroll');
+    bankrollEl.textContent = '$' + (s.current_bankroll || s.starting_bankroll || 0).toFixed(2);
+    document.getElementById('bankroll-label').textContent = mode === 'LIVE' ? 'Bankroll' : 'Virtual Bankroll';
+    document.getElementById('s-bankroll-sub').textContent = mode === 'LIVE' ? 'Live trading' : 'Paper trading';
+    document.getElementById('s-starting').textContent = (s.starting_bankroll || 1000).toFixed(0);
 
     // Stats
     const pnl = s.total_pnl;
