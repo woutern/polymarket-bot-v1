@@ -607,27 +607,47 @@ async def api_balance(_: str = Depends(_require_auth)):
         if not _WALLET_ADDRESS:
             return {"polymarket_value": 0.0, "polygon_usdc": 0.0, "error": "no_address"}
 
-        checker = BalanceChecker()
-        result = await checker.check(_WALLET_ADDRESS)
+        import httpx
 
-        # Check for unclaimed winnings via data-api positions
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=10) as client:
+        result = {"polygon_usdc": 0.0, "polymarket_value": 0.0, "total_pnl": 0.0, "unclaimed_winnings": 0.0}
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            # On-chain USDC balance
+            try:
+                checker = BalanceChecker()
+                bal = await checker.check(_WALLET_ADDRESS)
+                result["polygon_usdc"] = bal.get("polygon_usdc", 0.0)
+            except Exception:
+                pass
+
+            # Polymarket portfolio value + P&L (source of truth)
+            try:
+                resp = await client.get(
+                    "https://data-api.polymarket.com/value",
+                    params={"user": _WALLET_ADDRESS},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, list) and data:
+                        result["polymarket_value"] = float(data[0].get("value", 0) or 0)
+            except Exception:
+                pass
+
+            # Positions for P&L and unclaimed
+            try:
                 resp = await client.get(
                     "https://data-api.polymarket.com/positions",
                     params={"user": _WALLET_ADDRESS, "sizeThreshold": "0.01"},
                 )
                 if resp.status_code == 200:
                     positions = resp.json()
-                    unclaimed = sum(
-                        p.get("currentValue", 0)
-                        for p in positions
+                    result["total_pnl"] = round(sum(p.get("cashPnl", 0) for p in positions if isinstance(p, dict)), 2)
+                    result["unclaimed_winnings"] = round(sum(
+                        p.get("currentValue", 0) for p in positions
                         if isinstance(p, dict) and p.get("currentValue", 0) > 0.5
-                    )
-                    result["unclaimed_winnings"] = round(unclaimed, 2)
-        except Exception:
-            result["unclaimed_winnings"] = 0.0
+                    ), 2)
+            except Exception:
+                pass
 
         return result
     except Exception as e:
@@ -1450,12 +1470,15 @@ async function refreshBalance() {
     const resp = await fetch('/api/balance');
     const d = await resp.json();
     const total = (d.polygon_usdc || 0) + (d.polymarket_value || 0);
-    document.getElementById('s-balance-label').textContent = 'Wallet Balance';
-    document.getElementById('s-balance').textContent = '$' + total.toFixed(2);
+    const wallet = (d.polygon_usdc || 0) + (d.polymarket_value || 0);
+    document.getElementById('s-balance-label').textContent = 'Total Balance';
+    document.getElementById('s-balance').textContent = '$' + wallet.toFixed(2);
+    const pmPnl = d.total_pnl || 0;
     const unclaimed = d.unclaimed_winnings || 0;
     let subText = 'Cash $' + (d.polygon_usdc||0).toFixed(2) + ' + positions $' + (d.polymarket_value||0).toFixed(2);
+    subText += ' | P&L ' + (pmPnl>=0?'+':'') + '$' + pmPnl.toFixed(2) + ' (Polymarket)';
     if (unclaimed > 0.5) {
-      subText += ' | $' + unclaimed.toFixed(2) + ' unclaimed — claim at polymarket.com/portfolio';
+      subText += ' | $' + unclaimed.toFixed(2) + ' unclaimed';
     }
     document.getElementById('s-balance-sub').textContent = subText;
   } catch(e) {}
@@ -1499,7 +1522,7 @@ function reasonBadge(reason) {
   };
   return '<span class="reason-badge ' + cls + '">' + (labels[reason] || reason) + '</span>';
 }
-function fmtTs(ts)  { return ts ? new Date(parseFloat(ts)*1000).toLocaleTimeString() : '&mdash;'; }
+function fmtTs(ts)  { return ts ? new Date(parseFloat(ts)*1000).toLocaleTimeString('en-GB', {timeZone: 'Europe/Amsterdam', hour12: false}) : '&mdash;'; }
 function fmtTs2(ts) { return ts ? new Date(parseInt(ts)*1000).toLocaleTimeString() : '&mdash;'; }
 function fmtPnl(p) {
   if (p == null || p === '') return '&mdash;';
@@ -1652,13 +1675,25 @@ async function refreshOverview() {
         else if (ev.includes('order') || ev.includes('trade'))    cls = 'log-line trade';
         else if (ev.includes('entry_zone'))                       cls = 'log-line entry';
         else if (ev.includes('window_'))                          cls = 'log-line window';
-        const ts    = obj.timestamp ? obj.timestamp.substring(11,19) : '';
-        const asset = obj.asset ? '['+obj.asset+']' : '';
-        const rest  = Object.entries(obj)
-          .filter(([k]) => !['event','level','timestamp','asset'].includes(k))
-          .map(([k,v]) => k+'='+(typeof v==='number' ? (v.toFixed ? v.toFixed(4) : v) : JSON.stringify(v)))
+        // Convert UTC to CET (UTC+1)
+        let ts = '';
+        if (obj.timestamp) {
+          const utc = new Date(obj.timestamp);
+          ts = utc.toLocaleTimeString('en-GB', {timeZone: 'Europe/Amsterdam', hour12: false});
+        }
+        const asset = obj.asset ? '<span style="color:#7aa2f7">['+obj.asset+']</span>' : '';
+        // Format key fields nicely, skip noise
+        const skip = ['event','level','timestamp','asset','logger'];
+        const highlights = ['pnl','price','side','direction','slug','error','pct_move','ev','winner'];
+        const rest = Object.entries(obj)
+          .filter(([k]) => !skip.includes(k))
+          .map(([k,v]) => {
+            const val = typeof v==='number' ? (v.toFixed ? v.toFixed(4) : v) : (typeof v==='string' ? v : JSON.stringify(v));
+            if (highlights.includes(k)) return '<span style="color:#e0af68">'+k+'</span>='+val;
+            return '<span style="color:#565f89">'+k+'</span>='+val;
+          })
           .join(' ');
-        formatted = ts + ' ' + asset + ' <b>' + ev + '</b>  ' + rest;
+        formatted = '<span style="color:#565f89">'+ts+'</span> ' + asset + ' <b>' + ev + '</b>  ' + rest;
       } catch(ex) {}
       logsEl.innerHTML += '<div class="' + cls + '">' + formatted + '</div>';
     }
