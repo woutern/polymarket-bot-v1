@@ -68,10 +68,16 @@ async def get_orderbook(token_id: str) -> dict:
 async def get_market_outcome(slug: str) -> tuple[str | None, str]:
     """Query Gamma API for the resolved outcome of a market.
 
+    Uses outcomes + outcomePrices mapping:
+      outcomes: ['Up', 'Down'], outcomePrices: ['1', '0'] → Up won → YES
+      outcomes: ['Up', 'Down'], outcomePrices: ['0', '1'] → Down won → NO
+
     Returns:
         (winner, source) where winner is "YES" | "NO" | None (pending),
         and source is "polymarket_verified" | "pending".
     """
+    import json as _json
+
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(
             f"{GAMMA_URL}/markets",
@@ -83,23 +89,31 @@ async def get_market_outcome(slug: str) -> tuple[str | None, str]:
         if not markets:
             return None, "pending"
         m = markets[0]
+        if not m.get("closed"):
+            return None, "pending"
+
+        outcomes = m.get("outcomes", [])
+        if isinstance(outcomes, str):
+            outcomes = _json.loads(outcomes)
         prices = m.get("outcomePrices", [])
-        # Gamma sometimes returns as JSON string "[\"0.99\",\"0.01\"]"
         if isinstance(prices, str):
-            import json as _json
             prices = _json.loads(prices)
-        if len(prices) >= 2:
-            yes_price = float(prices[0])
-            # Conclusive even before "closed" flag — Gamma API can lag
-            if yes_price >= 0.99:
-                return "YES", "polymarket_verified"
-            if yes_price <= 0.01:
-                return "NO", "polymarket_verified"
-        if m.get("closed") and len(prices) >= 2:
-            yes_price = float(prices[0])
-            winner = "YES" if yes_price >= 0.5 else "NO"
-            return winner, "polymarket_verified"
-        return None, "pending"
+
+        if len(outcomes) < 2 or len(prices) < 2:
+            return None, "pending"
+
+        # Map outcome names to their payout prices
+        outcome_map = dict(zip(outcomes, prices))
+        up_price = float(outcome_map.get("Up", 0))
+
+        # Only trust conclusive results (0 or 1)
+        if up_price >= 0.99:
+            return "YES", "polymarket_verified"  # Up won
+        elif up_price <= 0.01:
+            return "NO", "polymarket_verified"  # Down won
+        else:
+            # Ambiguous — not yet resolved
+            return None, "pending"
 
 
 async def get_prices_history(

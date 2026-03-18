@@ -15,6 +15,7 @@ def _make_trader():
     risk.can_trade.return_value = True
     risk.bankroll = 100.0
     risk.max_position_pct = 0.01
+    risk.get_bet_size = lambda: 2.50
     risk.min_trade_usd = 1.0
     risk.max_trade_usd = 10.0
     db = MagicMock()
@@ -133,12 +134,12 @@ class TestVerifyAndUpdate:
 # ---------------------------------------------------------------------------
 
 class TestGetMarketOutcome:
-    async def test_yes_won_high_price(self):
-        """YES price >= 0.99 → YES won."""
+    async def test_up_won(self):
+        """Up price=1, Down price=0 → YES (Up) won."""
         from polybot.feeds.polymarket_rest import get_market_outcome
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = [{"outcomePrices": ["0.99", "0.01"], "closed": True}]
+        mock_resp.json.return_value = [{"outcomes": '["Up", "Down"]', "outcomePrices": '["1", "0"]', "closed": True}]
         with patch("polybot.feeds.polymarket_rest.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client.return_value)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -147,12 +148,12 @@ class TestGetMarketOutcome:
         assert winner == "YES"
         assert source == "polymarket_verified"
 
-    async def test_no_won_low_price(self):
-        """YES price <= 0.01 → NO won."""
+    async def test_down_won(self):
+        """Up price=0, Down price=1 → NO (Down) won."""
         from polybot.feeds.polymarket_rest import get_market_outcome
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = [{"outcomePrices": ["0.01", "0.99"], "closed": True}]
+        mock_resp.json.return_value = [{"outcomes": '["Up", "Down"]', "outcomePrices": '["0", "1"]', "closed": True}]
         with patch("polybot.feeds.polymarket_rest.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client.return_value)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -162,11 +163,11 @@ class TestGetMarketOutcome:
         assert source == "polymarket_verified"
 
     async def test_market_not_closed_returns_pending(self):
-        """Ambiguous prices + not closed → pending."""
+        """Not closed → pending regardless of prices."""
         from polybot.feeds.polymarket_rest import get_market_outcome
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = [{"outcomePrices": ["0.55", "0.45"], "closed": False}]
+        mock_resp.json.return_value = [{"outcomes": '["Up", "Down"]', "outcomePrices": '["0.55", "0.45"]', "closed": False}]
         with patch("polybot.feeds.polymarket_rest.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client.return_value)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -202,19 +203,19 @@ class TestGetMarketOutcome:
         assert winner is None
         assert source == "pending"
 
-    async def test_closed_market_majority_vote(self):
-        """Closed market with price 0.7/0.3 → YES by majority."""
+    async def test_ambiguous_prices_returns_pending(self):
+        """Closed but prices not conclusive (0.7/0.3) → pending (don't guess)."""
         from polybot.feeds.polymarket_rest import get_market_outcome
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = [{"outcomePrices": ["0.7", "0.3"], "closed": True}]
+        mock_resp.json.return_value = [{"outcomes": '["Up", "Down"]', "outcomePrices": '["0.7", "0.3"]', "closed": True}]
         with patch("polybot.feeds.polymarket_rest.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client.return_value)
             mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
             mock_client.return_value.get = AsyncMock(return_value=mock_resp)
             winner, source = await get_market_outcome("btc-5m-1000")
-        assert winner == "YES"
-        assert source == "polymarket_verified"
+        assert winner is None  # don't guess — wait for conclusive 0 or 1
+        assert source == "pending"
 
 
 # ---------------------------------------------------------------------------

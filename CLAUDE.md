@@ -7,7 +7,9 @@
 ## What this project is
 
 An algorithmic trading bot for Polymarket crypto binary prediction markets.
-We trade BTC/ETH/SOL × 5min/15min Up/Down markets (6 pairs).
+We trade BTC × 5min/15min Up/Down markets (2 pairs: BTC_5m, BTC_15m).
+ETH/SOL disabled until BTC edge confirmed at 400+ trades. Reason: highest liquidity, best fills.
+Note for future: use FAK (not FOK) for ETH/SOL when re-enabling — better fill rate on thin books.
 Binary bets: does price close higher or lower than the open at window start?
 
 Owner: Wouter (Scaleflow)
@@ -37,7 +39,7 @@ Live wallet: $32, $1 flat bets until 400+ trades with confirmed statistical edge
 - Dashboard: EC2 at http://54.155.183.45:8888/ — 4 pages (Overview, Trade Log, Analytics, Edge Analytics)
 - Storage: DynamoDB us-east-1 (trades, windows, training_data, edge_metrics, meta_insights, bandit_state tables)
 - SQLite: local backup inside container
-- AI: AWS Bedrock Claude Sonnet 4.6 (anthropic.claude-sonnet-4-6 — native us-east-1, no eu. prefix)
+- AI: AWS Bedrock Claude Sonnet 4.6 — meta-learning ONLY (every 10 trades), NOT in trading loop
 - Model artifacts: S3 bucket, paths tracked in SSM Parameter Store
 - Auto-claim: every 10 min, redeems winning positions
 

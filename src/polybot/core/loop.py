@@ -256,12 +256,12 @@ class TradingLoop:
 
             await asyncio.sleep(0.25)
 
-            # Periodic auto-claim every 10 minutes — live mode only
+            # Periodic auto-claim every 60 minutes — live mode only
             if (
                 self.settings.mode == "live"
                 and self.settings.polymarket_private_key
                 and self.settings.polymarket_funder
-                and (time.time() - self._last_claim_check) >= 600
+                and (time.time() - self._last_claim_check) >= 3600
             ):
                 self._last_claim_check = time.time()
                 asyncio.create_task(self._run_claim(), name="auto_claim")
@@ -535,9 +535,9 @@ class TradingLoop:
 
         await self.trader.resolve_window(window.slug, went_up)
 
-        # Schedule Polymarket outcome verification 30s after window close
+        # Schedule Polymarket outcome verification 90s after window close (retry 3x at 60s)
         slug = window.slug
-        asyncio.create_task(self._verify_outcome_after_delay(slug, 30), name=f"verify_{slug}")
+        asyncio.create_task(self._verify_outcome_after_delay(slug, 90), name=f"verify_{slug}")
 
         window_record = {
             "slug": window.slug,
@@ -555,30 +555,93 @@ class TradingLoop:
         except Exception as e:
             logger.warning("dynamo_write_failed", error=str(e))
 
-    async def _verify_outcome_after_delay(self, window_slug: str, delay_seconds: int):
-        """Wait, then query Polymarket for the authoritative outcome."""
+        # DATA_COLLECTION_MODE: log training data on every resolved window
+        if os.getenv("DATA_COLLECTION_MODE", "").lower() == "true":
+            try:
+                tf = "15m" if "15m" in window.slug else "5m"
+                pct_move = 0.0
+                if window.open_price and window.close_price and window.open_price > 0:
+                    pct_move = (window.close_price - window.open_price) / window.open_price * 100
+                outcome = 1 if went_up else 0
+                self.dynamo.put_training_data({
+                    "window_id": f"{state.asset}_{tf}_{window.slug}",
+                    "timestamp": time.time(),
+                    "asset": state.asset,
+                    "timeframe": tf,
+                    "open_price": round(window.open_price, 2) if window.open_price else 0,
+                    "close_price": round(window.close_price, 2) if window.close_price else 0,
+                    "pct_move": round(pct_move, 6),
+                    "outcome": outcome,
+                    "direction": "up" if went_up else "down",
+                    "yes_ask_at_open": round(state.orderbook.yes_best_ask, 4),
+                    "no_ask_at_open": round(state.orderbook.no_best_ask, 4),
+                    "yes_bid_at_open": round(state.orderbook.yes_best_bid, 4),
+                    "no_bid_at_open": round(state.orderbook.no_best_bid, 4),
+                    "p_bayesian": round(state.bayesian.probability, 4),
+                    "realized_vol": round(compute_realized_vol(list(state.price_history)), 6),
+                    "oracle_lag_pct": round(self.rtds.get_state(state.asset).oracle_lag_pct, 6),
+                })
+                logger.debug("training_data_logged", asset=state.asset, slug=window.slug, outcome=outcome)
+            except Exception as e:
+                logger.debug("training_data_failed", error=str(e))
+
+    async def _verify_outcome_after_delay(self, window_slug: str, delay_seconds: int = 90):
+        """Wait 90s, then query Gamma API. Retry up to 3 times every 60s."""
         await asyncio.sleep(delay_seconds)
-        if isinstance(self.trader, PaperTrader):
-            await self.trader.verify_and_update(window_slug)
-        elif isinstance(self.trader, LiveTrader):
-            # LiveTrader already uses Gamma API in resolve_window — re-check for accuracy
+
+        for attempt in range(4):  # initial + 3 retries
             try:
                 from polybot.feeds.polymarket_rest import get_market_outcome
-                from polybot.storage.db import Database
                 winner, source = await get_market_outcome(window_slug)
-                if winner:
-                    trades = await self.db.get_trades(window_slug=window_slug)
-                    for t in trades:
-                        if t.get("resolved"):
-                            correct = (t.get("side", "") == winner)
-                            await self.db.update_trade_outcome(
-                                trade_id=t["id"],
-                                polymarket_winner=winner,
-                                correct_prediction=correct,
-                                outcome_source=source,
-                            )
+
+                if winner is None:
+                    if attempt < 3:
+                        logger.info("outcome_pending_retry", slug=window_slug, attempt=attempt + 1)
+                        await asyncio.sleep(60)
+                        continue
+                    else:
+                        logger.warning("outcome_pending_exhausted", slug=window_slug)
+                        return
+
+                # Winner confirmed — resolve all trades for this window
+                trades = await self.db.get_trades(window_slug=window_slug)
+                for t in trades:
+                    if t.get("resolved"):
+                        continue  # already finalized
+                    side = t.get("side", "")
+                    correct = (side == winner)
+                    fill_price = float(t.get("fill_price", 0) or 0)
+                    size_usd = float(t.get("size_usd", 0) or 0)
+
+                    if correct and fill_price > 0:
+                        shares = size_usd / fill_price
+                        pnl = shares * (1.0 - fill_price)
+                    else:
+                        pnl = -size_usd
+
+                    self.risk.record_trade(pnl)
+                    await self.db.update_trade_verified(
+                        trade_id=t["id"],
+                        pnl=pnl,
+                        polymarket_winner=winner,
+                        correct_prediction=correct,
+                        outcome_source=source,
+                    )
+                    logger.info(
+                        "trade_resolved",
+                        id=t["id"],
+                        slug=window_slug,
+                        winner=winner,
+                        our_side=side,
+                        correct=correct,
+                        pnl=round(pnl, 4),
+                    )
+                return  # done
+
             except Exception as e:
-                logger.warning("live_verify_failed", slug=window_slug, error=str(e))
+                logger.warning("verify_failed", slug=window_slug, attempt=attempt, error=str(e))
+                if attempt < 3:
+                    await asyncio.sleep(60)
 
     async def _execute(self, signal, state: AssetState, signal_ms: float = 0, bedrock_ms: float = 0):
         if isinstance(self.trader, LiveTrader):

@@ -91,15 +91,8 @@ class LiveTrader:
             logger.warning("live_trade_blocked", reason="circuit_breaker")
             return None
 
-        size = compute_size(
-            model_prob=signal.model_prob,
-            market_price=signal.market_price,
-            bankroll=self.risk.bankroll,
-            kelly_mult=self.settings.kelly_fraction,
-            max_position_pct=self.settings.max_position_pct,
-            min_trade_usd=self.settings.min_trade_usd,
-            max_trade_usd=self.settings.max_trade_usd,
-        )
+        # Position size: 1% of bankroll with circuit breaker override
+        size = self.risk.get_bet_size()
         if size <= 0:
             return None
 

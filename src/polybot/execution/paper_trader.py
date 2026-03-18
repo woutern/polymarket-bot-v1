@@ -50,16 +50,8 @@ class PaperTrader:
             )
             return None
 
-        # Compute position size
-        size = compute_size(
-            model_prob=signal.model_prob,
-            market_price=signal.market_price,
-            bankroll=self.risk.bankroll,
-            kelly_mult=0.25,
-            max_position_pct=self.risk.max_position_pct,
-            min_trade_usd=self.risk.min_trade_usd,
-            max_trade_usd=self.risk.max_trade_usd,
-        )
+        # Position size: 1% of bankroll with circuit breaker override
+        size = self.risk.get_bet_size()
         if size <= 0:
             return None
 

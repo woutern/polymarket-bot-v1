@@ -43,6 +43,7 @@ class DynamoStore:
             self._trades = db.Table("polymarket-bot-trades")
             self._windows = db.Table("polymarket-bot-windows")
             self._signals = db.Table("polymarket-bot-signals")
+            self._training = db.Table("polymarket-bot-training-data")
             self._available = True
         except Exception as e:
             logger.debug("dynamo_init_failed", extra={"error": str(e)})
@@ -90,6 +91,14 @@ class DynamoStore:
         except Exception as e:
             logger.debug("dynamo_get_signals_failed", extra={"error": str(e)})
             return []
+
+    def put_training_data(self, record: dict):
+        if not self._available:
+            return
+        try:
+            self._training.put_item(Item=_to_decimal(record))
+        except Exception as e:
+            logger.debug("dynamo_put_training_failed", extra={"error": str(e)})
 
     def update_trade_resolved(self, trade_id: str, pnl: float, polymarket_winner: str, correct_prediction: bool, outcome_source: str):
         if not self._available:
