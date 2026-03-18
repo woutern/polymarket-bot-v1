@@ -93,10 +93,19 @@ class LiveTrader:
             logger.warning("live_trade_blocked", reason="circuit_breaker")
             return None
 
-        # Dedup: one trade per window_slug
+        # Dedup: one trade per window_slug (memory + DB check)
         if signal.window_slug in self._traded_slugs:
-            logger.warning("live_trade_dedup", slug=signal.window_slug)
+            logger.warning("live_trade_dedup", slug=signal.window_slug, source="memory")
             return None
+        # Also check DynamoDB for trades from previous bot sessions
+        try:
+            existing = await self.db.get_trades(window_slug=signal.window_slug, limit=1)
+            if existing:
+                self._traded_slugs.add(signal.window_slug)
+                logger.warning("live_trade_dedup", slug=signal.window_slug, source="dynamodb")
+                return None
+        except Exception:
+            pass  # DB check failure is non-fatal — memory dedup still works
         self._traded_slugs.add(signal.window_slug)
 
         # Clean old slugs (keep last 50)
