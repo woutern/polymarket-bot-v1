@@ -2,41 +2,84 @@
 
 Algorithmic trading bot for Polymarket crypto binary prediction markets.
 
-**Status:** LIVE — $260 portfolio, 1% per trade, all 6 pairs
+**Status:** LIVE — $225 portfolio, all 6 pairs active
 **Dashboard:** http://54.155.183.45:8888/
-**Tests:** 295 passing
+**Tests:** 306 passing
 
-## What it does
+## Strategy
 
-Trades BTC/ETH/SOL × 5m/15m Up/Down prediction markets on Polymarket.
-Enters T+2s-T+15s after window open when price moves >0.02%.
-LightGBM models (6 per pair) filter low-confidence signals.
-Resolves trades via Polymarket Gamma API (never Coinbase inference).
+Trades BTC/ETH/SOL × 5m/15m Up/Down windows on Polymarket.
+Enters T+2s-T+15s after window open when price moves above threshold.
+LightGBM models filter low-confidence signals. Dynamic Kelly sizing.
+
+### Thresholds (backtested 30 days, 50K+ windows)
+
+| Pair | Threshold | WR | Signals/day |
+|------|-----------|-----|-------------|
+| BTC 5m | 0.02% | 68% | ~24 |
+| ETH 5m | 0.02% | 67% | ~28 |
+| SOL 5m | 0.02% | 64% | ~30 |
+| BTC 15m | 0.15% | 73% | ~4 |
+| ETH 15m | 0.15% | 73% | ~8 |
+| SOL 15m | 0.15% | 73% | ~10 |
+
+### Entry Filters (all must pass)
+1. Price move > threshold in first 15 seconds
+2. Vol ratio 0.5-3.0 (not too quiet, not too wild)
+3. Body ratio > 0.4 (decisive candle)
+4. Previous window same direction
+5. Spread < $0.10
+6. Ask < $0.60
+7. EV > 0.05
+8. LightGBM prob > 0.55
+
+### Sizing (Dynamic Kelly)
+- lgbm_prob < 0.60: 0.5% of wallet
+- lgbm_prob 0.60-0.70: 1.0%
+- lgbm_prob 0.70-0.80: 1.5%
+- lgbm_prob > 0.80: 2.0%
+- Min $1.00, max $10.00
 
 ## Architecture
 
-- **Bot:** ECS Fargate eu-west-1 (250ms tick loop, 24/7)
-- **Dashboard:** EC2 us-east-1 (5 pages, CET timestamps)
-- **Storage:** DynamoDB us-east-1 (trades, windows, signals, training_data, kpi_snapshots)
-- **Models:** S3 us-east-1 (6 LightGBM .pkl files), SSM for paths
-- **Retrain:** EventBridge every 4h → ECS RunTask
-- **Watchdog:** Docker HEALTHCHECK restarts container if frozen >5min
-- **Nothing runs on laptop**
+```
+eu-west-1 (Trading)
+├── Bot — ECS Fargate (250ms tick loop, 24/7)
+│   ├── CoinbaseWS — BTC/ETH/SOL price feed
+│   ├── RTDS — Chainlink oracle prices
+│   ├── 8 Entry Filters + LightGBM
+│   ├── LiveTrader — FOK orders on CLOB
+│   ├── DynamoDB dedup (survives restarts)
+│   ├── Gamma API resolution (90s + 5 retries)
+│   ├── KPI Tracker (BSS, SPRT, per-pair)
+│   ├── Heartbeat + Docker HEALTHCHECK watchdog
+│   └── Smoke test (9 checks on startup)
+
+us-east-1 (Data + Models)
+├── DynamoDB — trades, windows, signals, training_data, kpi_snapshots
+├── S3 — 6 LightGBM model artifacts
+├── SSM — model paths + metrics
+├── Dashboard EC2 (54.155.183.45:8888)
+│   ├── 5 pages: Overview, Trade Log, Signals, Analytics, KPIs
+│   └── P&L from Polymarket data-api
+└── EventBridge — retrain every 4h
+```
 
 ## Safety
 
 - Circuit breakers: 3 streak → 15min pause, 5/20 losses → $1 flat, 10% daily → stop
-- Dedup: memory + DynamoDB (one trade per window)
-- Resolution: Gamma API only (90s + 3 retries)
-- Smoke test: 9 checks on startup
-- LightGBM blocks trades when prob < 0.55
-- Heartbeat every 60s → watchdog restarts on freeze
+- Dedup: DynamoDB + memory (one trade per window, survives restarts)
+- Resolution: Gamma API only (never Coinbase inference)
+- Watchdog: heartbeat every 60s, Docker HEALTHCHECK restarts if frozen >5min
+- Orphan resolver: resolves stale trades on startup
 
 ## Commands
 
 ```bash
-./scripts/switch.sh live|paper          # switch mode
-uv run python scripts/force_trade.py    # manual trade
-uv run python scripts/redeem.py         # redeem via Safe
-uv run pytest tests/ -q                 # 295 tests
+./scripts/switch.sh live|paper
+uv run python scripts/force_trade.py --asset BTC
+uv run python scripts/redeem.py
+uv run pytest tests/ -q                    # 306 tests
+PYTHONPATH=src uv run python -c \
+  "from polybot.ml.trainer import train_all; train_all()"
 ```
