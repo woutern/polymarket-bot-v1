@@ -1265,61 +1265,56 @@ HTML = r"""<!DOCTYPE html>
 </div>
 
 <!-- ======================================================================= -->
-<!-- PAGE 3: SIGNALS                                                         -->
+<!-- PAGE 3: WINDOW SCORES                                                   -->
 <!-- ======================================================================= -->
 <div id="page-signals" class="page-content">
 <div class="page">
 
-  <!-- Signal funnel -->
-  <div class="section-header">
-    <span class="section-title">Signal Funnel</span>
-    <span class="section-badge" id="funnel-badge">Loading...</span>
-  </div>
-  <div class="panel-card" style="padding:20px;margin-bottom:20px">
-    <div id="funnel-bars"></div>
+  <!-- Score stats -->
+  <div class="stats-grid" style="margin-bottom:20px">
+    <div class="stat-card">
+      <div class="stat-label">Windows Evaluated</div>
+      <div class="stat-value" id="sig-total">—</div>
+      <div class="stat-sub" id="sig-total-sub">Loading...</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Score 4-5 (Taker)</div>
+      <div class="stat-value green" id="sig-taker">—</div>
+      <div class="stat-sub" id="sig-taker-sub">High conviction</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Score 2-3 (Maker)</div>
+      <div class="stat-value blue" id="sig-maker">—</div>
+      <div class="stat-sub" id="sig-maker-sub">Low conviction</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Score 0-1 (Skip)</div>
+      <div class="stat-value" id="sig-skip" style="color:#868e96">—</div>
+      <div class="stat-sub">No entry</div>
+    </div>
   </div>
 
-  <!-- Rejection breakdown + near-miss -->
+  <!-- Score distribution + signal breakdown -->
   <div class="analytics-grid" style="margin-bottom:20px">
-    <div class="panel-card">
-      <div class="panel-head">
-        <span class="section-title">Rejection Breakdown</span>
-      </div>
-      <div style="padding:16px;height:250px">
-        <canvas id="rejection-donut"></canvas>
-      </div>
+    <div class="panel-card" style="padding:20px">
+      <div style="font-weight:600;margin-bottom:12px">Score Distribution</div>
+      <div id="score-dist-bars"></div>
     </div>
-    <div class="panel-card">
-      <div class="panel-head">
-        <span class="section-title">Near Misses (EV within 2% of threshold)</span>
-      </div>
-      <div class="scroll-wrap" style="max-height:250px">
-        <table>
-          <thead><tr>
-            <th>Time</th><th>Asset</th><th>Dir</th><th>Move%</th><th>EV</th><th>P(model)</th>
-          </tr></thead>
-          <tbody id="near-miss-body">
-            <tr class="empty-row"><td colspan="6">Loading...</td></tr>
-          </tbody>
-        </table>
-      </div>
+    <div class="panel-card" style="padding:20px">
+      <div style="font-weight:600;margin-bottom:12px">Signal Hit Rate</div>
+      <div id="signal-hit-rates"></div>
     </div>
   </div>
 
-  <!-- Signal table -->
+  <!-- Window evaluations table -->
   <div class="section-header">
-    <span class="section-title">All Signal Evaluations</span>
+    <span class="section-title">Recent Window Evaluations</span>
     <div class="filter-bar">
-      <select id="sig-asset" onchange="loadSignals()" class="filter-select">
+      <select id="sig-asset" onchange="loadSignalsPage()" class="filter-select">
         <option value="">All assets</option>
         <option value="BTC">BTC</option>
         <option value="ETH">ETH</option>
         <option value="SOL">SOL</option>
-      </select>
-      <select id="sig-outcome" onchange="loadSignals()" class="filter-select">
-        <option value="">All outcomes</option>
-        <option value="executed">Executed</option>
-        <option value="rejected">Rejected</option>
       </select>
     </div>
   </div>
@@ -1327,10 +1322,10 @@ HTML = r"""<!DOCTYPE html>
     <div style="overflow-x:auto">
       <table>
         <thead><tr>
-          <th>Time</th><th>Asset</th><th>TF</th><th>Dir</th>
-          <th>Move%</th><th>P(model)</th><th>Mkt Price</th><th>EV</th>
-          <th>p(bay)</th><th>Sec Left</th><th>YES Ask</th><th>NO Ask</th>
-          <th>Status</th><th>Reason</th>
+          <th>Time</th><th>Asset</th><th>Score</th>
+          <th>OFI</th><th>NoRev</th><th>Cross</th><th>PM</th><th>Vol</th>
+          <th>Dir</th><th>Move%</th><th>Ask</th><th>LightGBM</th><th>EV</th>
+          <th>Action</th>
         </tr></thead>
         <tbody id="sig-body">
           <tr class="empty-row"><td colspan="14">Loading...</td></tr>
@@ -2018,10 +2013,105 @@ async function loadTradeLog() {
 
 // ── Signals page ──────────────────────────────────────────────────────────────
 async function loadSignalsPage() {
-  await Promise.all([loadSignalFunnel(), loadSignals(), loadNearMisses()]);
+  try {
+    const asset = document.getElementById('sig-asset').value;
+    let url = '/api/signals?limit=200';
+    if (asset) url += '&asset=' + asset;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    const sigs = data.signals || [];
+
+    // Stats
+    const scored = sigs.filter(s => s.score_total !== undefined);
+    const takers = scored.filter(s => parseInt(s.score_total || 0) >= 4);
+    const makers = scored.filter(s => { const sc = parseInt(s.score_total || 0); return sc >= 2 && sc < 4; });
+    const skips = scored.filter(s => parseInt(s.score_total || 0) < 2);
+
+    document.getElementById('sig-total').textContent = scored.length;
+    document.getElementById('sig-total-sub').textContent = 'Last ' + sigs.length + ' evaluations';
+    document.getElementById('sig-taker').textContent = takers.length;
+    document.getElementById('sig-taker-sub').textContent = scored.length ? Math.round(takers.length/scored.length*100)+'% of windows' : '';
+    document.getElementById('sig-maker').textContent = makers.length;
+    document.getElementById('sig-maker-sub').textContent = scored.length ? Math.round(makers.length/scored.length*100)+'% of windows' : '';
+    document.getElementById('sig-skip').textContent = skips.length;
+
+    // Score distribution bars
+    const dist = [0,0,0,0,0,0];
+    scored.forEach(s => { const sc = Math.min(5, Math.max(0, parseInt(s.score_total||0))); dist[sc]++; });
+    const maxDist = Math.max(1, ...dist);
+    const colors = ['#dee2e6','#dee2e6','#74c0fc','#74c0fc','#51cf66','#51cf66'];
+    const labels = ['0 (skip)','1 (skip)','2 (maker)','3 (maker)','4 (taker)','5 (taker)'];
+    let distHtml = '';
+    for (let i = 0; i <= 5; i++) {
+      const pct = Math.max(3, dist[i]/maxDist*100);
+      distHtml += '<div style="display:flex;align-items:center;gap:8px;margin:4px 0">' +
+        '<span style="width:70px;font-size:12px;color:#495057">' + labels[i] + '</span>' +
+        '<div style="flex:1;height:22px;background:#f1f3f5;border-radius:4px;overflow:hidden">' +
+        '<div style="width:'+pct+'%;height:100%;background:'+colors[i]+';border-radius:4px;display:flex;align-items:center;padding:0 8px;font-size:11px;font-weight:600;color:#fff">' + dist[i] + '</div>' +
+        '</div></div>';
+    }
+    document.getElementById('score-dist-bars').innerHTML = distHtml;
+
+    // Signal hit rates
+    const signalNames = ['OFI','No Reversal','Cross-Asset','PM Pressure','Volume'];
+    const signalKeys = ['score_ofi','score_no_reversal','score_cross_asset','score_polymarket_pressure','score_volume'];
+    let hitHtml = '';
+    for (let i = 0; i < 5; i++) {
+      const hits = scored.filter(s => parseInt(s[signalKeys[i]]||0) === 1).length;
+      const pct = scored.length ? Math.round(hits/scored.length*100) : 0;
+      const barW = Math.max(3, pct);
+      hitHtml += '<div style="display:flex;align-items:center;gap:8px;margin:6px 0">' +
+        '<span style="width:100px;font-size:12px;color:#495057">' + signalNames[i] + '</span>' +
+        '<div style="flex:1;height:22px;background:#f1f3f5;border-radius:4px;overflow:hidden">' +
+        '<div style="width:'+barW+'%;height:100%;background:#339af0;border-radius:4px;display:flex;align-items:center;padding:0 8px;font-size:11px;font-weight:600;color:#fff">' + pct + '%</div>' +
+        '</div>' +
+        '<span style="width:40px;text-align:right;font-size:12px;color:#868e96">' + hits + '/' + scored.length + '</span>' +
+        '</div>';
+    }
+    document.getElementById('signal-hit-rates').innerHTML = hitHtml;
+
+    // Table
+    const tbody = document.getElementById('sig-body');
+    tbody.innerHTML = '';
+    if (!sigs.length) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="14">No evaluations yet — waiting for next window</td></tr>';
+      return;
+    }
+    const check = v => parseInt(v||0) ? '<span style="color:#2f9e44">&#10003;</span>' : '<span style="color:#ced4da">&#10007;</span>';
+    for (const s of sigs) {
+      const sc = parseInt(dval(s,'score_total')||0);
+      let action = '<span style="color:#868e96">SKIP</span>';
+      let rowStyle = '';
+      if (sc >= 4) { action = '<span style="color:#1971c2;font-weight:700">TAKER</span>'; rowStyle = 'background:#e7f5ff;'; }
+      else if (sc >= 2) { action = '<span style="color:#2f9e44;font-weight:700">MAKER</span>'; rowStyle = 'background:#ebfbee;'; }
+      const reason = dval(s,'rejection_reason') || dval(s,'outcome') || '';
+      if (reason && sc < 2) action += ' <span style="font-size:10px;color:#868e96">(' + reason + ')</span>';
+
+      const scoreBadge = '<span style="display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;border-radius:6px;font-weight:700;font-size:13px;color:#fff;background:'
+        + (sc >= 4 ? '#1971c2' : sc >= 2 ? '#2f9e44' : '#adb5bd') + '">' + sc + '</span>';
+
+      tbody.innerHTML += '<tr style="' + rowStyle + '">' +
+        '<td style="white-space:nowrap">' + fmtTs(dval(s,'timestamp')) + '</td>' +
+        '<td>' + assetTag(dval(s,'asset')||'') + '</td>' +
+        '<td>' + scoreBadge + '</td>' +
+        '<td>' + check(dval(s,'score_ofi')) + '</td>' +
+        '<td>' + check(dval(s,'score_no_reversal')) + '</td>' +
+        '<td>' + check(dval(s,'score_cross_asset')) + '</td>' +
+        '<td>' + check(dval(s,'score_polymarket_pressure')) + '</td>' +
+        '<td>' + check(dval(s,'score_volume')) + '</td>' +
+        '<td>' + dirTag(dval(s,'direction')) + '</td>' +
+        '<td>' + fmtPct(dval(s,'pct_move')) + '</td>' +
+        '<td>' + (dval(s,'market_price') ? '$'+parseFloat(dval(s,'market_price')).toFixed(2) : '—') + '</td>' +
+        '<td>' + fmtProb(dval(s,'model_prob')) + '</td>' +
+        '<td>' + fmtProb(dval(s,'ev')) + '</td>' +
+        '<td>' + action + '</td>' +
+        '</tr>';
+    }
+  } catch(e) { console.error('signals page error', e); }
 }
 
-async function loadSignalFunnel() {
+/* Old signal functions removed — replaced by scored loadSignalsPage above */
+async function loadSignalFunnel_REMOVED() {
   try {
     const resp = await fetch('/api/signals/summary');
     const data = await resp.json();
