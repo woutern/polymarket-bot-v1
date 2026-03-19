@@ -1056,6 +1056,44 @@ HTML = r"""<!DOCTYPE html>
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
     .strategy-grid { grid-template-columns: repeat(3, 1fr); }
   }
+  /* ── Hamburger menu (mobile) ── */
+  .hamburger {
+    display: none;
+    background: none; border: none; cursor: pointer; padding: 6px;
+    color: var(--nav-text);
+  }
+  .hamburger svg { width: 24px; height: 24px; }
+  .mobile-menu {
+    display: none;
+    position: fixed;
+    top: 56px; left: 0; right: 0;
+    background: var(--nav-bg);
+    border-bottom: 1px solid rgba(255,255,255,.1);
+    padding: 8px 16px 12px;
+    z-index: 49;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .mobile-menu.open { display: flex; }
+  .mobile-menu button {
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--nav-text);
+    cursor: pointer;
+    border: none;
+    background: none;
+    text-align: left;
+    transition: all .15s;
+  }
+  .mobile-menu button:hover { color: #e8eaed; background: rgba(255,255,255,.08); }
+  .mobile-menu button.active {
+    color: #fff;
+    background: rgba(255,255,255,.12);
+  }
+
   @media (max-width: 768px) {
     .page { padding: 12px 16px 32px; }
     nav { padding: 0 16px; }
@@ -1065,6 +1103,7 @@ HTML = r"""<!DOCTYPE html>
     .nav-meta { display: none; }
     .stat-value { font-size: 22px; }
     .nav-tabs { display: none; }
+    .hamburger { display: block; }
   }
 </style>
 </head>
@@ -1093,8 +1132,20 @@ HTML = r"""<!DOCTYPE html>
       <span>Updated: <strong id="last-update">&mdash;</strong></span>
     </div>
     <div class="status-dot" id="mode-badge">PAPER</div>
+    <button class="hamburger" onclick="toggleMobileMenu()" aria-label="Menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+        <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
+    </button>
   </div>
 </nav>
+<div class="mobile-menu" id="mobile-menu">
+  <button class="active" onclick="showPageMobile('overview', this)">Overview</button>
+  <button onclick="showPageMobile('tradelog', this)">Trade Log</button>
+  <button onclick="showPageMobile('signals', this)">Signals</button>
+  <button onclick="showPageMobile('analytics', this)">Analytics</button>
+  <button onclick="showPageMobile('kpis', this)">KPIs</button>
+</div>
 
 <!-- ======================================================================= -->
 <!-- PAGE 1: OVERVIEW                                                        -->
@@ -1482,6 +1533,19 @@ const OTHER_REFRESH_MS = 10000;
 let refreshInterval = null;
 
 // ── Page navigation ───────────────────────────────────────────────────────────
+function toggleMobileMenu() {
+  document.getElementById('mobile-menu').classList.toggle('open');
+}
+function showPageMobile(name, btn) {
+  // Update mobile menu active state
+  document.querySelectorAll('.mobile-menu button').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  // Close menu
+  document.getElementById('mobile-menu').classList.remove('open');
+  // Delegate to main showPage (also update desktop tabs)
+  const desktopBtn = document.querySelector(`.nav-tab[data-page="${name}"]`);
+  showPage(name, desktopBtn);
+}
 function showPage(name, btn) {
   currentPage = name;
   document.querySelectorAll('.page-content').forEach(p => p.classList.remove('active'));

@@ -4,7 +4,7 @@ Algorithmic trading bot for Polymarket crypto binary prediction markets.
 
 **Status:** LIVE — $225 portfolio, all 6 pairs active
 **Dashboard:** http://54.155.183.45:8888/
-**Tests:** 336 passing
+**Tests:** 355 passing
 
 ## Strategy
 
@@ -80,7 +80,7 @@ us-east-1 (Data + Models)
 ./scripts/switch.sh live|paper
 uv run python scripts/force_trade.py --asset BTC
 uv run python scripts/redeem.py
-uv run pytest tests/ -q                    # 336 tests
+uv run pytest tests/ -q                    # 355 tests
 uv run python scripts/backfill_verification.py  # one-time: verify old trades
 PYTHONPATH=src uv run python -c \
   "from polybot.ml.trainer import train_all; train_all()"
