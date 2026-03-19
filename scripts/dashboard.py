@@ -1913,12 +1913,13 @@ async function refreshOverview() {
       }
     }
 
-    // Logs
+    // Logs — chronological (oldest first, newest at bottom, auto-scroll)
     const logsEl = document.getElementById('logs');
+    const wasAtBottom = logsEl.scrollTop + logsEl.clientHeight >= logsEl.scrollHeight - 20;
     logsEl.innerHTML = '';
-    const reversed = [...data.logs].reverse();
-    document.getElementById('log-count').textContent = reversed.length + ' events';
-    for (const line of reversed) {
+    const lines = data.logs;  // already chronological from API
+    document.getElementById('log-count').textContent = lines.length + ' events';
+    for (const line of lines) {
       let cls = 'log-line info';
       let formatted = line;
       try {
@@ -1926,33 +1927,43 @@ async function refreshOverview() {
         const ev = obj.event || '';
         if (obj.level === 'error')                                cls = 'log-line error';
         else if (obj.level === 'warning')                         cls = 'log-line warn';
-        else if (ev.includes('signal') || ev.includes('blend'))   cls = 'log-line signal';
-        else if (ev.includes('order') || ev.includes('trade'))    cls = 'log-line trade';
+        else if (ev.includes('order') || ev.includes('trade') || ev.includes('executed'))  cls = 'log-line trade';
+        else if (ev.includes('signal') || ev.includes('blend') || ev.includes('lgbm'))     cls = 'log-line signal';
         else if (ev.includes('entry_zone'))                       cls = 'log-line entry';
         else if (ev.includes('window_'))                          cls = 'log-line window';
-        // Convert UTC to CET (UTC+1)
+        // Convert UTC to CET
         let ts = '';
         if (obj.timestamp) {
           const utc = new Date(obj.timestamp);
           ts = utc.toLocaleTimeString('en-GB', {timeZone: 'Europe/Amsterdam', hour12: false});
         }
-        const asset = obj.asset ? '<span style="color:#7aa2f7">['+obj.asset+']</span>' : '';
-        // Format key fields nicely, skip noise
-        const skip = ['event','level','timestamp','asset','logger'];
-        const highlights = ['pnl','price','side','direction','slug','error','pct_move','ev','winner'];
-        const rest = Object.entries(obj)
-          .filter(([k]) => !skip.includes(k))
-          .map(([k,v]) => {
-            const val = typeof v==='number' ? (v.toFixed ? v.toFixed(4) : v) : (typeof v==='string' ? v : JSON.stringify(v));
-            if (highlights.includes(k)) return '<span style="color:#e0af68">'+k+'</span>='+val;
-            return '<span style="color:#565f89">'+k+'</span>='+val;
-          })
-          .join(' ');
-        formatted = '<span style="color:#565f89">'+ts+'</span> ' + asset + ' <b>' + ev + '</b>  ' + rest;
+        // Compact readable format: time [ASSET] event_name  key=val key=val
+        const skip = ['event','level','timestamp','asset','logger','exc_info'];
+        const important = ['pnl','price','side','direction','error','pct_move','ev','winner','lgbm_prob','liq_bias','btc_confirms','threshold'];
+        const parts = [];
+        for (const [k,v] of Object.entries(obj)) {
+          if (skip.includes(k)) continue;
+          let val = typeof v==='number' ? (Number.isInteger(v) ? v : v.toFixed(4)) : (typeof v==='string' ? v : JSON.stringify(v));
+          // Shorten long slugs: btc-updown-5m-1773922800 → btc-5m-...2800
+          if (k === 'slug' || k === 'window_slug') {
+            const m = val.match(/^(\w+)-updown-(\d+m)-(\d+)$/);
+            if (m) val = m[1]+'-'+m[2]+'-...'+m[3].slice(-4);
+          }
+          // Shorten S3 paths
+          if (typeof val === 'string' && val.includes('s3://')) val = val.split('/').pop();
+          if (important.includes(k)) {
+            parts.push('<span style="color:#e0af68">'+k+'</span>=<b>'+val+'</b>');
+          } else {
+            parts.push('<span style="color:#565f89">'+k+'</span>='+val);
+          }
+        }
+        const asset = obj.asset ? ' <span style="color:#7aa2f7">['+obj.asset+']</span>' : '';
+        formatted = '<span style="color:#565f89">'+ts+'</span>'+asset+' <b>'+ev+'</b>  '+parts.join(' ');
       } catch(ex) {}
       logsEl.innerHTML += '<div class="' + cls + '">' + formatted + '</div>';
     }
-    logsEl.scrollTop = logsEl.scrollHeight;
+    // Auto-scroll to bottom only if user was already at bottom
+    if (wasAtBottom || logsEl.scrollTop === 0) logsEl.scrollTop = logsEl.scrollHeight;
 
     document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
   } catch(e) { console.error('overview error', e); }
