@@ -72,6 +72,50 @@ class AssetState:
     vol_history: deque = field(default_factory=lambda: deque(maxlen=12))  # rolling vol for vol_ma_1h
     window_high: float = 0.0  # track high/low within first 15s for body_ratio
     window_low: float = float("inf")
+    window_open_price_at_5s: float | None = None  # BTC price at T+5s for cross-asset lead
+
+
+# ── CoinGlass liquidation bias ────────────────────────────────────────────────
+
+_liq_cache: dict[str, tuple[float, float]] = {}  # symbol → (bias, timestamp)
+_LIQ_CACHE_TTL = 300  # 5 min cache
+
+
+async def fetch_liq_cluster_bias(symbol: str = "BTC") -> float:
+    """Fetch CoinGlass liquidation map and compute cluster bias.
+
+    Returns: -1 (strong UP bias — longs liquidated below) to +1 (strong DOWN bias).
+    Returns 0.0 on error or cache miss within TTL.
+    """
+    cached = _liq_cache.get(symbol)
+    if cached and time.time() - cached[1] < _LIQ_CACHE_TTL:
+        return cached[0]
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(
+                "https://open-api.coinglass.com/public/v2/liquidation_map",
+                params={"symbol": symbol, "timeType": "h1"},
+            )
+            if resp.status_code != 200:
+                return _liq_cache.get(symbol, (0.0, 0))[0]
+            data = resp.json()
+            # Extract liquidation clusters from response
+            liq_data = data.get("data", {})
+            # Long liquidations below current price (bullish — these get squeezed UP)
+            long_liq = sum(float(v) for v in (liq_data.get("longList", []) or [])[:5])
+            # Short liquidations above current price (bearish — these get squeezed DOWN)
+            short_liq = sum(float(v) for v in (liq_data.get("shortList", []) or [])[:5])
+            total = long_liq + short_liq
+            if total > 0:
+                bias = (long_liq - short_liq) / total
+            else:
+                bias = 0.0
+            _liq_cache[symbol] = (bias, time.time())
+            return bias
+    except Exception:
+        return _liq_cache.get(symbol, (0.0, 0))[0]
 
 
 class TradingLoop:
@@ -350,8 +394,12 @@ class TradingLoop:
         ):
             await self._try_tier_a_entry(state, price, window, oracle, remaining)
 
-        # Tier B (PRIMARY): Enter T+2s to T+15s with multi-filter validation
+        # Capture BTC price at T+5s for cross-asset lead signal
         seconds_since_open = time.time() - window.open_ts
+        if state.window_open_price_at_5s is None and seconds_since_open >= 5.0:
+            state.window_open_price_at_5s = self.coinbase.get_price(state.asset)
+
+        # Tier B (PRIMARY): Enter T+2s to T+15s with multi-filter validation
         if (
             2.0 <= seconds_since_open <= 15.0
             and not state.traded_this_window
@@ -470,6 +518,7 @@ class TradingLoop:
         state.traded_this_window = False
         state.window_high = price
         state.window_low = price
+        state.window_open_price_at_5s = None  # reset, will be set at T+5s
         logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
         state.bayesian.reset(price, 0.5)
 
@@ -503,6 +552,14 @@ class TradingLoop:
         body = abs(price - (window.open_price or price))
         body_ratio = body / hl_range if hl_range > 0 else 0.5
         min_move = self.settings.min_move_for(state.asset, state.tracker.window_seconds)
+
+        # Change 2: Lower threshold when previous window confirms + calm volatility
+        prev_agrees = False
+        if state.prev_window and state.prev_window.open_price and state.prev_window.close_price:
+            prev_up = state.prev_window.close_price >= state.prev_window.open_price
+            prev_agrees = (prev_up == (pct_move > 0))
+        if prev_agrees and 0.8 <= vol_ratio <= 1.5 and tf == "5m":
+            min_move = min(min_move, 0.015)  # lower to 0.015% for high-certainty signals
 
         # FILTER 1: Momentum strength
         if abs(pct_move) < min_move:
@@ -557,6 +614,27 @@ class TradingLoop:
             logger.debug("filter_wide_spread", asset=state.asset, spread=round(spread, 4))
             return
 
+        # Change 3: BTC cross-asset lead for ETH/SOL
+        btc_confirms = False
+        btc_lead_move = 0.0
+        if state.asset in ("ETH", "SOL"):
+            # Find BTC_5m state to get BTC price move in first 5s
+            btc_key = "BTC_5m"
+            btc_state = self.asset_states.get(btc_key)
+            if btc_state and btc_state.window_open_price_at_5s and btc_state.tracker.current:
+                btc_open = btc_state.tracker.current.open_price
+                if btc_open and btc_open > 0:
+                    btc_now = self.coinbase.get_price("BTC")
+                    btc_lead_move = (btc_now - btc_open) / btc_open * 100
+                    # BTC confirms if same direction as ETH/SOL AND move > 0.02%
+                    btc_confirms = abs(btc_lead_move) > 0.02 and (btc_lead_move > 0) == (pct_move > 0)
+
+        # Change 1: CoinGlass liquidation bias (cached, async)
+        try:
+            liq_bias = await fetch_liq_cluster_bias(state.asset if state.asset == "BTC" else "BTC")
+        except Exception:
+            liq_bias = 0.0
+
         logger.info(
             "entry_zone",
             asset=state.asset,
@@ -571,10 +649,13 @@ class TradingLoop:
             spread=round(spread, 4),
             vol_ratio=round(vol_ratio, 3),
             body_ratio=round(body_ratio, 3),
+            liq_cluster_bias=round(liq_bias, 4),
+            btc_confirms=btc_confirms,
+            btc_lead_move=round(btc_lead_move, 4),
+            min_move_applied=min_move,
         )
 
-        # Use per-asset × per-duration threshold (research-calibrated)
-        min_move = self.settings.min_move_for(state.asset, state.tracker.window_seconds)
+        # min_move already computed above (with high-certainty lowering applied)
 
         t_signal_start = time.time()
         evaluation = generate_directional_signal(
@@ -615,7 +696,7 @@ class TradingLoop:
         lgbm_prob = self.model_server.predict(pair, features)
         model_has = self.model_server.has_model(pair)
 
-        # Log model prediction
+        # Log model prediction with new features
         if model_has:
             logger.info(
                 "lgbm_prediction",
@@ -624,6 +705,9 @@ class TradingLoop:
                 lgbm_prob=round(lgbm_prob, 4),
                 model_age_h=round(self.model_server.get_model_age_hours(pair), 1),
                 pct_move=round(pct_move, 4),
+                liq_bias=round(liq_bias, 4),
+                btc_confirms=btc_confirms,
+                btc_lead_move=round(btc_lead_move, 4),
             )
 
         # If model loaded and confident, use adaptive threshold as filter
@@ -747,6 +831,9 @@ class TradingLoop:
                     "depth_imbalance": round(self.coinbase.get_depth_imbalance(state.asset), 6) if hasattr(self.coinbase, "get_depth_imbalance") else 0,
                     "trade_arrival_rate": round(self.coinbase.get_trade_arrival_rate(state.asset), 6) if hasattr(self.coinbase, "get_trade_arrival_rate") else 0,
                     "data_source": "live_with_orderbook" if hasattr(self.coinbase, "get_ofi_30s") else "live",
+                    # New signal features
+                    "liq_cluster_bias": round(_liq_cache.get("BTC", (0.0, 0))[0], 6),
+                    "btc_confirms_direction": 1 if (state.asset != "BTC" and state.window_open_price_at_5s) else 0,
                 })
                 logger.debug("training_data_logged", asset=state.asset, slug=window.slug, outcome=outcome)
             except Exception as e:
