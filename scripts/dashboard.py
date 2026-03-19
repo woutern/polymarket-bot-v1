@@ -64,7 +64,7 @@ _BANKROLL = float(_os.getenv("BANKROLL", "1000.0"))
 _WALLET_ADDRESS = _os.getenv(
     "POLYMARKET_FUNDER", "0x5ca439d661c9b44337E91fC681ec4b006C473610"
 )
-_TOTAL_DEPOSITED = float(_os.getenv("TOTAL_DEPOSITED", "265.72"))  # Total USDC ever deposited
+_TOTAL_DEPOSITED = float(_os.getenv("TOTAL_DEPOSITED", "264.37"))  # Total USDC credited on Polymarket
 
 
 # ── Helper: DynamoDB Decimal → float ──────────────────────────────────────────
@@ -1164,27 +1164,27 @@ HTML = r"""<!DOCTYPE html>
 <div id="page-overview" class="page-content active">
 <div class="page">
 
-  <!-- Stats row -->
+  <!-- Stats row — matches Polymarket portfolio layout -->
   <div class="stats-grid">
     <div class="stat-card primary">
-      <div class="stat-label" id="s-balance-label">Wallet Balance</div>
-      <div class="stat-value gold" id="s-balance">&mdash;</div>
-      <div class="stat-sub" id="s-balance-sub">USDC on Polymarket</div>
+      <div class="stat-label" id="s-balance-label">Portfolio</div>
+      <div class="stat-value" id="s-balance">&mdash;</div>
+      <div class="stat-sub" id="s-balance-sub">Loading...</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Total P&amp;L</div>
+      <div class="stat-label">Cash</div>
+      <div class="stat-value" id="s-cash">&mdash;</div>
+      <div class="stat-sub" id="s-cash-sub">Available to trade</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Profit / Loss</div>
       <div class="stat-value" id="s-pnl">&mdash;</div>
-      <div class="stat-sub" id="s-pnl-sub">since reset</div>
+      <div class="stat-sub" id="s-pnl-sub">All time</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Win / Loss</div>
       <div class="stat-value" id="s-wl">&mdash;</div>
       <div class="stat-sub" id="s-wl-sub">resolved trades</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Open Positions</div>
-      <div class="stat-value blue" id="s-open">&mdash;</div>
-      <div class="stat-sub" id="s-open-sub"></div>
     </div>
   </div>
 
@@ -1756,14 +1756,24 @@ async function refreshBalance() {
     const cash = d.cash || 0;
     const positions = d.positions || 0;
     const pnl = d.total_pnl || 0;
-    document.getElementById('s-balance-label').textContent = 'Portfolio';
-    const balEl = document.getElementById('s-balance');
-    balEl.textContent = '$' + portfolio.toFixed(2);
-    balEl.className = 'stat-value';
-    let subText = 'Cash $' + cash.toFixed(2);
-    if (positions > 0.01) subText += ' + positions $' + positions.toFixed(2);
-    subText += ' | P&L ' + (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
-    document.getElementById('s-balance-sub').textContent = subText;
+
+    // Portfolio card
+    document.getElementById('s-balance').textContent = '$' + portfolio.toFixed(2);
+    document.getElementById('s-balance').className = 'stat-value';
+    const dayPnl = pnl;  // approximate — full history
+    document.getElementById('s-balance-sub').textContent = positions > 0.01
+      ? 'Positions $' + positions.toFixed(2) + ' + Cash $' + cash.toFixed(2)
+      : 'All cash — no open positions';
+
+    // Cash card
+    document.getElementById('s-cash').textContent = '$' + cash.toFixed(2);
+    document.getElementById('s-cash-sub').textContent = 'Available to trade';
+
+    // P&L card (from Polymarket activity — matches their UI)
+    const pnlEl = document.getElementById('s-pnl');
+    pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2);
+    pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'green' : 'red');
+    document.getElementById('s-pnl-sub').textContent = 'All time (Polymarket)';
   } catch(e) {}
 }
 
@@ -1866,12 +1876,7 @@ async function refreshOverview() {
       modeBadge.style.borderColor = 'rgba(25,113,194,.3)';
     }
 
-    // P&L: always use DynamoDB bot-tracked trades (not Polymarket cumulative)
-    const pnl = s.total_pnl;
-    const pnlEl = document.getElementById('s-pnl');
-    pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
-    pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'green' : 'red');
-    document.getElementById('s-pnl-sub').textContent = 'Source: Bot trades (verified)';
+    // P&L is set by refreshBalance() from Polymarket activity data
 
     const wr = s.total_resolved > 0 ? Math.round(s.wins / s.total_resolved * 100) : 0;
     document.getElementById('s-wl').textContent = s.wins + ' / ' + s.losses;

@@ -116,7 +116,7 @@ if [[ -z "$EXISTING" || "$EXISTING" == "None" ]]; then
     --zip-file "fileb://$BUILD_DIR/lambda.zip" \
     --timeout 30 \
     --memory-size 256 \
-    --environment "Variables={MODE=live,DASHBOARD_USER=admin,DASHBOARD_PASSWORD=polybot2026,TOTAL_DEPOSITED=265.72,POLYMARKET_FUNDER=0x5ca439d661c9b44337E91fC681ec4b006C473610}" \
+    --environment "Variables={MODE=live,DASHBOARD_USER=admin,DASHBOARD_PASSWORD=polybot2026,TOTAL_DEPOSITED=264.37,POLYMARKET_FUNDER=0x5ca439d661c9b44337E91fC681ec4b006C473610}" \
     --query 'FunctionArn' --output text)
   echo "Created function: $LAMBDA_ARN"
 else
@@ -132,7 +132,7 @@ else
     --region "$REGION" \
     --timeout 30 \
     --memory-size 256 \
-    --environment "Variables={MODE=live,DASHBOARD_USER=admin,DASHBOARD_PASSWORD=polybot2026,TOTAL_DEPOSITED=265.72,POLYMARKET_FUNDER=0x5ca439d661c9b44337E91fC681ec4b006C473610}" \
+    --environment "Variables={MODE=live,DASHBOARD_USER=admin,DASHBOARD_PASSWORD=polybot2026,TOTAL_DEPOSITED=264.37,POLYMARKET_FUNDER=0x5ca439d661c9b44337E91fC681ec4b006C473610}" \
     --query 'FunctionArn' --output text 2>/dev/null || true
   LAMBDA_ARN="$EXISTING"
 fi

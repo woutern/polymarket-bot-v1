@@ -122,25 +122,24 @@ class DynamoStore:
     def claim_slug(self, window_slug: str) -> bool:
         """Atomically claim a window slug to prevent duplicate trades across containers.
 
-        Uses DynamoDB conditional put — fails if slug already claimed.
+        Uses DynamoDB conditional put on the windows table (not trades) to avoid
+        polluting trade queries with claim records.
         Returns True if claimed, False if already taken.
         """
-        if not self._available:
+        if not self._available or not self._windows:
             return True  # optimistic if DynamoDB unavailable
         try:
             import time
-            self._trades.put_item(
+            self._windows.put_item(
                 Item={
-                    "id": f"claim_{window_slug}",
-                    "window_slug": window_slug,
-                    "timestamp": int(time.time()),
-                    "claimed": True,
-                    "resolved": 0,
+                    "slug": f"claim_{window_slug}",
+                    "open_ts": int(time.time()),
+                    "claimed_by": "dedup",
                 },
-                ConditionExpression="attribute_not_exists(id)",
+                ConditionExpression="attribute_not_exists(slug)",
             )
             return True
-        except self._trades.meta.client.exceptions.ConditionalCheckFailedException:
+        except self._windows.meta.client.exceptions.ConditionalCheckFailedException:
             logger.info("dedup_claim_exists", slug=window_slug)
             return False
         except Exception as e:
