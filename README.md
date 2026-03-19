@@ -2,8 +2,8 @@
 
 Algorithmic trading bot for Polymarket crypto binary prediction markets.
 
-**Status:** LIVE — BTC/ETH/SOL 5m windows only
-**Dashboard:** https://d2rj5lnnfnptd.cloudfront.net/
+**Status:** LIVE — BTC/ETH/SOL 5m windows, scored confirmation entry
+**Dashboard:** https://r1a61boamb.execute-api.us-east-1.amazonaws.com/
 **Tests:** 384 passing
 
 ## Strategy
@@ -30,27 +30,30 @@ Every 5-minute window is evaluated with 5 confirmation signals:
 |-----------|--------|
 | **Hard filter override** (lgbm ≥ 0.65, ask ≤ $0.55, ev ≥ 0.10) | Taker FOK — enters regardless of score |
 | Score 4-5 + lgbm ≥ 0.60 + ask ≤ $0.55 + ev ≥ 0.08 | Taker FOK |
-| Score 2-3 + lgbm ≥ 0.55 | Maker GTC at $0.48 (cancel after 8s) |
+| Score 2-3 + lgbm ≥ 0.55 + ask ≤ $0.55 | Maker GTC at $0.48 (cancel after 8s) |
 | Score 0-1, no override | Skip |
 
-### Hard Limits (enforced by smoke test on every startup)
+**Ask ceiling applies to ALL paths** — nothing trades above $0.55.
+
+### Hard Limits (enforced by 16-check smoke test on every startup)
 
 | Parameter | Value | Enforced by |
 |-----------|-------|-------------|
-| Max ask price | $0.55/share | Code + Secrets Manager |
+| Max ask price | $0.55/share | First check before any entry logic |
 | Max bet size | $1.50/trade | `HARDCODED_MAX_BET` constant |
 | Min EV | 8% | Code + Secrets Manager |
 | Min LightGBM prob | 0.60 | Code (adaptive threshold) |
 
-### Pairs (5m only — 15m disabled after negative SPRT)
+### LightGBM Models (retrained every 4h)
 
-| Pair | Live WR | SPRT | Status |
-|------|---------|------|--------|
-| BTC 5m | 67% | +0.17 | Accumulating |
-| ETH 5m | 62% | +0.16 | Accumulating |
-| SOL 5m | 60% | +0.08 | Accumulating |
+| Pair | Brier | AUC | mean_prob | Status |
+|------|-------|-----|-----------|--------|
+| BTC 5m | 0.221 | 0.679 | 0.487 | Deployed |
+| ETH 5m | 0.213 | 0.704 | 0.500 | Deployed |
+| SOL 5m | 0.218 | 0.692 | 0.490 | Deployed |
 
-$1.00 flat bets until SPRT confirms edge at boundary 2.77.
+Training: signal-weighted 3x, min_child_samples=50, max_depth=4, reg_alpha=0.1.
+Calibration gate: reject if mean_prob > 0.75 or < 0.25.
 
 ## Architecture
 
@@ -60,22 +63,21 @@ eu-west-1 (Trading)
 │   ├── CoinbaseWS — ticker + level2 orderbook (OFI, spread, depth)
 │   ├── RTDS — Chainlink oracle prices
 │   ├── Scored Entry Engine (5 signals at T+12s)
-│   ├── LightGBM (3 models, signal-weighted, 14 features)
+│   ├── LightGBM (3 models, 14 features)
 │   ├── Hard Filter Override (lgbm≥0.65 + ask≤$0.55 + ev≥0.10)
 │   ├── LiveTrader — FOK taker + GTC maker on CLOB
 │   ├── 3-layer dedup (memory + DynamoDB query + atomic claim)
 │   ├── Gamma API resolution (90s + 6 retries)
 │   ├── Binance long/short ratio (liq_cluster_bias)
 │   ├── Heartbeat + Docker HEALTHCHECK watchdog
-│   └── Smoke test (12 checks on startup, halts on threshold violation)
+│   └── Smoke test (16 checks, halts on threshold violation)
 
 us-east-1 (Data + Models)
 ├── DynamoDB — trades, windows, signals, training_data, kpi_snapshots
 ├── S3 — 3 LightGBM model artifacts
 ├── SSM — model paths + metrics
-├── Dashboard — Lambda + API Gateway + CloudFront (HTTPS)
+├── Dashboard — Lambda + API Gateway (HTTPS)
 │   ├── 5 pages: Overview, Trade Log, Live Logs, Analytics, KPIs
-│   ├── Score breakdown per window (OFI/NoRev/Cross/PM/Vol)
 │   ├── P&L from Polymarket activity API
 │   └── Mobile hamburger menu
 └── EventBridge — retrain every 4h
@@ -83,11 +85,12 @@ us-east-1 (Data + Models)
 
 ## Safety
 
-- **Smoke test**: halts bot if max_bet > $1.50, max_ask > $0.55, min_ev < 0.08, or min_lgbm < 0.60
-- **3-layer dedup**: memory set + DynamoDB query + atomic conditional put (cross-container safe)
+- **Smoke test (16 checks)**: halts if max_bet > $1.50, max_ask > $0.55, min_ev < 0.08, min_lgbm < 0.60, model age > 24h
+- **Ask ceiling on ALL paths**: taker, maker, and override all blocked above $0.55
+- **3-layer dedup**: memory set + DynamoDB query + atomic conditional put (cross-container safe, zero post-fix duplicates)
+- **Calibration gate**: rejects models with mean_prob > 0.75 (prevents SOL-style overfit)
 - **Circuit breakers**: 3 consecutive losses → 15min pause, 5/20 losses → $1 flat, 10% daily → stop
-- **Resolution**: Gamma API verified (Polymarket Chainlink oracle, not Coinbase)
-- **Watchdog**: heartbeat every 60s, Docker HEALTHCHECK restarts if frozen >5min
+- **Resolution**: Gamma API verified + backfill script for orphans
 
 ## Commands
 
@@ -96,7 +99,8 @@ us-east-1 (Data + Models)
 uv run python scripts/force_trade.py --asset BTC
 uv run python scripts/redeem.py
 uv run pytest tests/ -q                            # 384 tests
-bash scripts/deploy_dashboard_lambda.sh             # deploy dashboard to Lambda
+bash scripts/deploy_dashboard_lambda.sh             # deploy dashboard
 PYTHONPATH=src uv run python -c \
   "from polybot.ml.trainer import train_all; train_all()"
+uv run python scripts/backfill_verification.py      # resolve orphan trades
 ```
