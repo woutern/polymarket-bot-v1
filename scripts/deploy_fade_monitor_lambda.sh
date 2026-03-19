@@ -22,12 +22,18 @@ cat > "$BUILD_DIR/package/lambda_handler.py" << 'PYEOF'
 """Lambda handler for fade news monitor."""
 import fade_news_monitor
 
+import time as _time
+
 def handler(event, context):
     table = fade_news_monitor._get_dynamo_table()
-    results = fade_news_monitor.scan_once()
-    fade_news_monitor.save_to_dynamo(results, table)
+    # Scan twice per invocation (30s apart) since EventBridge minimum is 1 min
+    results1 = fade_news_monitor.scan_once()
+    fade_news_monitor.save_to_dynamo(results1, table)
     fade_news_monitor.check_resolutions(table)
-    return {"scanned": len(results)}
+    _time.sleep(30)
+    results2 = fade_news_monitor.scan_once()
+    fade_news_monitor.save_to_dynamo(results2, table)
+    return {"scanned": len(results1) + len(results2)}
 PYEOF
 
 cd "$BUILD_DIR/package"
@@ -53,7 +59,7 @@ if [[ -z "$EXISTING" || "$EXISTING" == "None" ]]; then
     --handler lambda_handler.handler \
     --role "$ROLE_ARN" \
     --zip-file "fileb://$BUILD_DIR/lambda.zip" \
-    --timeout 60 \
+    --timeout 90 \
     --memory-size 128 \
     --query 'FunctionArn' --output text)
   echo "Created: $LAMBDA_ARN"
