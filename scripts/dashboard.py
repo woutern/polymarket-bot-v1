@@ -1951,100 +1951,13 @@ async function loadSignalsPage() {
     }
     return;
   } catch(e) { console.error('logs page error', e); }
-  // Old signals page code below (dead code, kept for reference)
-  const sigs = [];
-
-    // Stats
-    const scored = sigs.filter(s => s.score_total !== undefined);
-    const takers = scored.filter(s => parseInt(s.score_total || 0) >= 4);
-    const makers = scored.filter(s => { const sc = parseInt(s.score_total || 0); return sc >= 2 && sc < 4; });
-    const skips = scored.filter(s => parseInt(s.score_total || 0) < 2);
-
-    document.getElementById('sig-total').textContent = scored.length;
-    document.getElementById('sig-total-sub').textContent = 'Last ' + sigs.length + ' evaluations';
-    document.getElementById('sig-taker').textContent = takers.length;
-    document.getElementById('sig-taker-sub').textContent = scored.length ? Math.round(takers.length/scored.length*100)+'% of windows' : '';
-    document.getElementById('sig-maker').textContent = makers.length;
-    document.getElementById('sig-maker-sub').textContent = scored.length ? Math.round(makers.length/scored.length*100)+'% of windows' : '';
-    document.getElementById('sig-skip').textContent = skips.length;
-
-    // Score distribution bars
-    const dist = [0,0,0,0,0,0];
-    scored.forEach(s => { const sc = Math.min(5, Math.max(0, parseInt(s.score_total||0))); dist[sc]++; });
-    const maxDist = Math.max(1, ...dist);
-    const colors = ['#dee2e6','#dee2e6','#74c0fc','#74c0fc','#51cf66','#51cf66'];
-    const labels = ['0 (skip)','1 (skip)','2 (maker)','3 (maker)','4 (taker)','5 (taker)'];
-    let distHtml = '';
-    for (let i = 0; i <= 5; i++) {
-      const pct = Math.max(3, dist[i]/maxDist*100);
-      distHtml += '<div style="display:flex;align-items:center;gap:8px;margin:4px 0">' +
-        '<span style="width:70px;font-size:12px;color:#495057">' + labels[i] + '</span>' +
-        '<div style="flex:1;height:22px;background:#f1f3f5;border-radius:4px;overflow:hidden">' +
-        '<div style="width:'+pct+'%;height:100%;background:'+colors[i]+';border-radius:4px;display:flex;align-items:center;padding:0 8px;font-size:11px;font-weight:600;color:#fff">' + dist[i] + '</div>' +
-        '</div></div>';
-    }
-    document.getElementById('score-dist-bars').innerHTML = distHtml;
-
-    // Signal hit rates
-    const signalNames = ['OFI','No Reversal','Cross-Asset','PM Pressure','Volume'];
-    const signalKeys = ['score_ofi','score_no_reversal','score_cross_asset','score_polymarket_pressure','score_volume'];
-    let hitHtml = '';
-    for (let i = 0; i < 5; i++) {
-      const hits = scored.filter(s => parseInt(s[signalKeys[i]]||0) === 1).length;
-      const pct = scored.length ? Math.round(hits/scored.length*100) : 0;
-      const barW = Math.max(3, pct);
-      hitHtml += '<div style="display:flex;align-items:center;gap:8px;margin:6px 0">' +
-        '<span style="width:100px;font-size:12px;color:#495057">' + signalNames[i] + '</span>' +
-        '<div style="flex:1;height:22px;background:#f1f3f5;border-radius:4px;overflow:hidden">' +
-        '<div style="width:'+barW+'%;height:100%;background:#339af0;border-radius:4px;display:flex;align-items:center;padding:0 8px;font-size:11px;font-weight:600;color:#fff">' + pct + '%</div>' +
-        '</div>' +
-        '<span style="width:40px;text-align:right;font-size:12px;color:#868e96">' + hits + '/' + scored.length + '</span>' +
-        '</div>';
-    }
-    document.getElementById('signal-hit-rates').innerHTML = hitHtml;
-
-    // Table
-    const tbody = document.getElementById('sig-body');
-    tbody.innerHTML = '';
-    if (!sigs.length) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="14">No evaluations yet — waiting for next window</td></tr>';
-      return;
-    }
-    const check = v => parseInt(v||0) ? '<span style="color:#2f9e44">&#10003;</span>' : '<span style="color:#ced4da">&#10007;</span>';
-    for (const s of sigs) {
-      const sc = parseInt(dval(s,'score_total')||0);
-      let action = '<span style="color:#868e96">SKIP</span>';
-      let rowStyle = '';
-      if (sc >= 4) { action = '<span style="color:#1971c2;font-weight:700">TAKER</span>'; rowStyle = 'background:#e7f5ff;'; }
-      else if (sc >= 2) { action = '<span style="color:#2f9e44;font-weight:700">MAKER</span>'; rowStyle = 'background:#ebfbee;'; }
-      const reason = dval(s,'rejection_reason') || dval(s,'outcome') || '';
-      if (reason && sc < 2) action += ' <span style="font-size:10px;color:#868e96">(' + reason + ')</span>';
-
-      const scoreBadge = '<span style="display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;border-radius:6px;font-weight:700;font-size:13px;color:#fff;background:'
-        + (sc >= 4 ? '#1971c2' : sc >= 2 ? '#2f9e44' : '#adb5bd') + '">' + sc + '</span>';
-
-      tbody.innerHTML += '<tr style="' + rowStyle + '">' +
-        '<td style="white-space:nowrap">' + fmtTs(dval(s,'timestamp')) + '</td>' +
-        '<td>' + assetTag(dval(s,'asset')||'') + '</td>' +
-        '<td>' + scoreBadge + '</td>' +
-        '<td>' + check(dval(s,'score_ofi')) + '</td>' +
-        '<td>' + check(dval(s,'score_no_reversal')) + '</td>' +
-        '<td>' + check(dval(s,'score_cross_asset')) + '</td>' +
-        '<td>' + check(dval(s,'score_polymarket_pressure')) + '</td>' +
-        '<td>' + check(dval(s,'score_volume')) + '</td>' +
-        '<td>' + dirTag(dval(s,'direction')) + '</td>' +
-        '<td>' + fmtPct(dval(s,'pct_move')) + '</td>' +
-        '<td>' + (dval(s,'market_price') ? '$'+parseFloat(dval(s,'market_price')).toFixed(2) : '—') + '</td>' +
-        '<td>' + fmtProb(dval(s,'model_prob')) + '</td>' +
-        '<td>' + fmtProb(dval(s,'ev')) + '</td>' +
-        '<td>' + action + '</td>' +
-        '</tr>';
-    }
-  } catch(e) { console.error('signals page error', e); }
 }
 
-/* Old signal functions removed — replaced by scored loadSignalsPage above */
-async function loadSignalFunnel_REMOVED() {
+// Old signals page code removed
+
+// ── Analytics page ────────────────────────────────────────────────────────────
+// (old signal functions loadSignalFunnel, loadSignals, loadNearMisses deleted)
+async function _PLACEHOLDER_loadSignalFunnel() {
   try {
     const resp = await fetch('/api/signals/summary');
     const data = await resp.json();
