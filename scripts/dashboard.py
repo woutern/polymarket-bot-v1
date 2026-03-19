@@ -628,27 +628,48 @@ def api_pnl_history(_: str = Depends(_require_auth)):
 
 @app.get("/api/balance")
 async def api_balance(_: str = Depends(_require_auth)):
-    """Return wallet balance computed from deposits + bot P&L.
+    """Return wallet balance from Polymarket data-api activity history.
 
-    Polymarket's data-api /value only returns open position value (not cash).
-    The CLOB balance endpoint requires authenticated signing.
-    So we compute: balance = total_deposited + sum(all bot trade P&L).
+    Computes cash balance from: deposits - trade_spend + trade_redeems.
+    Also fetches open position value from /value endpoint.
+    Same data source as Polymarket UI — no auth needed.
     """
+    import httpx
+
+    result = {"cash": 0.0, "positions": 0.0, "portfolio": 0.0, "total_pnl": 0.0}
+
     try:
-        # Get bot P&L from DynamoDB trades
-        trades = get_trades(limit=500)
-        mode_trades = [t for t in trades if _extract_field(t, "mode", "live") == _TRADE_MODE]
-        resolved = [t for t in mode_trades if t.get("resolved") or _bool_field(t, "resolved")]
-        bot_pnl = sum(_float_field(t, "pnl") for t in resolved)
+        async with httpx.AsyncClient(timeout=15) as client:
+            # 1. Compute P&L from activity history (same as Polymarket UI)
+            total_spent = 0.0
+            total_redeemed = 0.0
+            offset = 0
+            while offset < 2000:  # safety limit
+                resp = await client.get(
+                    "https://data-api.polymarket.com/activity",
+                    params={"user": _WALLET_ADDRESS, "limit": 500, "offset": offset},
+                )
+                if resp.status_code != 200:
+                    break
+                batch = resp.json()
+                if not batch:
+                    break
+                for a in batch:
+                    usdc = float(a.get("usdcSize", 0) or 0)
+                    if a.get("type") == "TRADE":
+                        total_spent += usdc
+                    elif a.get("type") == "REDEEM":
+                        total_redeemed += usdc
+                if len(batch) < 500:
+                    break
+                offset += 500
 
-        # Balance = what we deposited + what the bot made/lost
-        portfolio = round(_TOTAL_DEPOSITED + bot_pnl, 2)
+            pnl = round(total_redeemed - total_spent, 2)
+            cash = round(_TOTAL_DEPOSITED - total_spent + total_redeemed, 2)
 
-        # Open position value from Polymarket (for display only)
-        position_value = 0.0
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=10) as client:
+            # 2. Open position value
+            positions = 0.0
+            try:
                 resp = await client.get(
                     "https://data-api.polymarket.com/value",
                     params={"user": _WALLET_ADDRESS},
@@ -656,21 +677,25 @@ async def api_balance(_: str = Depends(_require_auth)):
                 if resp.status_code == 200:
                     data = resp.json()
                     if isinstance(data, list) and data:
-                        position_value = float(data[0].get("value", 0) or 0)
-        except Exception:
-            pass
+                        positions = float(data[0].get("value", 0) or 0)
+            except Exception:
+                pass
 
-        cash = round(portfolio - position_value, 2)
+            portfolio = round(cash + positions, 2)
 
-        return {
-            "polygon_usdc": cash,
-            "polymarket_value": position_value,
-            "portfolio": portfolio,
-            "total_pnl": round(bot_pnl, 2),
-            "unclaimed_winnings": 0,
-        }
+            result = {
+                "cash": cash,
+                "positions": positions,
+                "portfolio": portfolio,
+                "total_pnl": pnl,
+                "total_deposited": _TOTAL_DEPOSITED,
+                "total_spent": round(total_spent, 2),
+                "total_redeemed": round(total_redeemed, 2),
+            }
     except Exception as e:
-        return {"polygon_usdc": 0.0, "polymarket_value": 0.0, "portfolio": 0.0, "error": str(e)}
+        result["error"] = str(e)[:100]
+
+    return result
 
 
 # ── HTML dashboard ────────────────────────────────────────────────────────────
@@ -1727,14 +1752,17 @@ async function refreshBalance() {
     }
     const resp = await fetch('/api/balance');
     const d = await resp.json();
-    const wallet = (d.polygon_usdc || 0) + (d.polymarket_value || 0);
-    document.getElementById('s-balance-label').textContent = 'Wallet Balance';
-    document.getElementById('s-balance').textContent = '$' + wallet.toFixed(2);
-    const unclaimed = d.unclaimed_winnings || 0;
-    let subText = 'Cash $' + (d.polygon_usdc||0).toFixed(2) + ' + positions $' + (d.polymarket_value||0).toFixed(2);
-    if (unclaimed > 0.5) {
-      subText += ' | $' + unclaimed.toFixed(2) + ' unclaimed';
-    }
+    const portfolio = d.portfolio || 0;
+    const cash = d.cash || 0;
+    const positions = d.positions || 0;
+    const pnl = d.total_pnl || 0;
+    document.getElementById('s-balance-label').textContent = 'Portfolio';
+    const balEl = document.getElementById('s-balance');
+    balEl.textContent = '$' + portfolio.toFixed(2);
+    balEl.className = 'stat-value';
+    let subText = 'Cash $' + cash.toFixed(2);
+    if (positions > 0.01) subText += ' + positions $' + positions.toFixed(2);
+    subText += ' | P&L ' + (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
     document.getElementById('s-balance-sub').textContent = subText;
   } catch(e) {}
 }
