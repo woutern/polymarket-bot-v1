@@ -1476,9 +1476,9 @@ HTML = r"""<!DOCTYPE html>
 
   <div class="stats-grid" style="margin-bottom:24px">
     <div class="stat-card">
-      <div class="stat-label">Markets Tracked</div>
+      <div class="stat-label">Markets Monitored</div>
       <div class="stat-value" id="fade-total">—</div>
-      <div class="stat-sub">In fade zone ($0.70-$0.95)</div>
+      <div class="stat-sub" id="fade-total-sub">Politics/news markets</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">Avg YES Ask</div>
@@ -1504,11 +1504,11 @@ HTML = r"""<!DOCTYPE html>
     <div style="overflow-x:auto">
       <table>
         <thead><tr>
-          <th>Scanned</th><th>YES Ask</th><th>NO Cost</th>
-          <th>Payout</th><th>Keyword</th><th>Question</th><th>Ends</th>
+          <th>Detected</th><th>YES Ask</th><th>NO Cost</th>
+          <th>Payout</th><th>Keyword</th><th>Question</th><th>Status</th>
         </tr></thead>
         <tbody id="fade-body">
-          <tr class="empty-row"><td colspan="7">No markets in fade zone right now. Run: uv run python scripts/fade_news_monitor.py</td></tr>
+          <tr class="empty-row"><td colspan="7">Waiting for data — Lambda scans every 60s</td></tr>
         </tbody>
       </table>
     </div>
@@ -1683,12 +1683,17 @@ async function loadFadeNews() {
     const data = await resp.json();
     const markets = data.markets || [];
 
-    document.getElementById('fade-badge').textContent = markets.length + ' markets tracked';
+    const fadeZone = markets.filter(m => m.in_fade_zone);
+    const resolved = markets.filter(m => m.resolved);
+    const noWins = resolved.filter(m => m.outcome === 'NO').length;
+
+    document.getElementById('fade-badge').textContent = markets.length + ' monitored, ' + fadeZone.length + ' in fade zone';
     document.getElementById('fade-total').textContent = markets.length;
+    document.getElementById('fade-total-sub').textContent = fadeZone.length + ' in fade zone ($0.70-$0.95)';
 
     if (markets.length > 0) {
-      const avgAsk = markets.reduce((s,m) => s + (m.yes_ask||0), 0) / markets.length;
-      const avgNo = markets.reduce((s,m) => s + (m.no_ask||0), 0) / markets.length;
+      const avgAsk = markets.reduce((s,m) => s + (m.yes_ask_at_detection||m.yes_ask||0), 0) / markets.length;
+      const avgNo = markets.reduce((s,m) => s + (m.no_ask_at_detection||m.no_ask||0), 0) / markets.length;
       document.getElementById('fade-avg-ask').textContent = '$' + avgAsk.toFixed(2);
       document.getElementById('fade-avg-no').textContent = '$' + avgNo.toFixed(2);
     } else {
@@ -1703,18 +1708,34 @@ async function loadFadeNews() {
       return;
     }
     for (const m of markets) {
-      const scanned = m.scanned_at ? new Date(m.scanned_at * 1000).toLocaleString('en-GB', {timeZone:'Europe/Amsterdam', hour12:false, month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '—';
-      const payout = m.no_ask > 0 ? ((1 / m.no_ask - 1) * 100).toFixed(0) + '%' : '—';
+      const detected = m.detected_at ? new Date(m.detected_at * 1000).toLocaleString('en-GB', {timeZone:'Europe/Amsterdam', hour12:false, month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '—';
+      const yesAsk = m.yes_ask_latest || m.yes_ask_at_detection || 0;
+      const noAsk = m.no_ask_at_detection || 0;
+      const payout = noAsk > 0 ? ((1 / noAsk - 1) * 100).toFixed(0) + '%' : '—';
       const ends = m.end_date ? m.end_date.slice(0, 10) : '—';
-      const q = (m.question || '').slice(0, 60);
-      tbody.innerHTML += '<tr>' +
-        '<td style="white-space:nowrap;font-size:12px;color:var(--text-3)">' + scanned + '</td>' +
-        '<td style="font-weight:700;color:var(--red)">$' + (m.yes_ask||0).toFixed(2) + '</td>' +
-        '<td style="font-weight:700;color:var(--green)">$' + (m.no_ask||0).toFixed(2) + '</td>' +
+      const q = (m.question || '').slice(0, 55);
+      const isFade = m.in_fade_zone;
+      const isResolved = m.resolved;
+      let rowStyle = '';
+      let status = '';
+      if (isResolved) {
+        const won = m.outcome === 'NO';
+        status = won ? '<span style="color:var(--green);font-weight:700">NO WON</span>' : '<span style="color:var(--red)">YES won</span>';
+        rowStyle = won ? 'background:var(--green-bg);' : 'background:var(--red-bg);';
+      } else if (isFade) {
+        status = '<span style="color:var(--gold);font-weight:600">FADE ZONE</span>';
+        rowStyle = 'background:var(--gold-bg);';
+      } else {
+        status = '<span style="color:var(--text-3)">monitoring</span>';
+      }
+      tbody.innerHTML += '<tr style="' + rowStyle + '">' +
+        '<td style="white-space:nowrap;font-size:12px;color:var(--text-3)">' + detected + '</td>' +
+        '<td style="font-weight:700;color:var(--red)">$' + yesAsk.toFixed(2) + '</td>' +
+        '<td style="font-weight:700;color:var(--green)">$' + noAsk.toFixed(2) + '</td>' +
         '<td style="color:var(--blue);font-weight:600">' + payout + '</td>' +
         '<td><span class="tag" style="background:var(--blue-bg);color:var(--blue);border:1px solid var(--blue-bd)">' + (m.keyword||'') + '</span></td>' +
         '<td>' + q + '</td>' +
-        '<td style="font-size:12px;color:var(--text-3)">' + ends + '</td>' +
+        '<td>' + status + '</td>' +
         '</tr>';
     }
   } catch(e) { console.error('fade news error', e); }

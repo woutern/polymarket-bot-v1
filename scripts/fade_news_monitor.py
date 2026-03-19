@@ -204,14 +204,11 @@ def scan_once() -> list[dict]:
             except Exception:
                 pass
 
-            # Only include fade zone
-            if not (MIN_YES_ASK <= yes_ask <= MAX_YES_ASK):
-                time.sleep(0.1)
-                continue
-
+            in_fade_zone = MIN_YES_ASK <= yes_ask <= MAX_YES_ASK
             volume = float(m.get("volume", 0) or 0)
 
             results.append({
+                "in_fade_zone": in_fade_zone,
                 "condition_id": condition_id,
                 "question": question,
                 "slug": slug,
@@ -230,18 +227,20 @@ def scan_once() -> list[dict]:
 
     # Print table
     now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-    print(f"\n[{now}] Scanned {checked} politics/news markets, {len(results)} in fade zone ($0.70-$0.95)")
+    fade_results = [r for r in results if r.get("in_fade_zone")]
+    print(f"\n[{now}] Scanned {checked} politics/news, {len(results)} tracked, {len(fade_results)} in fade zone")
     if results:
-        sep = "─" * 95
-        print(f"{'YES':>6} {'NO':>6} {'VOL':>8} {'KEYWORD':<17} QUESTION")
+        sep = "─" * 100
+        print(f"{'YES':>6} {'NO':>6} {'ZONE':>5} {'VOL':>8} {'KEYWORD':<17} QUESTION")
         print(sep)
         for r in results:
-            q = r["question"][:55]
+            q = r["question"][:50]
             vol = f"${r['volume']/1000:.0f}K" if r["volume"] >= 1000 else f"${r['volume']:.0f}"
-            print(f"${r['yes_ask']:.2f}  ${r['no_ask']:.2f} {vol:>8} {r['keyword']:<17} {q}")
+            zone = " <<<" if r.get("in_fade_zone") else ""
+            print(f"${r['yes_ask']:.2f}  ${r['no_ask']:.2f} {zone:>5} {vol:>8} {r['keyword']:<17} {q}")
         print(sep)
     else:
-        print("  No markets in fade zone right now.")
+        print("  No politics/news markets found.")
 
     return results
 
@@ -263,11 +262,13 @@ def save_to_dynamo(results: list[dict], table):
                     "detected_at": Decimal(str(round(r["scanned_at"], 3))),
                     "yes_ask_at_detection": Decimal(str(round(r["yes_ask"], 4))),
                     "no_ask_at_detection": Decimal(str(round(r["no_ask"], 4))),
+                    "yes_ask_latest": Decimal(str(round(r["yes_ask"], 4))),
                     "question": r["question"],
                     "slug": r["slug"],
                     "keyword": r["keyword"],
                     "volume": Decimal(str(round(r["volume"], 2))),
                     "end_date": r["end_date"],
+                    "in_fade_zone": r.get("in_fade_zone", False),
                     "resolved": False,
                     "outcome": None,
                     "resolved_at": None,
@@ -276,7 +277,18 @@ def save_to_dynamo(results: list[dict], table):
             )
             new_count += 1
         except table.meta.client.exceptions.ConditionalCheckFailedException:
-            pass  # already tracked
+            # Already tracked — update latest ask price
+            try:
+                table.update_item(
+                    Key={"condition_id": r["condition_id"]},
+                    UpdateExpression="SET yes_ask_latest = :y, in_fade_zone = :z",
+                    ExpressionAttributeValues={
+                        ":y": Decimal(str(round(r["yes_ask"], 4))),
+                        ":z": r.get("in_fade_zone", False),
+                    },
+                )
+            except Exception:
+                pass
         except Exception as e:
             print(f"  DynamoDB write failed: {e}")
 
