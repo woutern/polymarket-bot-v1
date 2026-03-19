@@ -57,7 +57,8 @@ class LiveTrader:
             signature_type=sig_type,
             funder=funder,
         )
-        self._traded_slugs: set[str] = set()  # dedup: one trade per window_slug
+        self._traded_slugs: set[str] = set()  # fast in-memory dedup
+        self._dynamo = None  # set externally for DynamoDB dedup
 
         logger.info("live_trader_initialized", chain_id=settings.polymarket_chain_id)
 
@@ -93,24 +94,24 @@ class LiveTrader:
             logger.warning("live_trade_blocked", reason="circuit_breaker")
             return None
 
-        # Dedup: one trade per window_slug (memory + DB check)
+        # DEDUP: one trade per window_slug (memory first, then DynamoDB)
         if signal.window_slug in self._traded_slugs:
-            logger.warning("live_trade_dedup", slug=signal.window_slug, source="memory")
+            logger.info("dedup_blocked", slug=signal.window_slug, source="memory")
             return None
-        # Also check DynamoDB for trades from previous bot sessions
-        try:
-            existing = await self.db.get_trades(window_slug=signal.window_slug, limit=1)
-            if existing:
-                self._traded_slugs.add(signal.window_slug)
-                logger.warning("live_trade_dedup", slug=signal.window_slug, source="dynamodb")
-                return None
-        except Exception:
-            pass  # DB check failure is non-fatal — memory dedup still works
-        self._traded_slugs.add(signal.window_slug)
 
-        # Clean old slugs (keep last 50)
-        if len(self._traded_slugs) > 50:
-            self._traded_slugs = set(list(self._traded_slugs)[-30:])
+        # DynamoDB check — survives restarts, authoritative
+        if self._dynamo:
+            try:
+                existing = self._dynamo.get_trades_for_window(signal.window_slug)
+                if existing:
+                    self._traded_slugs.add(signal.window_slug)
+                    logger.info("dedup_blocked", slug=signal.window_slug, source="dynamodb", existing=len(existing))
+                    return None
+            except Exception as e:
+                logger.warning("dedup_dynamo_check_failed", slug=signal.window_slug, error=str(e)[:60])
+                # If DynamoDB check fails, still proceed — memory dedup is the fast guard
+
+        self._traded_slugs.add(signal.window_slug)
 
         # Position size: 1% of bankroll with circuit breaker override
         size = self.risk.get_bet_size()

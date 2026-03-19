@@ -138,6 +138,17 @@ class TradingLoop:
 
         if settings.mode == "live":
             self.trader = LiveTrader(settings=settings, risk=self.risk, db=self.db)
+            self.trader._dynamo = self.dynamo  # DynamoDB dedup
+            # Load traded slugs from DynamoDB (last 24h) to survive restarts
+            try:
+                recent = self.dynamo.get_recent_trades(limit=200)
+                for t in recent:
+                    slug = t.get("window_slug", "")
+                    if slug:
+                        self.trader._traded_slugs.add(slug)
+                logger.info("dedup_loaded", slugs=len(self.trader._traded_slugs))
+            except Exception as e:
+                logger.warning("dedup_load_failed", error=str(e)[:60])
         else:
             self.trader = PaperTrader(risk=self.risk, db=self.db)
 
@@ -723,25 +734,29 @@ class TradingLoop:
                 logger.debug("training_data_failed", error=str(e))
 
     async def _verify_outcome_after_delay(self, window_slug: str, delay_seconds: int = 90):
-        """Wait 90s, then query Gamma API. Retry up to 3 times every 60s."""
+        """Wait 90s, then query Gamma API. Retry up to 5 times every 60s."""
+        logger.info("resolution_scheduled", slug=window_slug, wait_seconds=delay_seconds)
         await asyncio.sleep(delay_seconds)
 
-        for attempt in range(4):  # initial + 3 retries
+        for attempt in range(6):  # initial + 5 retries
             try:
+                logger.info("resolution_checking", slug=window_slug, attempt=attempt + 1)
                 from polybot.feeds.polymarket_rest import get_market_outcome
                 winner, source = await get_market_outcome(window_slug)
 
                 if winner is None:
-                    if attempt < 3:
-                        logger.info("outcome_pending_retry", slug=window_slug, attempt=attempt + 1)
+                    if attempt < 5:
+                        logger.info("resolution_pending", slug=window_slug, attempt=attempt + 1, next_retry_sec=60)
                         await asyncio.sleep(60)
                         continue
                     else:
-                        logger.warning("outcome_pending_exhausted", slug=window_slug)
+                        logger.warning("resolution_exhausted", slug=window_slug, total_attempts=6)
                         return
 
-                # Winner confirmed — resolve all trades for this window
-                trades = await self.db.get_trades(window_slug=window_slug)
+                logger.info("resolution_winner_found", slug=window_slug, winner=winner, attempt=attempt + 1)
+
+                # Winner confirmed — get trades from DynamoDB (NOT SQLite)
+                trades = self.dynamo.get_trades_for_window(window_slug)
                 for t in trades:
                     if t.get("resolved"):
                         continue  # already finalized
@@ -757,15 +772,23 @@ class TradingLoop:
                         pnl = -size_usd
 
                     self.risk.record_trade(pnl)
-                    await self.db.update_trade_verified(
-                        trade_id=t["id"],
-                        pnl=pnl,
-                        polymarket_winner=winner,
-                        correct_prediction=correct,
-                        outcome_source=source,
-                    )
+                    # Update DynamoDB directly (NOT SQLite)
+                    try:
+                        self.dynamo.update_trade_resolved(t["id"], pnl, winner, correct, source)
+                    except Exception as e:
+                        logger.warning("resolution_dynamo_update_failed", id=t["id"], error=str(e)[:60])
+                    # Also try SQLite as backup
+                    try:
+                        await self.db.update_trade_verified(
+                            trade_id=t["id"], pnl=pnl,
+                            polymarket_winner=winner, correct_prediction=correct,
+                            outcome_source=source,
+                        )
+                    except Exception:
+                        pass
+
                     logger.info(
-                        "trade_resolved",
+                        "resolution_success",
                         id=t["id"],
                         slug=window_slug,
                         winner=winner,
@@ -776,7 +799,7 @@ class TradingLoop:
 
                     # Update KPIs after resolution
                     try:
-                        all_trades = await self.db.get_trades(limit=200)
+                        all_trades = self.dynamo.get_recent_trades(limit=200)
                         t["pnl"] = pnl  # update in-memory for KPI
                         t["resolved"] = 1
                         t["outcome_source"] = source
