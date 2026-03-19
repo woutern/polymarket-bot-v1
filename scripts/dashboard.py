@@ -259,7 +259,7 @@ def api_health():
 
 
 @app.get("/api/data")
-def api_data(_: str = Depends(_require_auth)):
+def api_data():
     trades = get_trades(limit=200)
     windows = get_windows(limit=50)
     log_lines = get_logs()
@@ -364,8 +364,7 @@ def api_trades(
     asset: str = None,
     tf: str = None,
     limit: int = 100,
-    _: str = Depends(_require_auth),
-):
+    ):
     """Filtered, paginated trade list."""
     trades = get_trades(limit=limit, asset=asset, tf=tf)
     return {"trades": trades, "count": len(trades)}
@@ -376,15 +375,14 @@ def api_signals(
     asset: str = None,
     outcome: str = None,
     limit: int = 200,
-    _: str = Depends(_require_auth),
-):
+    ):
     """Signal evaluations — both fired and rejected."""
     signals = get_signals(limit=limit, asset=asset, outcome=outcome)
     return {"signals": signals, "count": len(signals)}
 
 
 @app.get("/api/signals/summary")
-def api_signals_summary(_: str = Depends(_require_auth)):
+def api_signals_summary():
     """Rejection counts by reason + funnel data."""
     signals = get_signals(limit=500)
 
@@ -418,7 +416,7 @@ def api_signals_summary(_: str = Depends(_require_auth)):
 
 
 @app.get("/api/strategy-stats")
-def api_strategy_stats(_: str = Depends(_require_auth)):
+def api_strategy_stats():
     """Win rates by asset x timeframe x hour-of-day segment."""
     trades = get_trades(limit=500)
     resolved = [t for t in trades if t.get("resolved") or _bool_field(t, "resolved")]
@@ -481,7 +479,7 @@ def api_strategy_stats(_: str = Depends(_require_auth)):
 
 
 @app.get("/api/calibration")
-def api_calibration(_: str = Depends(_require_auth)):
+def api_calibration():
     """p_final buckets vs actual win rate — model calibration curve."""
     trades = get_trades(limit=500)
     resolved = [t for t in trades if t.get("resolved") or _bool_field(t, "resolved")]
@@ -522,7 +520,7 @@ def api_calibration(_: str = Depends(_require_auth)):
 
 
 @app.get("/api/pairs")
-def api_pairs(_: str = Depends(_require_auth)):
+def api_pairs():
     """Per-pair strategy config and performance summary."""
     try:
         from polybot.config import Settings
@@ -577,7 +575,7 @@ def api_pairs(_: str = Depends(_require_auth)):
 
 
 @app.get("/api/kpi")
-def api_kpi(_: str = Depends(_require_auth)):
+def api_kpi():
     """Latest KPI snapshot from DynamoDB."""
     if _USE_DYNAMO:
         try:
@@ -604,7 +602,7 @@ def api_kpi(_: str = Depends(_require_auth)):
 
 
 @app.get("/api/pnl-history")
-def api_pnl_history(_: str = Depends(_require_auth)):
+def api_pnl_history():
     """Return hourly P&L buckets from resolved trades."""
     trades = get_trades(limit=500)
     buckets: dict[str, float] = defaultdict(float)
@@ -629,7 +627,7 @@ def api_pnl_history(_: str = Depends(_require_auth)):
 
 
 @app.get("/api/balance")
-async def api_balance(_: str = Depends(_require_auth)):
+async def api_balance():
     """Return wallet balance from Polymarket data-api activity history.
 
     Computes cash balance from: deposits - trade_spend + trade_redeems.
