@@ -173,10 +173,10 @@ def train_pair(pair: str, items: list[dict], s3_client=None, ssm_client=None, s3
         "feature_fraction": 0.8,
         "bagging_fraction": 0.8,
         "bagging_freq": 5,
-        "min_child_samples": 50,   # increased from 20 — prevents overfitting on small patterns
-        "max_depth": 4,            # added — caps tree depth to prevent memorization
-        "reg_alpha": 0.1,          # L1 regularization
-        "reg_lambda": 0.1,         # L2 regularization
+        "min_child_samples": 30,   # balanced: prevents overfit without killing signal
+        "max_depth": 5,            # slightly deeper for orderbook features
+        "reg_alpha": 0.05,         # light L1 regularization
+        "reg_lambda": 0.05,        # light L2 regularization
         "is_unbalance": True,
         "verbose": -1,
     }
