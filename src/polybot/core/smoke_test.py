@@ -106,13 +106,51 @@ async def run_smoke_tests(settings) -> SmokeTestResult:
     except Exception as e:
         result.warn("s3_base_rates", str(e)[:80])
 
-    # 6. Polymarket credentials configured
+    # 6. Trading thresholds — HALT if misconfigured (prevents losing trades)
+    from polybot.ml.server import _DEFAULT_GATE
+    min_lgbm_prob = _DEFAULT_GATE
+
+    logger.info(
+        "threshold_check",
+        max_market_price=settings.max_market_price,
+        min_ev=settings.min_ev_threshold,
+        min_lgbm_prob=min_lgbm_prob,
+        mode=settings.mode,
+        status="checking",
+    )
+
+    threshold_ok = True
+    if settings.max_market_price > 0.55:
+        result.fail("max_market_price", f"Value {settings.max_market_price} > 0.55 — would enter trades at too-high asks")
+        threshold_ok = False
+    else:
+        result.ok("max_market_price")
+    if settings.min_ev_threshold < 0.08:
+        result.fail("min_ev_threshold", f"Value {settings.min_ev_threshold} < 0.08 — would enter low-EV trades")
+        threshold_ok = False
+    else:
+        result.ok("min_ev_threshold")
+    if min_lgbm_prob < 0.60:
+        result.fail("min_lgbm_prob", f"Value {min_lgbm_prob} < 0.60 — would trade on low-confidence predictions")
+        threshold_ok = False
+    else:
+        result.ok("min_lgbm_prob")
+
+    logger.info(
+        "threshold_check",
+        max_market_price=settings.max_market_price,
+        min_ev=settings.min_ev_threshold,
+        min_lgbm_prob=min_lgbm_prob,
+        status="PASS" if threshold_ok else "FAIL",
+    )
+
+    # 7. Polymarket credentials configured
     if settings.polymarket_private_key and settings.polymarket_api_key:
         result.ok("polymarket_creds")
     else:
         result.fail("polymarket_creds", "Missing private key or API key")
 
-    # 7. Mode sanity check
+    # 8. Mode sanity check
     if settings.mode in ("paper", "live"):
         result.ok(f"mode_{settings.mode}")
     else:
