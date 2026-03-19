@@ -176,17 +176,21 @@ class TestApiPnlHistory:
 
 
 class TestAuth:
-    def test_unauthorized_without_creds(self):
-        """Endpoints require auth."""
+    def test_html_page_requires_auth(self):
+        """HTML page requires Basic Auth, API endpoints do not."""
         import scripts.dashboard as dash
         with TestClient(dash.app) as c:
-            resp = c.get("/api/data")
+            # HTML page requires auth
+            resp = c.get("/")
             assert resp.status_code == 401
+            # API endpoints are open (auth only on HTML gate)
+            resp = c.get("/api/health")
+            assert resp.status_code == 200
 
-    def test_wrong_password_rejected(self):
+    def test_html_wrong_password_rejected(self):
         import scripts.dashboard as dash
         with TestClient(dash.app) as c:
             creds = base64.b64encode(b"admin:wrong").decode()
             c.headers["Authorization"] = f"Basic {creds}"
-            resp = c.get("/api/data")
+            resp = c.get("/")
             assert resp.status_code == 401

@@ -944,6 +944,7 @@ HTML = r"""<!DOCTYPE html>
   .panel-card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); box-shadow: var(--shadow-sm); overflow: hidden;
+    margin-bottom: 20px;
   }
   .panel-head {
     padding: 12px 16px; border-bottom: 1px solid var(--border);
@@ -1872,7 +1873,7 @@ async function refreshOverview() {
     const wr = s.total_resolved > 0 ? Math.round(s.wins / s.total_resolved * 100) : 0;
     document.getElementById('s-wl').textContent = s.wins + ' / ' + s.losses;
     document.getElementById('s-wl-sub').textContent = s.total_resolved + ' resolved' + (wr ? ' (' + wr + '% WR)' : '');
-    document.getElementById('s-open').textContent = s.open_trades;
+    // s-open card removed — open positions shown in balance card
 
     // Per-asset x timeframe performance cards
     const strats = s.strategy_pnl || {};

@@ -172,16 +172,13 @@ class TestBotFiresTradeAfterRetrain:
 # --- Test 2+3: Adaptive threshold adjusts ---
 
 class TestAdaptiveThresholdLowers:
-    def test_underconfident_model_lowers_gate(self):
-        """When model averaging ~0.53, threshold drops to 0.52 (loose gate)."""
+    def test_underconfident_model_uses_default_gate(self):
+        """When model averaging ~0.53, threshold uses default gate (0.60)."""
         server = ModelServer()
         server._pred_history["BTC_5m"] = deque([0.53] * 50, maxlen=100)
 
         threshold = server.get_adaptive_threshold("BTC_5m")
-        assert threshold == _DEFAULT_GATE  # 0.52
-
-        # A signal at 0.53 should pass
-        assert 0.53 >= threshold
+        assert threshold == _DEFAULT_GATE  # 0.60
 
     def test_no_history_uses_default(self):
         """With fewer than 20 predictions, use default gate."""
@@ -203,11 +200,11 @@ class TestAdaptiveThresholdRaises:
         assert 0.55 < threshold
 
     def test_mid_range_interpolates(self):
-        """Mean of 0.60 → threshold between 0.52 and 0.60."""
+        """Mean of 0.60 → threshold between default and max."""
         server = ModelServer()
         server._pred_history["SOL_5m"] = deque([0.60] * 50, maxlen=100)
         threshold = server.get_adaptive_threshold("SOL_5m")
-        assert _DEFAULT_GATE < threshold < _MAX_GATE
+        assert _DEFAULT_GATE <= threshold <= _MAX_GATE
 
     def test_never_exceeds_bounds(self):
         """Threshold clamped to [0.50, 0.60] regardless of input."""
@@ -349,19 +346,19 @@ class TestBotTradesWithLowLgbmProb:
         # It should still execute.
         assert result is not None
 
-    def test_adaptive_would_pass_0_53(self):
-        """ModelServer with underconfident history would pass 0.53."""
+    def test_adaptive_would_pass_0_61(self):
+        """ModelServer with default gate would pass 0.61."""
         server = ModelServer()
         server._pred_history["BTC_5m"] = deque([0.53] * 50, maxlen=100)
         threshold = server.get_adaptive_threshold("BTC_5m")
-        assert 0.53 >= threshold, f"0.53 should pass threshold {threshold}"
+        assert 0.61 >= threshold, f"0.61 should pass threshold {threshold}"
 
-    def test_adaptive_would_block_0_51(self):
-        """Even with loose gate, 0.51 is below minimum threshold 0.52."""
+    def test_adaptive_would_block_0_55(self):
+        """0.55 is below minimum threshold 0.58."""
         server = ModelServer()
         server._pred_history["BTC_5m"] = deque([0.53] * 50, maxlen=100)
         threshold = server.get_adaptive_threshold("BTC_5m")
-        assert 0.51 < threshold, f"0.51 should fail threshold {threshold}"
+        assert 0.55 < threshold, f"0.55 should fail threshold {threshold}"
 
 
 # --- Test 7: Full pipeline smoke test ---

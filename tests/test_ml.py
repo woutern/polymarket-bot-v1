@@ -166,14 +166,13 @@ class TestAdaptiveThreshold:
         assert threshold == _MAX_GATE  # 0.60
 
     def test_mid_mean_interpolates(self):
-        from polybot.ml.server import ModelServer
+        from polybot.ml.server import ModelServer, _DEFAULT_GATE, _MAX_GATE
         server = ModelServer()
         from collections import deque
-        # Model averaging 0.60 → midpoint between 0.55 and 0.65
+        # Model averaging 0.60 → between default and max
         server._pred_history["BTC_5m"] = deque([0.60] * 50, maxlen=100)
         threshold = server.get_adaptive_threshold("BTC_5m")
-        # t = (0.60 - 0.55) / 0.10 = 0.5 → threshold = 0.52 + 0.5*(0.60-0.52) = 0.56
-        assert 0.55 <= threshold <= 0.57
+        assert _DEFAULT_GATE <= threshold <= _MAX_GATE
 
     def test_threshold_clamped(self):
         from polybot.ml.server import ModelServer, _MIN_GATE, _MAX_GATE
@@ -190,9 +189,10 @@ class TestAdaptiveThreshold:
         from polybot.ml.server import ModelServer
         server = ModelServer()
         from collections import deque
+        # Underconfident pair gets default, confident pair gets max
         server._pred_history["BTC_5m"] = deque([0.53] * 50, maxlen=100)
         server._pred_history["ETH_5m"] = deque([0.70] * 50, maxlen=100)
-        assert server.get_adaptive_threshold("BTC_5m") < server.get_adaptive_threshold("ETH_5m")
+        assert server.get_adaptive_threshold("BTC_5m") <= server.get_adaptive_threshold("ETH_5m")
 
 
 class TestSignalWeightedTraining:
