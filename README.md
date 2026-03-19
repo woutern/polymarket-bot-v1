@@ -3,7 +3,7 @@
 Algorithmic trading bot for Polymarket crypto binary prediction markets.
 
 **Status:** LIVE — $225 portfolio, all 6 pairs active
-**Dashboard:** http://54.155.183.45:8888/
+**Dashboard:** https://d2rj5lnnfnptd.cloudfront.net/ (HTTPS via CloudFront + Lambda)
 **Tests:** 355 passing
 
 ## Strategy
@@ -59,8 +59,9 @@ us-east-1 (Data + Models)
 ├── DynamoDB — trades, windows, signals, training_data, kpi_snapshots
 ├── S3 — 6 LightGBM model artifacts
 ├── SSM — model paths + metrics
-├── Dashboard EC2 (54.155.183.45:8888)
+├── Dashboard — Lambda + API Gateway + CloudFront (HTTPS)
 │   ├── 5 pages: Overview, Trade Log, Signals, Analytics, KPIs
+│   ├── Hamburger menu for mobile
 │   └── P&L from Polymarket data-api
 └── EventBridge — retrain every 4h
 ```
@@ -82,6 +83,7 @@ uv run python scripts/force_trade.py --asset BTC
 uv run python scripts/redeem.py
 uv run pytest tests/ -q                    # 355 tests
 uv run python scripts/backfill_verification.py  # one-time: verify old trades
+bash scripts/deploy_dashboard_lambda.sh      # deploy dashboard to Lambda
 PYTHONPATH=src uv run python -c \
   "from polybot.ml.trainer import train_all; train_all()"
 ```
