@@ -75,17 +75,24 @@ class AssetState:
     window_open_price_at_5s: float | None = None  # BTC price at T+5s for cross-asset lead
 
 
-# ── CoinGlass liquidation bias ────────────────────────────────────────────────
+# ── Binance long/short ratio bias (free, no API key) ─────────────────────────
 
 _liq_cache: dict[str, tuple[float, float]] = {}  # symbol → (bias, timestamp)
-_LIQ_CACHE_TTL = 300  # 5 min cache
+_LIQ_CACHE_TTL = 60  # 1 min cache
+
+_BINANCE_SYMBOLS = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT"}
 
 
 async def fetch_liq_cluster_bias(symbol: str = "BTC") -> float:
-    """Fetch CoinGlass liquidation map and compute cluster bias.
+    """Fetch Binance global long/short account ratio and compute bias.
 
-    Returns: -1 (strong UP bias — longs liquidated below) to +1 (strong DOWN bias).
-    Returns 0.0 on error or cache miss within TTL.
+    Uses the free public endpoint — no API key needed.
+    Compares latest ratio to 5-period average to detect shifts.
+
+    Positive = shorts crowded (bullish squeeze potential)
+    Negative = longs crowded (bearish squeeze potential)
+    Range: roughly -0.5 to +0.5
+    Returns 0.0 on error.
     """
     cached = _liq_cache.get(symbol)
     if cached and time.time() - cached[1] < _LIQ_CACHE_TTL:
@@ -93,25 +100,24 @@ async def fetch_liq_cluster_bias(symbol: str = "BTC") -> float:
 
     try:
         import httpx
+        binance_sym = _BINANCE_SYMBOLS.get(symbol, f"{symbol}USDT")
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(
-                "https://open-api.coinglass.com/public/v2/liquidation_map",
-                params={"symbol": symbol, "timeType": "h1"},
+                "https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
+                params={"symbol": binance_sym, "period": "5m", "limit": 5},
             )
             if resp.status_code != 200:
                 return _liq_cache.get(symbol, (0.0, 0))[0]
             data = resp.json()
-            # Extract liquidation clusters from response
-            liq_data = data.get("data", {})
-            # Long liquidations below current price (bullish — these get squeezed UP)
-            long_liq = sum(float(v) for v in (liq_data.get("longList", []) or [])[:5])
-            # Short liquidations above current price (bearish — these get squeezed DOWN)
-            short_liq = sum(float(v) for v in (liq_data.get("shortList", []) or [])[:5])
-            total = long_liq + short_liq
-            if total > 0:
-                bias = (long_liq - short_liq) / total
-            else:
-                bias = 0.0
+            if not data:
+                return 0.0
+            # Latest long/short ratio
+            latest = data[-1]
+            long_pct = float(latest.get("longAccount", 0.5))
+            short_pct = float(latest.get("shortAccount", 0.5))
+            # Bias: positive = more shorts (bullish), negative = more longs (bearish)
+            # Normalize: at 50/50 → 0.0, at 60/40 long → -0.2, at 40/60 long → +0.2
+            bias = short_pct - long_pct  # range: -1 to +1
             _liq_cache[symbol] = (bias, time.time())
             return bias
     except Exception:
