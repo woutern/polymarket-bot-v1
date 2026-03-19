@@ -1740,15 +1740,11 @@ async function refreshBalance() {
     }
     const resp = await fetch('/api/balance');
     const d = await resp.json();
-    const total = (d.polygon_usdc || 0) + (d.polymarket_value || 0);
     const wallet = (d.polygon_usdc || 0) + (d.polymarket_value || 0);
-    document.getElementById('s-balance-label').textContent = 'Total Balance';
+    document.getElementById('s-balance-label').textContent = 'Wallet Balance';
     document.getElementById('s-balance').textContent = '$' + wallet.toFixed(2);
-    const pmPnl = d.total_pnl || 0;
-    window._polymarketPnl = pmPnl;  // Used by P&L display
     const unclaimed = d.unclaimed_winnings || 0;
     let subText = 'Cash $' + (d.polygon_usdc||0).toFixed(2) + ' + positions $' + (d.polymarket_value||0).toFixed(2);
-    subText += ' | P&L ' + (pmPnl>=0?'+':'') + '$' + pmPnl.toFixed(2) + ' (Polymarket)';
     if (unclaimed > 0.5) {
       subText += ' | $' + unclaimed.toFixed(2) + ' unclaimed';
     }
@@ -1849,14 +1845,12 @@ async function refreshOverview() {
       modeBadge.style.borderColor = 'rgba(25,113,194,.3)';
     }
 
-    // P&L: use Polymarket data (set by refreshBalance, updated every 30s)
-    // Fallback to DynamoDB-calculated P&L if Polymarket not loaded yet
-    const pnl = window._polymarketPnl !== undefined ? window._polymarketPnl : s.total_pnl;
+    // P&L: always use DynamoDB bot-tracked trades (not Polymarket cumulative)
+    const pnl = s.total_pnl;
     const pnlEl = document.getElementById('s-pnl');
     pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
     pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'green' : 'red');
-    const pnlSource = window._polymarketPnl !== undefined ? 'Polymarket' : 'DynamoDB';
-    document.getElementById('s-pnl-sub').textContent = 'Source: ' + pnlSource;
+    document.getElementById('s-pnl-sub').textContent = 'Source: Bot trades (verified)';
 
     const wr = s.total_resolved > 0 ? Math.round(s.wins / s.total_resolved * 100) : 0;
     document.getElementById('s-wl').textContent = s.wins + ' / ' + s.losses;
