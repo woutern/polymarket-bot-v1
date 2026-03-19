@@ -1517,7 +1517,7 @@ HTML = r"""<!DOCTYPE html>
   <div class="panel-card" style="padding:20px;margin-top:16px">
     <div style="font-weight:600;margin-bottom:8px">How it works</div>
     <div style="font-size:13px;color:var(--text-2);line-height:1.8">
-      Scans Polymarket every 5 minutes for politics/news markets where YES ask is $0.70-$0.95.
+      Scans Polymarket every minute for politics/news markets where YES ask is $0.70-$0.95.
       These are "hype" markets — dramatic headlines that the crowd overprices. Buying NO at $0.05-$0.30
       gives 3x-20x payoff when the dramatic event doesn't happen (which is most of the time).
       <br><br>

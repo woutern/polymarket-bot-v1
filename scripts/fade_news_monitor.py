@@ -212,29 +212,148 @@ def scan_once() -> list[dict]:
 
 
 def save_to_dynamo(results: list[dict], table):
-    """Save scan results to DynamoDB."""
+    """Save new fade candidates to DynamoDB. Only writes on first detection."""
     if not table or not results:
         return
 
     from decimal import Decimal
 
+    new_count = 0
     for r in results:
         try:
-            table.put_item(Item={
-                "condition_id": r["condition_id"],
-                "scanned_at": Decimal(str(round(r["scanned_at"], 3))),
-                "question": r["question"],
-                "slug": r["slug"],
-                "keyword": r["keyword"],
-                "yes_ask": Decimal(str(round(r["yes_ask"], 4))),
-                "no_ask": Decimal(str(round(r["no_ask"], 4))),
-                "volume": Decimal(str(round(r["volume"], 2))),
-                "end_date": r["end_date"],
-                "resolved": False,
-                "outcome": None,
-            })
+            # Conditional put — only write if this market hasn't been seen before
+            table.put_item(
+                Item={
+                    "condition_id": r["condition_id"],
+                    "detected_at": Decimal(str(round(r["scanned_at"], 3))),
+                    "yes_ask_at_detection": Decimal(str(round(r["yes_ask"], 4))),
+                    "no_ask_at_detection": Decimal(str(round(r["no_ask"], 4))),
+                    "question": r["question"],
+                    "slug": r["slug"],
+                    "keyword": r["keyword"],
+                    "volume": Decimal(str(round(r["volume"], 2))),
+                    "end_date": r["end_date"],
+                    "resolved": False,
+                    "outcome": None,
+                    "resolved_at": None,
+                },
+                ConditionExpression="attribute_not_exists(condition_id)",
+            )
+            new_count += 1
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass  # already tracked
         except Exception as e:
             print(f"  DynamoDB write failed: {e}")
+
+    if new_count:
+        print(f"  {new_count} new market(s) added to tracking")
+
+
+def check_resolutions(table):
+    """Check all unresolved tracked markets for outcomes via Gamma API."""
+    if not table:
+        return
+
+    from decimal import Decimal
+
+    # Get all unresolved markets
+    resp = table.scan(
+        FilterExpression="resolved = :f",
+        ExpressionAttributeValues={":f": False},
+    )
+    unresolved = resp.get("Items", [])
+    if not unresolved:
+        return
+
+    resolved_count = 0
+    with httpx.Client(timeout=10) as client:
+        for item in unresolved:
+            slug = item.get("slug", "")
+            condition_id = item.get("condition_id", "")
+            if not slug:
+                continue
+
+            try:
+                resp = client.get(
+                    f"{GAMMA_URL}/markets",
+                    params={"slug": slug},
+                )
+                if resp.status_code != 200:
+                    continue
+
+                markets = resp.json()
+                if not markets:
+                    continue
+
+                m = markets[0]
+                if not m.get("closed"):
+                    continue
+
+                # Parse outcomes
+                outcomes = _parse(m.get("outcomes", []))
+                prices = _parse(m.get("outcomePrices", []))
+                if len(outcomes) < 2 or len(prices) < 2:
+                    continue
+
+                outcome_map = dict(zip(outcomes, [float(p) for p in prices]))
+
+                # Determine winner
+                winner = None
+                for name, price in outcome_map.items():
+                    if price >= 0.99:
+                        winner = name
+                        break
+                if not winner:
+                    for name, price in outcome_map.items():
+                        if price <= 0.01:
+                            continue
+                        winner = name
+                        break
+
+                if not winner:
+                    continue
+
+                # Map to YES/NO
+                # First outcome is typically "Yes"/"Up", second is "No"/"Down"
+                yes_won = (winner == outcomes[0])
+                outcome_str = "YES" if yes_won else "NO"
+
+                # Update DynamoDB
+                table.update_item(
+                    Key={"condition_id": condition_id},
+                    UpdateExpression="SET resolved = :t, outcome = :o, resolved_at = :r",
+                    ExpressionAttributeValues={
+                        ":t": True,
+                        ":o": outcome_str,
+                        ":r": Decimal(str(round(time.time(), 3))),
+                    },
+                )
+                resolved_count += 1
+
+                yes_ask_det = float(item.get("yes_ask_at_detection", 0))
+                fade_won = outcome_str == "NO"
+                implied_no = round(1 - yes_ask_det, 2)
+                q = item.get("question", "")[:50]
+                emoji = "+" if fade_won else "-"
+                print(f"  {emoji} RESOLVED: {q}... → {outcome_str} (fade {'WON' if fade_won else 'LOST'}, implied NO={implied_no})")
+
+            except Exception:
+                pass
+
+            time.sleep(0.2)
+
+    if resolved_count:
+        print(f"  {resolved_count} market(s) resolved")
+
+    # Print running stats
+    all_resp = table.scan()
+    all_items = all_resp.get("Items", [])
+    resolved_items = [i for i in all_items if i.get("resolved")]
+    if resolved_items:
+        no_wins = sum(1 for i in resolved_items if i.get("outcome") == "NO")
+        total = len(resolved_items)
+        avg_implied = sum(1 - float(i.get("yes_ask_at_detection", 0.9)) for i in resolved_items) / total
+        print(f"\n  FADE STATS: {no_wins}/{total} NO wins ({no_wins/total*100:.0f}%), avg implied NO prob: {avg_implied:.0%}")
 
 
 def main():
@@ -242,22 +361,24 @@ def main():
     table = _get_dynamo_table()
 
     if loop_mode:
-        print("Fade News Monitor — continuous mode (every 5 min)")
+        print("Fade News Monitor — continuous mode (every 60s)")
         print("Press Ctrl+C to stop\n")
         while True:
             try:
                 results = scan_once()
                 save_to_dynamo(results, table)
-                time.sleep(300)
+                check_resolutions(table)
+                time.sleep(60)
             except KeyboardInterrupt:
                 print("\nStopped.")
                 break
             except Exception as e:
                 print(f"Error: {e}")
-                time.sleep(60)
+                time.sleep(30)
     else:
         results = scan_once()
         save_to_dynamo(results, table)
+        check_resolutions(table)
 
 
 if __name__ == "__main__":
