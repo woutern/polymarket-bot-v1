@@ -1126,7 +1126,7 @@ HTML = r"""<!DOCTYPE html>
   <div class="nav-tabs">
     <button class="nav-tab active" data-page="overview" onclick="showPage('overview', this)">Overview</button>
     <button class="nav-tab" data-page="tradelog" onclick="showPage('tradelog', this)">Trade Log</button>
-    <button class="nav-tab" data-page="signals" onclick="showPage('signals', this)">Signals</button>
+    <button class="nav-tab" data-page="signals" onclick="showPage('signals', this)">Live Logs</button>
     <button class="nav-tab" data-page="analytics" onclick="showPage('analytics', this)">Analytics</button>
     <button class="nav-tab" data-page="kpis" onclick="showPage('kpis', this)">KPIs</button>
   </div>
@@ -1218,14 +1218,7 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Live logs -->
-  <div class="logs-card">
-    <div class="logs-head">
-      <span class="section-title">Live Logs</span>
-      <span class="section-badge" id="log-count"></span>
-    </div>
-    <div id="logs"></div>
-  </div>
+  <!-- Live logs moved to dedicated tab -->
 
 </div>
 </div>
@@ -1277,68 +1270,13 @@ HTML = r"""<!DOCTYPE html>
 <div id="page-signals" class="page-content">
 <div class="page">
 
-  <!-- Score stats -->
-  <div class="stats-grid" style="margin-bottom:20px">
-    <div class="stat-card">
-      <div class="stat-label">Windows Evaluated</div>
-      <div class="stat-value" id="sig-total">—</div>
-      <div class="stat-sub" id="sig-total-sub">Loading...</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Score 4-5 (Taker)</div>
-      <div class="stat-value green" id="sig-taker">—</div>
-      <div class="stat-sub" id="sig-taker-sub">High conviction</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Score 2-3 (Maker)</div>
-      <div class="stat-value blue" id="sig-maker">—</div>
-      <div class="stat-sub" id="sig-maker-sub">Low conviction</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Score 0-1 (Skip)</div>
-      <div class="stat-value" id="sig-skip" style="color:#868e96">—</div>
-      <div class="stat-sub">No entry</div>
-    </div>
+  <div class="section-header" style="margin-bottom:16px">
+    <span class="section-title">Live Logs</span>
+    <span class="section-badge" id="logs-page-count"></span>
   </div>
-
-  <!-- Score distribution + signal breakdown -->
-  <div class="analytics-grid" style="margin-bottom:20px">
-    <div class="panel-card" style="padding:20px">
-      <div style="font-weight:600;margin-bottom:12px">Score Distribution</div>
-      <div id="score-dist-bars"></div>
-    </div>
-    <div class="panel-card" style="padding:20px">
-      <div style="font-weight:600;margin-bottom:12px">Signal Hit Rate</div>
-      <div id="signal-hit-rates"></div>
-    </div>
-  </div>
-
-  <!-- Window evaluations table -->
-  <div class="section-header">
-    <span class="section-title">Recent Window Evaluations</span>
-    <div class="filter-bar">
-      <select id="sig-asset" onchange="loadSignalsPage()" class="filter-select">
-        <option value="">All assets</option>
-        <option value="BTC">BTC</option>
-        <option value="ETH">ETH</option>
-        <option value="SOL">SOL</option>
-      </select>
-    </div>
-  </div>
-  <div class="panel-card">
-    <div style="overflow-x:auto">
-      <table>
-        <thead><tr>
-          <th>Time</th><th>Asset</th><th>Score</th>
-          <th>OFI</th><th>NoRev</th><th>Cross</th><th>PM</th><th>Vol</th>
-          <th>Dir</th><th>Move%</th><th>Ask</th><th>LightGBM</th><th>EV</th>
-          <th>Action</th>
-        </tr></thead>
-        <tbody id="sig-body">
-          <tr class="empty-row"><td colspan="14">Loading...</td></tr>
-        </tbody>
-      </table>
-    </div>
+  <div class="panel-card" style="padding:0">
+    <div id="logs-page" style="padding:16px 20px; max-height:calc(100vh - 180px); overflow-y:auto;
+      font-family:'SF Mono','Menlo',ui-monospace,monospace; font-size:12.5px; line-height:2;"></div>
   </div>
 
 </div>
@@ -1906,64 +1844,7 @@ async function refreshOverview() {
       }
     }
 
-    // Logs — chronological (oldest first, newest at bottom, auto-scroll)
-    const logsEl = document.getElementById('logs');
-    const wasAtBottom = logsEl.scrollTop + logsEl.clientHeight >= logsEl.scrollHeight - 20;
-    logsEl.innerHTML = '';
-    const lines = data.logs;  // already chronological from API
-    document.getElementById('log-count').textContent = lines.length + ' events';
-    for (const line of lines) {
-      let cls = 'log-line info';
-      let formatted = line;
-      try {
-        const obj = JSON.parse(line);
-        const ev = obj.event || '';
-        if (obj.level === 'error')                                cls = 'log-line error';
-        else if (obj.level === 'warning')                         cls = 'log-line warn';
-        else if (ev.includes('order') || ev.includes('trade') || ev.includes('executed'))  cls = 'log-line trade';
-        else if (ev.includes('signal') || ev.includes('blend') || ev.includes('lgbm'))     cls = 'log-line signal';
-        else if (ev.includes('entry_zone'))                       cls = 'log-line entry';
-        else if (ev.includes('window_'))                          cls = 'log-line window';
-        // Convert UTC to CET
-        let ts = '';
-        if (obj.timestamp) {
-          const utc = new Date(obj.timestamp);
-          ts = utc.toLocaleTimeString('en-GB', {timeZone: 'Europe/Amsterdam', hour12: false});
-        }
-        // Compact readable format: time [ASSET] event_name  key=val key=val
-        const skip = ['event','level','timestamp','asset','logger','exc_info'];
-        const important = ['pnl','price','side','direction','error','pct_move','ev','winner','lgbm_prob','liq_bias','btc_confirms','threshold'];
-        const parts = [];
-        for (const [k,v] of Object.entries(obj)) {
-          if (skip.includes(k)) continue;
-          let val = typeof v==='number' ? (Number.isInteger(v) ? v : v.toFixed(4)) : (typeof v==='string' ? v : JSON.stringify(v));
-          // Shorten long slugs: btc-updown-5m-1773922800 → btc-5m-...2800
-          if (k === 'slug' || k === 'window_slug') {
-            const m = val.match(/^(\w+)-updown-(\d+m)-(\d+)$/);
-            if (m) val = m[1]+'-'+m[2]+'-...'+m[3].slice(-4);
-          }
-          // Shorten S3 paths
-          if (typeof val === 'string' && val.includes('s3://')) val = val.split('/').pop();
-          if (important.includes(k)) {
-            parts.push('<span style="color:#c2255c">'+k+'</span>=<b>'+val+'</b>');
-          } else {
-            parts.push('<span style="color:#868e96">'+k+'</span>='+val);
-          }
-        }
-        const asset = obj.asset ? ' <span style="font-weight:600;color:#1971c2">['+obj.asset+']</span>' : '';
-        // Add link icon for trade/resolution events with a slug
-        let link = '';
-        const slug = obj.slug || obj.window_slug || '';
-        if (slug && (ev.includes('order') || ev.includes('trade') || ev.includes('resolution') || ev.includes('executed'))) {
-          link = ' <a href="https://polymarket.com/event/' + slug + '" target="_blank" style="text-decoration:none;opacity:0.5" title="View on Polymarket">&#x1F517;</a>';
-        }
-        formatted = '<span style="color:#868e96">'+ts+'</span>'+asset+' <b>'+ev+'</b>' + link + '  '+parts.join(' ');
-      } catch(ex) {}
-      logsEl.innerHTML += '<div class="' + cls + '">' + formatted + '</div>';
-    }
-    // Auto-scroll to bottom only if user was already at bottom
-    if (wasAtBottom || logsEl.scrollTop === 0) logsEl.scrollTop = logsEl.scrollHeight;
-
+    // Logs moved to dedicated Live Logs tab
     document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
   } catch(e) { console.error('overview error', e); }
 
@@ -2020,13 +1901,58 @@ async function loadTradeLog() {
 
 // ── Signals page ──────────────────────────────────────────────────────────────
 async function loadSignalsPage() {
+  // Live Logs page — shows CloudWatch logs, newest on top
   try {
-    const asset = document.getElementById('sig-asset').value;
-    let url = '/api/signals?limit=200';
-    if (asset) url += '&asset=' + asset;
-    const resp = await fetch(url);
+    const resp = await fetch('/api/data');
     const data = await resp.json();
-    const sigs = data.signals || [];
+    const lines = [...(data.logs || [])].reverse(); // newest first
+    const el = document.getElementById('logs-page');
+    document.getElementById('logs-page-count').textContent = lines.length + ' events';
+    el.innerHTML = '';
+    for (const line of lines) {
+      let cls = 'log-line info';
+      let formatted = line;
+      try {
+        const obj = JSON.parse(line);
+        const ev = obj.event || '';
+        if (obj.level === 'error') cls = 'log-line error';
+        else if (obj.level === 'warning') cls = 'log-line warn';
+        else if (ev.includes('order') || ev.includes('trade') || ev.includes('executed') || ev.includes('score_entry') || ev.includes('score_override')) cls = 'log-line trade';
+        else if (ev.includes('window_score') || ev.includes('lgbm') || ev.includes('score_skip')) cls = 'log-line signal';
+        else if (ev.includes('entry_zone')) cls = 'log-line entry';
+        else if (ev.includes('window_')) cls = 'log-line window';
+        let ts = '';
+        if (obj.timestamp) {
+          const utc = new Date(obj.timestamp);
+          ts = utc.toLocaleTimeString('en-GB', {timeZone: 'Europe/Amsterdam', hour12: false});
+        }
+        const skip = ['event','level','timestamp','asset','logger','exc_info'];
+        const important = ['pnl','price','side','direction','error','pct_move','ev','winner','lgbm_prob','score','liq_bias','btc_confirms','threshold','entry_type','reason'];
+        const parts = [];
+        for (const [k,v] of Object.entries(obj)) {
+          if (skip.includes(k)) continue;
+          let val = typeof v==='number' ? (Number.isInteger(v) ? v : v.toFixed(4)) : (typeof v==='string' ? v : JSON.stringify(v));
+          if (k === 'slug' || k === 'window_slug') {
+            const m = val.match(/^(\w+)-updown-(\d+m)-(\d+)$/);
+            if (m) val = m[1]+'-'+m[2]+'-...'+m[3].slice(-4);
+          }
+          if (typeof val === 'string' && val.includes('s3://')) val = val.split('/').pop();
+          if (important.includes(k)) parts.push('<span style="color:#c2255c">'+k+'</span>=<b>'+val+'</b>');
+          else parts.push('<span style="color:#868e96">'+k+'</span>='+val);
+        }
+        const asset = obj.asset ? ' <span style="font-weight:600;color:#2563eb">['+obj.asset+']</span>' : '';
+        let link = '';
+        const slug = obj.slug || obj.window_slug || '';
+        if (slug && (ev.includes('order') || ev.includes('trade') || ev.includes('resolution') || ev.includes('score_entry') || ev.includes('score_override')))
+          link = ' <a href="https://polymarket.com/event/' + slug + '" target="_blank" style="text-decoration:none;opacity:0.4" title="View on Polymarket">&#x1F517;</a>';
+        formatted = '<span style="color:#868e96">'+ts+'</span>'+asset+' <b>'+ev+'</b>'+link+'  '+parts.join(' ');
+      } catch(ex) {}
+      el.innerHTML += '<div class="' + cls + '">' + formatted + '</div>';
+    }
+    return;
+  } catch(e) { console.error('logs page error', e); }
+  // Old signals page code below (dead code, kept for reference)
+  const sigs = [];
 
     // Stats
     const scored = sigs.filter(s => s.score_total !== undefined);
