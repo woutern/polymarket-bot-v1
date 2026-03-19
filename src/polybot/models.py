@@ -20,9 +20,6 @@ SLUG_PREFIXES = {
     "BTC": "btc-updown-5m",
     "ETH": "eth-updown-5m",
     "SOL": "sol-updown-5m",
-    "BTC_15M": "btc-updown-15m",
-    "ETH_15M": "eth-updown-15m",
-    "SOL_15M": "sol-updown-15m",
 }
 
 
@@ -58,12 +55,8 @@ class Window:
     @staticmethod
     def slug_for_ts(ts: int, asset: str = "BTC", window_seconds: int = 300) -> str:
         aligned = ts - (ts % window_seconds)
-        if window_seconds == 900:
-            key = f"{asset.upper()}_15M"
-            default_prefix = f"{asset.lower()}-updown-15m"
-        else:
-            key = asset.upper()
-            default_prefix = f"{asset.lower()}-updown-5m"
+        key = asset.upper()
+        default_prefix = f"{asset.lower()}-updown-5m"
         prefix = SLUG_PREFIXES.get(key, default_prefix)
         return f"{prefix}-{aligned}"
 

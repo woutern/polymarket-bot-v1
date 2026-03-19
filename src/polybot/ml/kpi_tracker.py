@@ -160,8 +160,7 @@ class KPITracker:
         for t in resolved:
             asset = t.get("asset", "BTC")
             slug = t.get("window_slug", "")
-            tf = "15m" if "15m" in str(slug) else "5m"
-            pair = f"{asset}_{tf}"
+            pair = f"{asset}_5m"
             if pair not in pair_stats:
                 pair_stats[pair] = {"trades": 0, "wins": 0, "pnl": 0.0, "entries": [], "probs": []}
             pair_stats[pair]["trades"] += 1
@@ -230,9 +229,7 @@ class KPITracker:
         self.sprt_overall.update(p1, p0, outcome)
 
         asset = trade.get("asset", "BTC")
-        slug = trade.get("window_slug", "")
-        tf = "15m" if "15m" in str(slug) else "5m"
-        pair = f"{asset}_{tf}"
+        pair = f"{asset}_5m"
         if pair not in self.sprt_per_pair:
             self.sprt_per_pair[pair] = SPRTTracker()
         self.sprt_per_pair[pair].update(p1, p0, outcome)

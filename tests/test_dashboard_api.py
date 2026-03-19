@@ -48,7 +48,7 @@ def client(tmp_path):
         0.72, NULL, 0.72, 0.15, 30.0, 0.20, 'coinbase_inferred', NULL, NULL)
     """)
     conn.execute("""
-        INSERT INTO trades VALUES ('t3', 3000.0, 'sol-updown-15m-300', 'directional',
+        INSERT INTO trades VALUES ('t3', 3000.0, 'sol-updown-5m-300', 'directional',
         'up', 'YES', 0.60, 1.0, 0.60, NULL, 0, 'live', 'SOL',
         0.80, 0.85, 0.82, 0.20, 40.0, 0.37, 'coinbase_inferred', NULL, NULL)
     """)
@@ -67,11 +67,13 @@ def client(tmp_path):
     import scripts.dashboard as dash
     orig_db_path = dash._DB_PATH
     orig_use_dynamo = dash._USE_DYNAMO
+    orig_use_sqlite = dash._USE_SQLITE
     orig_mode = dash._TRADE_MODE
     orig_bankroll = dash._BANKROLL
 
     dash._DB_PATH = db_path
     dash._USE_DYNAMO = False
+    dash._USE_SQLITE = True
     dash._TRADE_MODE = "live"
     dash._BANKROLL = 43.0
 
@@ -83,6 +85,7 @@ def client(tmp_path):
 
     dash._DB_PATH = orig_db_path
     dash._USE_DYNAMO = orig_use_dynamo
+    dash._USE_SQLITE = orig_use_sqlite
     dash._TRADE_MODE = orig_mode
     dash._BANKROLL = orig_bankroll
 
@@ -121,10 +124,10 @@ class TestApiTrades:
         assert len(trades) == 1
 
     def test_filtered_by_timeframe(self, client):
-        resp = client.get("/api/trades?tf=15m")
+        resp = client.get("/api/trades?tf=5m")
         trades = resp.json()["trades"]
-        assert len(trades) == 1
-        assert "15m" in trades[0]["window_slug"]
+        assert len(trades) == 3
+        assert all("5m" in t["window_slug"] for t in trades)
 
 
 class TestApiStrategyStats:

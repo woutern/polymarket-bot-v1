@@ -150,7 +150,7 @@ def get_trades(limit=100, asset=None, tf=None):
         if asset:
             items = [t for t in items if _extract_field(t, "asset", "").upper() == asset.upper()]
         if tf:
-            items = [t for t in items if (tf == "15m") == ("15m" in _extract_field(t, "window_slug", ""))]
+            items = [t for t in items if (tf == "5m") == ("5m" in _extract_field(t, "window_slug", ""))]
         return items[:limit]
     if _USE_SQLITE:
         sql = "SELECT * FROM trades WHERE 1=1"
@@ -159,10 +159,7 @@ def get_trades(limit=100, asset=None, tf=None):
             sql += " AND UPPER(asset) = ?"
             params.append(asset.upper())
         if tf:
-            if tf == "15m":
-                sql += " AND window_slug LIKE '%15m%'"
-            else:
-                sql += " AND window_slug NOT LIKE '%15m%'"
+            sql += " AND window_slug LIKE '%5m%'"
         sql += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
         return _sqlite_query(sql, tuple(params))
@@ -281,9 +278,8 @@ def api_data():
     # Unrealized: open positions with preliminary Coinbase P&L
     unrealized_pnl = sum(_float_field(t, "pnl") for t in open_trade_list if _float_field(t, "pnl") != 0)
 
-    # Per-asset window counts
+    # Per-asset window counts (5m only)
     asset_windows = {}
-    asset_windows_15m = {}
     for w in windows:
         slug = w.get("slug", "") or ""
         slug_upper = slug.upper()
@@ -296,10 +292,7 @@ def api_data():
         else:
             a = w.get("asset", {})
             asset = a.get("S", "BTC") if isinstance(a, dict) else str(a) if a else "BTC"
-        if "15m" in slug:
-            asset_windows_15m[asset] = asset_windows_15m.get(asset, 0) + 1
-        else:
-            asset_windows[asset] = asset_windows.get(asset, 0) + 1
+        asset_windows[asset] = asset_windows.get(asset, 0) + 1
 
     # Per-asset x timeframe breakdown
     strategy_pnl = {}
@@ -308,8 +301,7 @@ def api_data():
             continue
         asset = _extract_field(t, "asset", "BTC").upper() or "BTC"
         slug = _extract_field(t, "window_slug", "")
-        tf = "15m" if "15m" in slug else "5m"
-        key = f"{asset} {tf}"
+        key = f"{asset} 5m"
         p = _float_field(t, "pnl")
         if key not in strategy_pnl:
             strategy_pnl[key] = {"pnl": 0, "count": 0, "wins": 0}
@@ -350,7 +342,6 @@ def api_data():
             "open_trades": open_trades,
             "total_resolved": wins + losses,
             "asset_windows": asset_windows,
-            "asset_windows_15m": asset_windows_15m,
             "strategy_pnl": strategy_pnl,
             "mode": _TRADE_MODE,
             "starting_bankroll": _BANKROLL,
@@ -428,8 +419,7 @@ def api_strategy_stats():
     for t in resolved:
         asset = _extract_field(t, "asset", "BTC").upper() or "BTC"
         slug = _extract_field(t, "window_slug", "")
-        tf = "15m" if "15m" in slug else "5m"
-        seg_key = f"{asset} {tf}"
+        seg_key = f"{asset} 5m"
         pnl = _float_field(t, "pnl")
         won = pnl > 0
 
@@ -533,7 +523,6 @@ def api_pairs():
     except Exception:
         _defaults = {
             "BTC 5m": 0.08, "ETH 5m": 0.10, "SOL 5m": 0.14,
-            "BTC 15m": 0.12, "ETH 15m": 0.14, "SOL 15m": 0.18,
         }
         pairs = [
             {"pair": k, "asset": k.split()[0], "timeframe": k.split()[1],
@@ -550,8 +539,7 @@ def api_pairs():
     for t in resolved:
         asset = _extract_field(t, "asset", "BTC").upper()
         slug = _extract_field(t, "window_slug", "")
-        tf = "15m" if "15m" in slug else "5m"
-        key = f"{asset} {tf}"
+        key = f"{asset} 5m"
         if key not in perf:
             perf[key] = {"wins": 0, "losses": 0, "pnl": 0.0, "trades": 0}
         perf[key]["trades"] += 1
@@ -1253,7 +1241,6 @@ HTML = r"""<!DOCTYPE html>
       <select id="tl-tf" onchange="loadTradeLog()" class="filter-select">
         <option value="">All timeframes</option>
         <option value="5m">5m</option>
-        <option value="15m">15m</option>
       </select>
     </div>
   </div>
@@ -1877,7 +1864,7 @@ async function refreshOverview() {
 
     // Per-asset x timeframe performance cards
     const strats = s.strategy_pnl || {};
-    const all_strats = ['BTC 5m', 'ETH 5m', 'SOL 5m', 'BTC 15m', 'ETH 15m', 'SOL 15m'];
+    const all_strats = ['BTC 5m', 'ETH 5m', 'SOL 5m'];
     let scHtml = '';
     for (const st of all_strats) {
       const d = strats[st] || { pnl: 0, count: 0, wins: 0 };
@@ -2001,7 +1988,7 @@ async function loadTradeLog() {
     for (const t of data.trades) {
       const asset_v = dval(t, 'asset') || 'BTC';
       const slug    = dval(t, 'window_slug') || '';
-      const tf_v    = slug.includes('15m') ? '15m' : '5m';
+      const tf_v    = '5m';
       const resolved = t.resolved || dval(t, 'resolved');
       const pnlv = resolved ? _float_or_null(dval(t,'pnl')) : null;
       const pAI = _float_or_null(dval(t, 'p_ai'));

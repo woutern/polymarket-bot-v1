@@ -150,7 +150,13 @@ async def run_smoke_tests(settings) -> SmokeTestResult:
     else:
         result.fail("polymarket_creds", "Missing private key or API key")
 
-    # 8. Mode sanity check
+    # 8. Max trade USD guard — must not exceed $2.50
+    if settings.max_trade_usd > 2.50:
+        result.fail("max_trade_usd", f"Value {settings.max_trade_usd} > $2.50 — hard cap exceeded")
+    else:
+        result.ok("max_trade_usd")
+
+    # 9. Mode sanity check
     if settings.mode in ("paper", "live"):
         result.ok(f"mode_{settings.mode}")
     else:

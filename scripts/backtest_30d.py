@@ -1,4 +1,4 @@
-"""30-day backtest: replay Tier C signal logic against historical BTC 5m/15m windows.
+"""30-day backtest: replay Tier C signal logic against historical BTC 5m windows.
 
 Uses:
 - Coinbase 1-min candle data from S3 (open/high/low/close per minute)
@@ -89,7 +89,6 @@ def run_backtest():
 
     configs = [
         {"asset": "BTC", "tf": "5m", "window_sec": 300, "min_move": 0.08, "prefix": "btc-updown-5m"},
-        {"asset": "BTC", "tf": "15m", "window_sec": 900, "min_move": 0.12, "prefix": "btc-updown-15m"},
     ]
 
     for cfg in configs:

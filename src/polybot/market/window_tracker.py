@@ -10,7 +10,6 @@ import time
 from enum import Enum
 
 from polybot.core.clock import WINDOW_SECONDS, current_window_open
-from polybot.core.clock import WINDOW_SECONDS_15M, current_window_open_15m
 from polybot.models import Window
 
 

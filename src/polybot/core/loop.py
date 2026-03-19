@@ -1,7 +1,7 @@
-"""Main async event loop — multi-asset, multi-timeframe directional trading.
+"""Main async event loop — multi-asset directional trading.
 
 Strategy: Early entry (T+2s to T+15s) across BTC/ETH/SOL
-on both 5-minute and 15-minute windows with LightGBM + quality filters.
+on 5-minute windows with LightGBM + quality filters.
 """
 
 from __future__ import annotations
@@ -210,8 +210,7 @@ class TradingLoop:
         # One AssetState per enabled pair
         self.asset_states: dict[str, AssetState] = {}
         for asset, dur in enabled:
-            tf = "15m" if dur == 900 else "5m"
-            key = f"{asset}_{tf}"
+            key = f"{asset}_5m"
             self.asset_states[key] = AssetState(
                 asset=asset,
                 tracker=WindowTracker(
@@ -489,7 +488,7 @@ class TradingLoop:
                     "window_slug": window.slug,
                     "timestamp": time.time(),
                     "asset": state.asset,
-                    "timeframe": "15m" if "15m" in window.slug else "5m",
+                    "timeframe": "5m",
                     "outcome": "executed",
                     "rejection_reason": "",
                     "direction": direction,
@@ -547,7 +546,7 @@ class TradingLoop:
         pct_move = state.tracker.pct_move(price) or 0.0
         state.bayesian.update(price, remaining)
 
-        tf = "15m" if "15m" in window.slug else "5m"
+        tf = "5m"
         seconds_since_open = time.time() - window.open_ts
 
         # Compute all filter values upfront for logging
@@ -679,8 +678,7 @@ class TradingLoop:
         signal = evaluation.signal
 
         # LightGBM prediction (logged alongside existing signal, not blocking yet)
-        tf = "15m" if "15m" in window.slug else "5m"
-        pair = f"{state.asset}_{tf}"
+        pair = f"{state.asset}_5m"
         seconds_since_open = (window.close_ts - window.open_ts) - remaining
         features = {
             "move_pct_15s": pct_move,
@@ -803,7 +801,7 @@ class TradingLoop:
         # DATA_COLLECTION_MODE: log training data on every resolved window
         if os.getenv("DATA_COLLECTION_MODE", "").lower() == "true":
             try:
-                tf = "15m" if "15m" in window.slug else "5m"
+                tf = "5m"
                 pct_move = 0.0
                 if window.open_price and window.close_price and window.open_price > 0:
                     pct_move = (window.close_price - window.open_price) / window.open_price * 100
@@ -1051,7 +1049,7 @@ class TradingLoop:
                 if isinstance(a, dict):
                     a = a.get("S", "BTC")
                 slug = str(t.get("window_slug", "") or "")
-                tf = "15m" if "15m" in slug else "5m"
+                tf = "5m"
                 key = f"{a} {tf}"
                 if key not in asset_stats:
                     asset_stats[key] = {"wins": 0, "total": 0, "pnl": 0.0}

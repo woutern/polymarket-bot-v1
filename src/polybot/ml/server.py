@@ -17,7 +17,7 @@ import structlog
 
 logger = structlog.get_logger()
 
-PAIRS = ["BTC_5m", "BTC_15m", "ETH_5m", "ETH_15m", "SOL_5m", "SOL_15m"]
+PAIRS = ["BTC_5m", "ETH_5m", "SOL_5m"]
 
 # Adaptive threshold bounds — raised after consecutive losses at low confidence
 _DEFAULT_GATE = 0.60

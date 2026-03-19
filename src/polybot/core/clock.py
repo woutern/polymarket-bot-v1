@@ -40,35 +40,3 @@ def is_in_entry_zone(entry_seconds: int = 10) -> bool:
     return seconds_until_close() <= entry_seconds
 
 
-# ---------------------------------------------------------------------------
-# 15-minute window helpers
-# ---------------------------------------------------------------------------
-
-WINDOW_SECONDS_15M = 900
-
-
-def current_window_open_15m() -> int:
-    """Return the Unix timestamp of the current 15-min window open."""
-    now = int(time.time())
-    return now - (now % WINDOW_SECONDS_15M)
-
-
-def next_window_open_15m() -> int:
-    return current_window_open_15m() + WINDOW_SECONDS_15M
-
-
-def seconds_until_close_15m() -> float:
-    """Seconds remaining in the current 15-min window."""
-    return float(next_window_open_15m()) - time.time()
-
-
-def window_slug_15m(ts: int | None = None, asset: str = "BTC") -> str:
-    """Generate market slug for a given (or current) 15-min window."""
-    if ts is None:
-        ts = current_window_open_15m()
-    aligned = ts - (ts % WINDOW_SECONDS_15M)
-    from polybot.models import SLUG_PREFIXES
-
-    key = f"{asset.upper()}_15M"
-    prefix = SLUG_PREFIXES.get(key, f"{asset.lower()}-updown-15m")
-    return f"{prefix}-{aligned}"

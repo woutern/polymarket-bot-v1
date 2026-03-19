@@ -31,7 +31,7 @@ FEATURE_COLUMNS = [
     # NOTE: move_pct_60s and move_pct_300s EXCLUDED — they are look-ahead features
 ]
 
-PAIRS = ["BTC_5m", "BTC_15m", "ETH_5m", "ETH_15m", "SOL_5m", "SOL_15m"]
+PAIRS = ["BTC_5m", "ETH_5m", "SOL_5m"]
 
 
 @dataclass
@@ -242,7 +242,7 @@ def train_pair(pair: str, items: list[dict], s3_client=None, ssm_client=None, s3
 
 
 def train_all(region: str = "us-east-1", s3_bucket: str = "polymarket-bot-data-688567279867-use1") -> list[TrainResult]:
-    """Train models for all 6 pairs."""
+    """Train models for all 3 pairs."""
     import os
     import boto3
 

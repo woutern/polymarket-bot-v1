@@ -20,7 +20,7 @@ class RiskManager:
     daily_loss_cap_pct: float = 0.10  # 10% daily loss cap
     max_position_pct: float = 0.01
     min_trade_usd: float = 1.0
-    max_trade_usd: float = 10.0
+    max_trade_usd: float = 2.50
 
     # Internal state
     daily_pnl: float = 0.0
@@ -90,8 +90,8 @@ class RiskManager:
             pct = 0.005
 
         base = round(self.bankroll * pct, 2)
-        # Hard floor $1.00 (Polymarket minimum), cap $5.00 (raise to $10 when wallet > $500)
-        return max(1.00, min(5.00, base))
+        # Hard floor $1.00 (Polymarket minimum), cap $2.50
+        return max(1.00, min(2.50, base))
 
     def max_position_size(self) -> float:
         return self.bankroll * self.max_position_pct

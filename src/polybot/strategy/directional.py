@@ -40,7 +40,7 @@ def generate_directional_signal(
     with a rejection_reason (skipped). This allows the dashboard to show
     both fired and rejected signals.
     """
-    tf = "15m" if "15m" in window_slug else "5m"
+    tf = "5m"
 
     # Base evaluation context (filled progressively)
     base = dict(

@@ -125,23 +125,22 @@ class TestDedupConcurrent:
         assert result is None  # blocked by DynamoDB dedup
         assert slug in trader._traded_slugs  # cached for next time
 
-    async def test_btc_5m_and_15m_same_slug_one_executes(self):
-        """BTC_5m and BTC_15m fire on same slug → only 1 trade."""
+    async def test_btc_5m_same_slug_two_attempts_one_executes(self):
+        """Two concurrent attempts on same BTC 5m slug → only 1 trade."""
         trader = _make_live_trader()
         slug = "btc-updown-5m-test-cross-pair"
 
-        # Simulate two pair trackers hitting same slug concurrently
-        async def try_5m():
+        async def try_a():
             sig = _make_signal(slug=slug, asset="BTC")
             return await trader.execute(sig, "yes_token", "no_token")
 
-        async def try_15m():
+        async def try_b():
             sig = _make_signal(slug=slug, asset="BTC")
             return await trader.execute(sig, "yes_token", "no_token")
 
-        results = await asyncio.gather(try_5m(), try_15m())
+        results = await asyncio.gather(try_a(), try_b())
         executed = sum(1 for r in results if r is not None)
-        assert executed == 1, f"Expected 1 execution from cross-pair, got {executed}"
+        assert executed == 1, f"Expected 1 execution, got {executed}"
 
     async def test_dynamo_claim_blocks_second_container(self):
         """Atomic DynamoDB claim prevents second container from trading."""

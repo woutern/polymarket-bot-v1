@@ -33,7 +33,7 @@ def resolve_current_window(asset: str = "BTC", window_seconds: int = 300):
     now = int(time.time())
     aligned = now - (now % window_seconds)
     remaining = (aligned + window_seconds) - now
-    tf = "15m" if window_seconds == 900 else "5m"
+    tf = "5m"
     slug = f"{asset.lower()}-updown-{tf}-{aligned}"
 
     print(f"Window: {slug} | {remaining:.0f}s remaining")
