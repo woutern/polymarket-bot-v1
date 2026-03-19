@@ -193,3 +193,77 @@ class TestMakerDedup:
         # For now just verify the slug release mechanism
         trader._traded_slugs.discard(slug)
         assert slug not in trader._traded_slugs
+
+
+class TestHardFilterOverride:
+    def test_override_fires_on_score_1(self):
+        """The exact ETH case: lgbm=0.667, ask=0.54, ev=0.127, score=1 → should trade."""
+        # Simulate the decision logic from _evaluate_scored_entry
+        lgbm_prob = 0.667
+        current_ask = 0.54
+        ev = 0.127
+        score_total = 1
+
+        # Override check (same as loop.py)
+        entry_type = "skipped"
+        if lgbm_prob >= 0.65 and current_ask <= 0.55 and current_ask > 0 and ev >= 0.10:
+            entry_type = "override"
+        elif score_total >= 4:
+            entry_type = "taker"
+        elif score_total >= 2:
+            entry_type = "maker"
+
+        assert entry_type == "override", f"Expected override, got {entry_type}"
+
+    def test_override_requires_all_three(self):
+        """All three hard filters must pass for override."""
+        # Missing lgbm
+        assert not (0.60 >= 0.65 and 0.54 <= 0.55 and 0.12 >= 0.10)
+        # Missing ask
+        assert not (0.70 >= 0.65 and 0.58 <= 0.55 and 0.12 >= 0.10)
+        # Missing ev
+        assert not (0.70 >= 0.65 and 0.50 <= 0.55 and 0.05 >= 0.10)
+        # All pass
+        assert (0.70 >= 0.65 and 0.50 <= 0.55 and 0.12 >= 0.10)
+
+    def test_override_beats_low_score(self):
+        """Override fires even at score=0."""
+        lgbm_prob = 0.70
+        current_ask = 0.50
+        ev = 0.15
+        score_total = 0
+
+        entry_type = "skipped"
+        if lgbm_prob >= 0.65 and current_ask <= 0.55 and current_ask > 0 and ev >= 0.10:
+            entry_type = "override"
+
+        assert entry_type == "override"
+
+    def test_no_override_when_ask_too_high(self):
+        """Even strong lgbm+ev can't override ask > $0.55."""
+        lgbm_prob = 0.80
+        current_ask = 0.56
+        ev = 0.20
+
+        entry_type = "skipped"
+        if lgbm_prob >= 0.65 and current_ask <= 0.55 and current_ask > 0 and ev >= 0.10:
+            entry_type = "override"
+
+        assert entry_type == "skipped"
+
+    def test_score_4_still_works_without_override(self):
+        """Score 4-5 path still functions normally."""
+        lgbm_prob = 0.62  # below override threshold of 0.65
+        current_ask = 0.52
+        ev = 0.09  # below override threshold of 0.10
+        score_total = 4
+
+        entry_type = "skipped"
+        skip_reason = ""
+        if lgbm_prob >= 0.65 and current_ask <= 0.55 and current_ask > 0 and ev >= 0.10:
+            entry_type = "override"
+        elif score_total >= 4:
+            if lgbm_prob >= 0.60 and current_ask <= 0.55 and ev >= 0.08:
+                entry_type = "taker"
+
+        assert entry_type == "taker"

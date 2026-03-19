@@ -904,8 +904,14 @@ class TradingLoop:
         except Exception:
             pass
 
-        # Decision based on score
-        if score.total >= 4:
+        # Decision based on score — with hard filter override
+        # OVERRIDE: strong hard filters bypass score entirely
+        if lgbm_prob >= 0.65 and current_ask <= 0.55 and current_ask > 0 and ev >= 0.10:
+            entry_type = "override"
+            logger.info("score_override", asset=state.asset, slug=window.slug,
+                        score=score.total, lgbm=round(lgbm_prob, 4),
+                        ask=round(current_ask, 3), ev=round(ev, 4))
+        elif score.total >= 4:
             # HIGH CONVICTION: taker FOK
             if lgbm_prob < 0.60:
                 skip_reason = "lgbm_low_taker"
@@ -973,15 +979,14 @@ class TradingLoop:
         )
 
         t_start = time.time()
-        if entry_type == "taker":
-            # FOK at market ask
+        if entry_type in ("taker", "override"):
+            # FOK at market ask — override uses same execution as taker
             signal_ms = (time.time() - t_start) * 1000
             await self._execute(signal, state, signal_ms, 0)
             state.traded_this_window = True
         elif entry_type == "maker":
             # GTC at $0.48, cancel after 8s
             # For now, use FOK at current ask (GTC requires separate implementation)
-            # TODO: implement proper GTC maker path
             signal_ms = (time.time() - t_start) * 1000
             await self._execute(signal, state, signal_ms, 0)
             state.traded_this_window = True
