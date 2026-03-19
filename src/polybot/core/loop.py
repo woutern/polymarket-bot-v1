@@ -594,7 +594,7 @@ class TradingLoop:
         # LightGBM prediction (logged alongside existing signal, not blocking yet)
         tf = "15m" if "15m" in window.slug else "5m"
         pair = f"{state.asset}_{tf}"
-        seconds_since_open = window.window_seconds - remaining
+        seconds_since_open = (window.close_ts - window.open_ts) - remaining
         features = {
             "move_pct_15s": pct_move,
             "realized_vol_5m": vol,
