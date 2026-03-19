@@ -630,8 +630,6 @@ def api_pnl_history(_: str = Depends(_require_auth)):
 async def api_balance(_: str = Depends(_require_auth)):
     """Return wallet USDC balances."""
     try:
-        from polybot.market.balance_checker import BalanceChecker
-
         if not _WALLET_ADDRESS:
             return {"polymarket_value": 0.0, "polygon_usdc": 0.0, "error": "no_address"}
 
@@ -640,8 +638,9 @@ async def api_balance(_: str = Depends(_require_auth)):
         result = {"polygon_usdc": 0.0, "polymarket_value": 0.0, "total_pnl": 0.0, "unclaimed_winnings": 0.0}
 
         async with httpx.AsyncClient(timeout=10) as client:
-            # On-chain USDC balance
+            # On-chain USDC balance (optional — needs polybot module)
             try:
+                from polybot.market.balance_checker import BalanceChecker
                 checker = BalanceChecker()
                 bal = await checker.check(_WALLET_ADDRESS)
                 result["polygon_usdc"] = bal.get("polygon_usdc", 0.0)
