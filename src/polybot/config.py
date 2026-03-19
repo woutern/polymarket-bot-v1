@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     min_move_btc_5m: float = 0.02   # BTC 5m: lowered to see more signals
     min_move_eth_5m: float = 0.02   # ETH 5m: same
     min_move_sol_5m: float = 0.02   # SOL 5m: same
-    min_move_btc_15m: float = 0.05  # 15m: keep higher
+    min_move_btc_15m: float = 0.15  # 15m: high threshold needed — direction holds 74% at 0.15%
     min_move_eth_15m: float = 0.05
     min_move_sol_15m: float = 0.05
 

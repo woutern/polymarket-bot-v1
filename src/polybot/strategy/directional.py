@@ -63,49 +63,27 @@ def generate_directional_signal(
     if abs(pct_move) < min_move_pct:
         return SignalEvaluation(signal=None, rejection_reason="min_move", **base)
 
-    # Determine direction from price movement
+    # Direction from price movement ONLY (not Bayesian)
+    # pct_move already exceeds min_move_pct at this point
     if pct_move > 0:
         direction = Direction.UP
-        p_bayesian = bayesian.probability
         market_price = orderbook.yes_best_ask
     else:
         direction = Direction.DOWN
-        p_bayesian = 1.0 - bayesian.probability
         market_price = orderbook.no_best_ask
+
+    # Bayesian probability (logged but NOT used for model_prob)
+    p_bayesian = bayesian.probability if pct_move > 0 else 1.0 - bayesian.probability
 
     base["direction"] = direction.value
     base["p_bayesian"] = p_bayesian
     base["market_price"] = market_price
 
-    # AI signal: query Bedrock for additional probability estimate
-    p_ai: float | None = None
-    if use_ai:
-        p_ai = get_ai_probability(
-            asset=asset,
-            window_key=window_slug,
-            pct_move=pct_move,
-            seconds_remaining=seconds_remaining,
-            yes_ask=orderbook.yes_best_ask,
-            no_ask=orderbook.no_best_ask,
-            yes_bid=orderbook.yes_best_bid,
-            no_bid=orderbook.no_best_bid,
-            p_bayesian=p_bayesian,
-            open_price=open_price,
-            current_price=current_price,
-        )
-        model_prob = blend_probabilities(p_bayesian, p_ai)
-        if p_ai is not None:
-            logger.info(
-                "bedrock_blend",
-                asset=asset,
-                p_bayesian=round(p_bayesian, 4),
-                p_ai=round(p_ai, 4),
-                p_final=round(model_prob, 4),
-            )
-        else:
-            logger.debug("bedrock_skipped_rate_limited", asset=asset, slug=window_slug)
-    else:
-        model_prob = p_bayesian
+    # Model probability: use p_bayesian as base estimate
+    # LightGBM in the loop provides the real confidence filter
+    # Bedrock AI removed from trading loop (meta-learning only)
+    model_prob = p_bayesian
+    p_ai = None
 
     base["p_ai"] = p_ai
     base["model_prob"] = model_prob
