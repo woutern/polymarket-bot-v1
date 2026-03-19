@@ -4,7 +4,7 @@ Algorithmic trading bot for Polymarket crypto binary prediction markets.
 
 **Status:** LIVE — $225 portfolio, all 6 pairs active
 **Dashboard:** http://54.155.183.45:8888/
-**Tests:** 306 passing
+**Tests:** 310 passing
 
 ## Strategy
 
@@ -38,7 +38,7 @@ LightGBM models filter low-confidence signals. Dynamic Kelly sizing.
 - lgbm_prob 0.60-0.70: 1.0%
 - lgbm_prob 0.70-0.80: 1.5%
 - lgbm_prob > 0.80: 2.0%
-- Min $1.00, max $10.00
+- Min $1.00, max $5.00
 
 ## Architecture
 
@@ -69,9 +69,10 @@ us-east-1 (Data + Models)
 
 - Circuit breakers: 3 streak → 15min pause, 5/20 losses → $1 flat, 10% daily → stop
 - Dedup: DynamoDB + memory (one trade per window, survives restarts)
-- Resolution: Gamma API only (never Coinbase inference)
+- Resolution: Gamma API verified (all 88 trades confirmed via Polymarket oracle)
 - Watchdog: heartbeat every 60s, Docker HEALTHCHECK restarts if frozen >5min
 - Orphan resolver: resolves stale trades on startup
+- Backfill script: `scripts/backfill_verification.py` upgrades legacy coinbase_inferred → polymarket_verified
 
 ## Commands
 
@@ -79,7 +80,8 @@ us-east-1 (Data + Models)
 ./scripts/switch.sh live|paper
 uv run python scripts/force_trade.py --asset BTC
 uv run python scripts/redeem.py
-uv run pytest tests/ -q                    # 306 tests
+uv run pytest tests/ -q                    # 310 tests
+uv run python scripts/backfill_verification.py  # one-time: verify old trades
 PYTHONPATH=src uv run python -c \
   "from polybot.ml.trainer import train_all; train_all()"
 ```
