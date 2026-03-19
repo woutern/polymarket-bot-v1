@@ -904,9 +904,12 @@ class TradingLoop:
         except Exception:
             pass
 
+        # HARD CEILING — applies to ALL entry paths (taker, maker, override)
+        # This is the first check. Nothing trades above $0.55.
+        if current_ask > self.settings.max_market_price:
+            skip_reason = f"ask_{current_ask:.2f}_above_{self.settings.max_market_price}"
         # Decision based on score — with hard filter override
-        # OVERRIDE: strong hard filters bypass score entirely
-        if lgbm_prob >= 0.65 and current_ask <= 0.55 and current_ask > 0 and ev >= 0.10:
+        elif lgbm_prob >= 0.65 and current_ask <= 0.55 and current_ask > 0 and ev >= 0.10:
             entry_type = "override"
             logger.info("score_override", asset=state.asset, slug=window.slug,
                         score=score.total, lgbm=round(lgbm_prob, 4),
@@ -915,8 +918,6 @@ class TradingLoop:
             # HIGH CONVICTION: taker FOK
             if lgbm_prob < 0.60:
                 skip_reason = "lgbm_low_taker"
-            elif current_ask > 0.55:
-                skip_reason = "ask_above_0.55"
             elif ev < self.settings.min_ev_threshold:
                 skip_reason = "insufficient_ev"
             else:

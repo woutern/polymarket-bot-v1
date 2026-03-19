@@ -173,8 +173,11 @@ def train_pair(pair: str, items: list[dict], s3_client=None, ssm_client=None, s3
         "feature_fraction": 0.8,
         "bagging_fraction": 0.8,
         "bagging_freq": 5,
-        "min_child_samples": 20,
-        "is_unbalance": True,  # handle outcome class imbalance
+        "min_child_samples": 50,   # increased from 20 — prevents overfitting on small patterns
+        "max_depth": 4,            # added — caps tree depth to prevent memorization
+        "reg_alpha": 0.1,          # L1 regularization
+        "reg_lambda": 0.1,         # L2 regularization
+        "is_unbalance": True,
         "verbose": -1,
     }
 
@@ -208,7 +211,14 @@ def train_pair(pair: str, items: list[dict], s3_client=None, ssm_client=None, s3
 
     baseline_brier = brier_score_loss(y_val, np.full_like(y_val, 0.5, dtype=float))
 
-    logger.info(f"{pair}: n_train={n_train} n_val={n_val} brier={val_brier:.4f} auc={val_auc:.4f} baseline={baseline_brier:.4f}")
+    mean_prob = float(np.mean(final_probs))
+    logger.info(f"{pair}: n_train={n_train} n_val={n_val} brier={val_brier:.4f} auc={val_auc:.4f} baseline={baseline_brier:.4f} mean_prob={mean_prob:.4f}")
+
+    # Calibration check — reject saturated models
+    if mean_prob > 0.75 or mean_prob < 0.25:
+        return TrainResult(pair=pair, n_train=n_train, n_val=n_val, val_brier=val_brier,
+                           val_auc=val_auc, baseline_brier=baseline_brier, deployed=False,
+                           error=f"Calibration failure: mean_prob={mean_prob:.4f} (must be 0.25-0.75)")
 
     # Deploy gate
     if val_brier >= baseline_brier:
