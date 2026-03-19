@@ -35,10 +35,10 @@ class TestDynamicKelly:
         assert size == 1.0  # 0.5% of 50 = $0.25 → min $1.00
 
     def test_max_enforced(self):
-        """Large bankroll → max $10.00."""
+        """Large bankroll → max $5.00."""
         rm = RiskManager(bankroll=1000.0, min_trade_usd=1.0, max_trade_usd=10.0)
         size = rm.get_bet_size(lgbm_prob=0.85)
-        assert size == 10.0  # 2% of 1000 = $20 → max $10.00
+        assert size == 5.0  # 2% of 1000 = $20 → hard cap $5.00
 
     def test_reduced_sizing_overrides(self):
         """During losing streak, always $1 flat."""

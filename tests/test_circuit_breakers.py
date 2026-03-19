@@ -84,4 +84,4 @@ class TestBetSizing:
 
     def test_max_enforced(self):
         rm = RiskManager(bankroll=2000.0, max_position_pct=0.01, min_trade_usd=1.0, max_trade_usd=10.0)
-        assert rm.get_bet_size() == 10.0  # 20 > max
+        assert rm.get_bet_size() == 5.0  # hard cap $5.00

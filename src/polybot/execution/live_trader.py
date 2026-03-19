@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 
@@ -58,6 +59,7 @@ class LiveTrader:
             funder=funder,
         )
         self._traded_slugs: set[str] = set()  # fast in-memory dedup
+        self._trade_lock = asyncio.Lock()  # prevent concurrent same-window trades
         self._dynamo = None  # set externally for DynamoDB dedup
 
         logger.info("live_trader_initialized", chain_id=settings.polymarket_chain_id)
@@ -94,31 +96,32 @@ class LiveTrader:
             logger.warning("live_trade_blocked", reason="circuit_breaker")
             return None
 
-        # DEDUP: one trade per window_slug (memory first, then DynamoDB)
-        if signal.window_slug in self._traded_slugs:
-            logger.info("dedup_blocked", slug=signal.window_slug, source="memory")
-            return None
+        # Lock prevents concurrent execution across pairs hitting same window
+        async with self._trade_lock:
+            # DEDUP: one trade per window_slug (memory first, then DynamoDB)
+            if signal.window_slug in self._traded_slugs:
+                logger.info("dedup_blocked", slug=signal.window_slug, source="memory")
+                return None
 
-        # DynamoDB check — survives restarts, authoritative
-        if self._dynamo:
-            try:
-                existing = self._dynamo.get_trades_for_window(signal.window_slug)
-                if existing:
-                    self._traded_slugs.add(signal.window_slug)
-                    logger.info("dedup_blocked", slug=signal.window_slug, source="dynamodb", existing=len(existing))
-                    return None
-            except Exception as e:
-                logger.warning("dedup_dynamo_check_failed", slug=signal.window_slug, error=str(e)[:60])
-                # If DynamoDB check fails, still proceed — memory dedup is the fast guard
+            # DynamoDB check — survives restarts, authoritative
+            if self._dynamo:
+                try:
+                    existing = self._dynamo.get_trades_for_window(signal.window_slug)
+                    if existing:
+                        self._traded_slugs.add(signal.window_slug)
+                        logger.info("dedup_blocked", slug=signal.window_slug, source="dynamodb", existing=len(existing))
+                        return None
+                except Exception as e:
+                    logger.warning("dedup_dynamo_check_failed", slug=signal.window_slug, error=str(e)[:60])
 
-        self._traded_slugs.add(signal.window_slug)
+            self._traded_slugs.add(signal.window_slug)
 
-        # Dynamic Kelly sizing based on model confidence
-        size = self.risk.get_bet_size(lgbm_prob=signal.model_prob)
-        if size <= 0:
-            return None
+            # Dynamic Kelly sizing based on model confidence
+            size = self.risk.get_bet_size(lgbm_prob=signal.model_prob)
+            if size <= 0:
+                return None
 
-        return await self._execute_directional(signal, yes_token_id, no_token_id, size, signal_ms, bedrock_ms)
+            return await self._execute_directional(signal, yes_token_id, no_token_id, size, signal_ms, bedrock_ms)
 
     async def _execute_directional(
         self,
