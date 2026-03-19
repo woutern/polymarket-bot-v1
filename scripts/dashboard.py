@@ -982,26 +982,25 @@ HTML = r"""<!DOCTYPE html>
   .reason-unrealistic_price { background: #343a40; color: #adb5bd; border: 1px solid #495057; }
 
   /* ── Logs ── */
-  .logs-card { background: #1a1b26; border: 1px solid #2a2b3d; border-radius: var(--radius); overflow: hidden; }
+  .logs-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
   .logs-head {
-    padding: 12px 16px; border-bottom: 1px solid #2a2b3d; background: #16172a;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
     display: flex; align-items: center; justify-content: space-between;
   }
-  .logs-head .section-title { color: #a9b1d6; }
-  .logs-head .section-badge { background: #2a2b3d; border-color: #3a3b4d; color: #565f89; }
   #logs {
-    background: #1a1b26; padding: 12px 16px; max-height: 220px; overflow-y: auto;
-    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, monospace;
-    font-size: 11.5px; line-height: 1.9;
+    padding: 10px 14px; max-height: 280px; overflow-y: auto;
+    font-family: 'SF Mono', 'Menlo', ui-monospace, monospace;
+    font-size: 12px; line-height: 1.8;
   }
-  .log-line { white-space: pre-wrap; word-break: break-all; padding-left: 10px; border-left: 2px solid transparent; }
-  .log-line.error  { color: #f7768e; border-left-color: #f7768e; }
-  .log-line.warn   { color: #e0af68; border-left-color: #e0af68; }
-  .log-line.trade  { color: #9ece6a; border-left-color: #9ece6a; background: rgba(158,206,106,.04); }
-  .log-line.signal { color: #bb9af7; border-left-color: #bb9af7; }
-  .log-line.entry  { color: #7aa2f7; border-left-color: #3d59a1; }
-  .log-line.window { color: #565f89; }
-  .log-line.info   { color: #3b4261; }
+  .log-line { white-space: pre-wrap; word-break: break-all; padding: 2px 0 2px 10px; border-left: 3px solid transparent; border-radius: 2px; }
+  .log-line:hover { background: var(--bg-alt); }
+  .log-line.error  { color: #c92a2a; border-left-color: #c92a2a; background: #fff5f5; }
+  .log-line.warn   { color: #e67700; border-left-color: #e67700; background: #fff9db; }
+  .log-line.trade  { color: #2b8a3e; border-left-color: #2b8a3e; background: #ebfbee; }
+  .log-line.signal { color: #7048e8; border-left-color: #7048e8; }
+  .log-line.entry  { color: #1971c2; border-left-color: #1971c2; background: #e7f5ff; }
+  .log-line.window { color: #868e96; }
+  .log-line.info   { color: #495057; }
 
   /* ── Filter bar ── */
   .filter-bar {
@@ -1750,21 +1749,27 @@ function dirTag(d) {
   const up = d === 'YES' || d === 'up' || d === 'UP';
   return '<span class="tag ' + (up ? 'tag-up' : 'tag-down') + '">' + d + '</span>';
 }
+function tradeLink(t) {
+  const slug = dval(t, 'window_slug') || '';
+  if (!slug) return '';
+  return ' <a href="https://polymarket.com/event/' + slug + '" target="_blank" style="text-decoration:none;opacity:0.4;font-size:11px" title="View on Polymarket">&#x1F517;</a>';
+}
 function outcomeTag(t) {
   const src = dval(t, 'outcome_source') || 'coinbase_inferred';
   const correct = t.correct_prediction;
   const resolved = t.resolved || dval(t, 'resolved');
   const pnl = parseFloat(dval(t, 'pnl') || 0);
+  const link = tradeLink(t);
 
-  if (!resolved) return '<span class="tag tag-open">OPEN</span>';
+  if (!resolved) return '<span class="tag tag-open">OPEN</span>' + link;
   if (src === 'polymarket_verified') {
     const won = correct == 1 || correct === true;
-    if (won) return '<span class="outcome-win-pm">&#10003; WIN <span style="font-size:10px;color:var(--text-3)">(PM)</span></span>';
-    return '<span class="outcome-loss-pm">&#10007; LOSS <span style="font-size:10px;color:var(--text-3)">(PM)</span></span>';
+    if (won) return '<span class="outcome-win-pm">&#10003; WIN</span>' + link;
+    return '<span class="outcome-loss-pm">&#10007; LOSS</span>' + link;
   }
   const won = pnl > 0;
-  if (won) return '<span class="outcome-win-cb">&#10003; WIN <span style="font-size:10px">&#9888;</span></span>';
-  return '<span class="outcome-loss-cb">&#10007; LOSS <span style="font-size:10px">&#9888;</span></span>';
+  if (won) return '<span class="outcome-win-cb">&#10003; WIN &#9888;</span>' + link;
+  return '<span class="outcome-loss-cb">&#10007; LOSS &#9888;</span>' + link;
 }
 function reasonBadge(reason) {
   if (!reason) return '&mdash;';
@@ -1952,13 +1957,19 @@ async function refreshOverview() {
           // Shorten S3 paths
           if (typeof val === 'string' && val.includes('s3://')) val = val.split('/').pop();
           if (important.includes(k)) {
-            parts.push('<span style="color:#e0af68">'+k+'</span>=<b>'+val+'</b>');
+            parts.push('<span style="color:#c2255c">'+k+'</span>=<b>'+val+'</b>');
           } else {
-            parts.push('<span style="color:#565f89">'+k+'</span>='+val);
+            parts.push('<span style="color:#868e96">'+k+'</span>='+val);
           }
         }
-        const asset = obj.asset ? ' <span style="color:#7aa2f7">['+obj.asset+']</span>' : '';
-        formatted = '<span style="color:#565f89">'+ts+'</span>'+asset+' <b>'+ev+'</b>  '+parts.join(' ');
+        const asset = obj.asset ? ' <span style="font-weight:600;color:#1971c2">['+obj.asset+']</span>' : '';
+        // Add link icon for trade/resolution events with a slug
+        let link = '';
+        const slug = obj.slug || obj.window_slug || '';
+        if (slug && (ev.includes('order') || ev.includes('trade') || ev.includes('resolution') || ev.includes('executed'))) {
+          link = ' <a href="https://polymarket.com/event/' + slug + '" target="_blank" style="text-decoration:none;opacity:0.5" title="View on Polymarket">&#x1F517;</a>';
+        }
+        formatted = '<span style="color:#868e96">'+ts+'</span>'+asset+' <b>'+ev+'</b>' + link + '  '+parts.join(' ');
       } catch(ex) {}
       logsEl.innerHTML += '<div class="' + cls + '">' + formatted + '</div>';
     }
