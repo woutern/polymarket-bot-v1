@@ -74,7 +74,7 @@ us-east-1 (Data + Models)
 ├── S3 — 3 LightGBM model artifacts
 ├── SSM — model paths + metrics
 ├── Dashboard — Lambda + API Gateway + CloudFront (HTTPS)
-│   ├── 5 pages: Overview, Trade Log, Window Scores, Analytics, KPIs
+│   ├── 5 pages: Overview, Trade Log, Live Logs, Analytics, KPIs
 │   ├── Score breakdown per window (OFI/NoRev/Cross/PM/Vol)
 │   ├── P&L from Polymarket activity API
 │   └── Mobile hamburger menu

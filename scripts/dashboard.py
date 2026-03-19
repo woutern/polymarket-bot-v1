@@ -686,31 +686,6 @@ async def api_balance():
     return result
 
 
-@app.get("/api/fade-news")
-def api_fade_news():
-    """Return fade news scan results from DynamoDB."""
-    try:
-        if not _USE_DYNAMO:
-            return {"markets": [], "count": 0}
-        import boto3 as _b3
-        try:
-            _s = _b3.Session(profile_name="playground", region_name="us-east-1")
-            _s.client("sts").get_caller_identity()
-        except Exception:
-            _s = _b3.Session(region_name="us-east-1")
-        tbl = _s.resource("dynamodb").Table("polymarket-bot-fade-news")
-        resp = tbl.scan(Limit=500)
-        items = resp.get("Items", [])
-        # Paginate if more
-        while resp.get("LastEvaluatedKey") and len(items) < 500:
-            resp = tbl.scan(Limit=500, ExclusiveStartKey=resp["LastEvaluatedKey"])
-            items.extend(resp.get("Items", []))
-        items = _decimal_to_float(items)
-        items.sort(key=lambda x: float(x.get("yes_ask_at_detection", 0)), reverse=True)
-        return {"markets": items, "count": len(items)}
-    except Exception as e:
-        return {"markets": [], "count": 0, "error": str(e)[:100]}
-
 
 # ── HTML dashboard ────────────────────────────────────────────────────────────
 
@@ -1155,7 +1130,6 @@ HTML = r"""<!DOCTYPE html>
     <button class="nav-tab" data-page="signals" onclick="showPage('signals', this)">Live Logs</button>
     <button class="nav-tab" data-page="analytics" onclick="showPage('analytics', this)">Analytics</button>
     <button class="nav-tab" data-page="kpis" onclick="showPage('kpis', this)">KPIs</button>
-    <button class="nav-tab" data-page="fade" onclick="showPage('fade', this)">Fade News</button>
   </div>
   <div class="nav-right">
     <div class="nav-meta">
@@ -1468,70 +1442,6 @@ HTML = r"""<!DOCTYPE html>
 </div>
 </div>
 
-<!-- ======================================================================= -->
-<!-- PAGE 6: FADE NEWS                                                       -->
-<!-- ======================================================================= -->
-<div id="page-fade" class="page-content">
-<div class="page">
-
-  <div class="section-header" style="margin-bottom:16px">
-    <span class="section-title">Fade News Monitor</span>
-    <span class="section-badge" id="fade-badge">Loading...</span>
-  </div>
-
-  <div class="stats-grid" style="margin-bottom:24px">
-    <div class="stat-card">
-      <div class="stat-label">Markets Monitored</div>
-      <div class="stat-value" id="fade-total">—</div>
-      <div class="stat-sub" id="fade-total-sub">Politics/news markets</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Avg YES Ask</div>
-      <div class="stat-value" id="fade-avg-ask">—</div>
-      <div class="stat-sub">Higher = more hype</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Avg NO Cost</div>
-      <div class="stat-value green" id="fade-avg-no">—</div>
-      <div class="stat-sub">Cost to fade</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Strategy</div>
-      <div class="stat-value blue" style="font-size:16px">Monitor Only</div>
-      <div class="stat-sub">Not trading yet</div>
-    </div>
-  </div>
-
-  <div class="panel-card">
-    <div class="panel-head">
-      <span class="section-title">Fade Candidates</span>
-    </div>
-    <div style="overflow-x:auto">
-      <table>
-        <thead><tr>
-          <th>Age</th><th>YES Ask</th><th>NO Cost</th>
-          <th>Payout</th><th>Keyword</th><th>Question</th><th>Status</th>
-        </tr></thead>
-        <tbody id="fade-body">
-          <tr class="empty-row"><td colspan="7">Waiting for data — Lambda scans every 60s</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="panel-card" style="padding:20px;margin-top:16px">
-    <div style="font-weight:600;margin-bottom:8px">How it works</div>
-    <div style="font-size:13px;color:var(--text-2);line-height:1.8">
-      Scans Polymarket every minute for politics/news markets where YES ask is $0.70-$0.95.
-      These are "hype" markets — dramatic headlines that the crowd overprices. Buying NO at $0.05-$0.30
-      gives 3x-20x payoff when the dramatic event doesn't happen (which is most of the time).
-      <br><br>
-      <strong>Status:</strong> Monitoring only — collecting data to validate the strategy before trading.
-      Run <code>uv run python scripts/fade_news_monitor.py --loop</code> for continuous scanning.
-    </div>
-  </div>
-
-</div>
 </div>
 
 <script>
@@ -1596,10 +1506,6 @@ function showPage(name, btn) {
   } else if (name === 'kpis') {
     loadKPIs();
     refreshInterval = setInterval(loadKPIs, 30000);
-    animateBar(30000);
-  } else if (name === 'fade') {
-    loadFadeNews();
-    refreshInterval = setInterval(loadFadeNews, 30000);
     animateBar(30000);
   }
 }
@@ -1681,8 +1587,7 @@ async function loadKPIs() {
   } catch(e) { console.error('kpi error', e); }
 }
 
-// ── Fade News page ───────────────────────────────────────────────────────────
-async function loadFadeNews() {
+async function _DEAD_loadFadeNews() { // removed
   try {
     const resp = await fetch('/api/fade-news');
     const data = await resp.json();
