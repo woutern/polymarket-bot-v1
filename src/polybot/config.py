@@ -22,10 +22,10 @@ class Settings(BaseSettings):
     kelly_fraction: float = 0.25
     min_trade_usd: float = 1.0    # Floor — always bet at least this when there's edge (Polymarket min is $1)
     max_trade_usd: float = 10.0   # Hard cap per trade
-    min_ev_threshold: float = 0.10  # Raised: ev = (prob - price) * (1/price), min 10%
+    min_ev_threshold: float = 0.08  # EV > 8% required — blocks low-confidence entries
     directional_entry_seconds: int = 120  # T-120s — Tier B primary entry
     directional_min_move_pct: float = 0.03  # default; overridden per-asset below
-    max_market_price: float = 0.70  # Tier B: enter before market prices it in
+    max_market_price: float = 0.55  # Only enter when ask is genuinely cheap
     assets: str = "BTC,ETH,SOL"  # Comma-separated asset list
     window_durations: str = "5m,15m"  # Comma-separated window durations
     # Enabled pairs — granular control over which asset×timeframe combos are active.
