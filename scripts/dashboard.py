@@ -628,27 +628,27 @@ def api_pnl_history(_: str = Depends(_require_auth)):
 
 @app.get("/api/balance")
 async def api_balance(_: str = Depends(_require_auth)):
-    """Return wallet USDC balances."""
+    """Return wallet balance computed from deposits + bot P&L.
+
+    Polymarket's data-api /value only returns open position value (not cash).
+    The CLOB balance endpoint requires authenticated signing.
+    So we compute: balance = total_deposited + sum(all bot trade P&L).
+    """
     try:
-        if not _WALLET_ADDRESS:
-            return {"polymarket_value": 0.0, "polygon_usdc": 0.0, "error": "no_address"}
+        # Get bot P&L from DynamoDB trades
+        trades = get_trades(limit=500)
+        mode_trades = [t for t in trades if _extract_field(t, "mode", "live") == _TRADE_MODE]
+        resolved = [t for t in mode_trades if t.get("resolved") or _bool_field(t, "resolved")]
+        bot_pnl = sum(_float_field(t, "pnl") for t in resolved)
 
-        import httpx
+        # Balance = what we deposited + what the bot made/lost
+        portfolio = round(_TOTAL_DEPOSITED + bot_pnl, 2)
 
-        result = {"polygon_usdc": 0.0, "polymarket_value": 0.0, "total_pnl": 0.0, "unclaimed_winnings": 0.0}
-
-        async with httpx.AsyncClient(timeout=10) as client:
-            # On-chain USDC balance (optional — needs polybot module)
-            try:
-                from polybot.market.balance_checker import BalanceChecker
-                checker = BalanceChecker()
-                bal = await checker.check(_WALLET_ADDRESS)
-                result["polygon_usdc"] = bal.get("polygon_usdc", 0.0)
-            except Exception:
-                pass
-
-            # Polymarket portfolio value + P&L (source of truth)
-            try:
+        # Open position value from Polymarket (for display only)
+        position_value = 0.0
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(
                     "https://data-api.polymarket.com/value",
                     params={"user": _WALLET_ADDRESS},
@@ -656,33 +656,21 @@ async def api_balance(_: str = Depends(_require_auth)):
                 if resp.status_code == 200:
                     data = resp.json()
                     if isinstance(data, list) and data:
-                        result["polymarket_value"] = float(data[0].get("value", 0) or 0)
-            except Exception:
-                pass
+                        position_value = float(data[0].get("value", 0) or 0)
+        except Exception:
+            pass
 
-            # P&L = portfolio - total deposited (matches Polymarket UI)
-            portfolio = result["polygon_usdc"] + result["polymarket_value"]
-            result["total_pnl"] = round(portfolio - _TOTAL_DEPOSITED, 2)
-            result["portfolio"] = round(portfolio, 2)
+        cash = round(portfolio - position_value, 2)
 
-            # Unclaimed winnings from positions
-            try:
-                resp = await client.get(
-                    "https://data-api.polymarket.com/positions",
-                    params={"user": _WALLET_ADDRESS, "sizeThreshold": "0.01"},
-                )
-                if resp.status_code == 200:
-                    positions = resp.json()
-                    result["unclaimed_winnings"] = round(sum(
-                        p.get("currentValue", 0) for p in positions
-                        if isinstance(p, dict) and p.get("currentValue", 0) > 0.5
-                    ), 2)
-            except Exception:
-                pass
-
-        return result
+        return {
+            "polygon_usdc": cash,
+            "polymarket_value": position_value,
+            "portfolio": portfolio,
+            "total_pnl": round(bot_pnl, 2),
+            "unclaimed_winnings": 0,
+        }
     except Exception as e:
-        return {"polymarket_value": 0.0, "polygon_usdc": 0.0, "error": str(e)}
+        return {"polygon_usdc": 0.0, "polymarket_value": 0.0, "portfolio": 0.0, "error": str(e)}
 
 
 # ── HTML dashboard ────────────────────────────────────────────────────────────
