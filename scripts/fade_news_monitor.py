@@ -99,7 +99,23 @@ def scan_once() -> list[dict]:
     all_markets = []
 
     with httpx.Client(timeout=15) as client:
-        # Fetch markets — paginate to get more
+        # Source 1: NEWEST markets first (catches fresh hype)
+        try:
+            resp = client.get(
+                f"{GAMMA_URL}/markets",
+                params={"active": "true", "closed": "false", "limit": 100,
+                        "order": "startDate", "ascending": "false"},
+            )
+            resp.raise_for_status()
+            for m in resp.json():
+                cid = m.get("conditionId", "")
+                if cid and cid not in seen:
+                    seen[cid] = True
+                    all_markets.append(m)
+        except Exception:
+            pass
+
+        # Source 2: highest volume (established markets)
         for offset in range(0, 500, 100):
             try:
                 resp = client.get(
@@ -215,6 +231,20 @@ def scan_once() -> list[dict]:
             in_fade_zone = MIN_YES_ASK <= yes_ask <= MAX_YES_ASK
             volume = float(m.get("volume", 0) or 0)
 
+            # Compute market age
+            age_hours = 0.0
+            start_str = m.get("startDate") or m.get("createdAt") or ""
+            if start_str:
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+                    if "T" in str(start_str):
+                        market_ts = _dt.fromisoformat(start_str.replace("Z", "+00:00")).timestamp()
+                    else:
+                        market_ts = float(start_str)
+                    age_hours = (time.time() - market_ts) / 3600
+                except Exception:
+                    pass
+
             results.append({
                 "in_fade_zone": in_fade_zone,
                 "condition_id": condition_id,
@@ -227,6 +257,8 @@ def scan_once() -> list[dict]:
                 "yes_token_id": token_ids[0],
                 "volume": volume,
                 "end_date": end_date,
+                "start_date": start_str,
+                "age_hours": round(age_hours, 1),
                 "scanned_at": time.time(),
             })
             time.sleep(0.15)
@@ -238,14 +270,16 @@ def scan_once() -> list[dict]:
     fade_results = [r for r in results if r.get("in_fade_zone")]
     print(f"\n[{now}] Scanned {checked} politics/news, {len(results)} tracked, {len(fade_results)} in fade zone")
     if results:
-        sep = "─" * 100
-        print(f"{'YES':>6} {'NO':>6} {'ZONE':>5} {'VOL':>8} {'KEYWORD':<17} QUESTION")
+        sep = "─" * 105
+        print(f"{'YES':>6} {'NO':>6} {'AGE':>6} {'ZONE':>5} {'VOL':>8} {'KEYWORD':<15} QUESTION")
         print(sep)
         for r in results:
-            q = r["question"][:50]
+            q = r["question"][:48]
             vol = f"${r['volume']/1000:.0f}K" if r["volume"] >= 1000 else f"${r['volume']:.0f}"
             zone = " <<<" if r.get("in_fade_zone") else ""
-            print(f"${r['yes_ask']:.2f}  ${r['no_ask']:.2f} {zone:>5} {vol:>8} {r['keyword']:<17} {q}")
+            age = r.get("age_hours", 0)
+            age_str = f"{age:.0f}h" if age >= 1 else f"{age*60:.0f}m"
+            print(f"${r['yes_ask']:.2f}  ${r['no_ask']:.2f} {age_str:>5} {zone:>5} {vol:>8} {r['keyword']:<15} {q}")
         print(sep)
     else:
         print("  No politics/news markets found.")
@@ -277,6 +311,8 @@ def save_to_dynamo(results: list[dict], table):
                     "volume": Decimal(str(round(r["volume"], 2))),
                     "end_date": r["end_date"],
                     "in_fade_zone": r.get("in_fade_zone", False),
+                    "age_hours_at_detection": Decimal(str(r.get("age_hours", 0))),
+                    "start_date": r.get("start_date", ""),
                     "resolved": False,
                     "outcome": None,
                     "resolved_at": None,

@@ -1509,7 +1509,7 @@ HTML = r"""<!DOCTYPE html>
     <div style="overflow-x:auto">
       <table>
         <thead><tr>
-          <th>Detected</th><th>YES Ask</th><th>NO Cost</th>
+          <th>Age</th><th>YES Ask</th><th>NO Cost</th>
           <th>Payout</th><th>Keyword</th><th>Question</th><th>Status</th>
         </tr></thead>
         <tbody id="fade-body">
@@ -1713,7 +1713,9 @@ async function loadFadeNews() {
       return;
     }
     for (const m of markets) {
-      const detected = m.detected_at ? new Date(m.detected_at * 1000).toLocaleString('en-GB', {timeZone:'Europe/Amsterdam', hour12:false, month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '—';
+      const ageH = m.age_hours_at_detection || 0;
+      const ageStr = ageH >= 24 ? Math.round(ageH/24) + 'd' : ageH >= 1 ? Math.round(ageH) + 'h' : Math.round(ageH*60) + 'm';
+      const isNew = ageH < 2;
       const yesAsk = m.yes_ask_latest || m.yes_ask_at_detection || 0;
       const noAsk = m.no_ask_at_detection || 0;
       const payout = noAsk > 0 ? ((1 / noAsk - 1) * 100).toFixed(0) + '%' : '—';
@@ -1734,7 +1736,7 @@ async function loadFadeNews() {
         status = '<span style="color:var(--text-3)">monitoring</span>';
       }
       tbody.innerHTML += '<tr style="' + rowStyle + '">' +
-        '<td style="white-space:nowrap;font-size:12px;color:var(--text-3)">' + detected + '</td>' +
+        '<td style="white-space:nowrap;font-weight:' + (isNew ? '700' : '400') + ';color:' + (isNew ? 'var(--green)' : 'var(--text-3)') + '">' + ageStr + (isNew ? ' NEW' : '') + '</td>' +
         '<td style="font-weight:700;color:var(--red)">$' + yesAsk.toFixed(2) + '</td>' +
         '<td style="font-weight:700;color:var(--green)">$' + noAsk.toFixed(2) + '</td>' +
         '<td style="color:var(--blue);font-weight:600">' + payout + '</td>' +
