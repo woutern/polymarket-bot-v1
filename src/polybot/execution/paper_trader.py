@@ -50,8 +50,8 @@ class PaperTrader:
             )
             return None
 
-        # Position size: 1% of bankroll with circuit breaker override
-        size = self.risk.get_bet_size()
+        # Dynamic Kelly sizing based on model confidence
+        size = self.risk.get_bet_size(lgbm_prob=signal.model_prob)
         if size <= 0:
             return None
 

@@ -69,15 +69,27 @@ class RiskManager:
             return False
         return True
 
-    def get_bet_size(self) -> float:
-        """Compute current bet size based on bankroll and risk state.
+    def get_bet_size(self, lgbm_prob: float = 0.5) -> float:
+        """Dynamic Kelly sizing based on LightGBM confidence.
 
-        Returns 1% of bankroll, bounded by min/max, reduced to $1 if losing streak.
+        lgbm_prob < 0.60: 0.5% of wallet
+        lgbm_prob 0.60-0.70: 1.0% of wallet
+        lgbm_prob 0.70-0.80: 1.5% of wallet
+        lgbm_prob > 0.80: 2.0% of wallet
         """
         if self._reduced_sizing:
             return self.min_trade_usd  # $1 flat during losing streak
 
-        base = round(self.bankroll * self.max_position_pct, 2)
+        if lgbm_prob >= 0.80:
+            pct = 0.02
+        elif lgbm_prob >= 0.70:
+            pct = 0.015
+        elif lgbm_prob >= 0.60:
+            pct = 0.01
+        else:
+            pct = 0.005
+
+        base = round(self.bankroll * pct, 2)
         return max(self.min_trade_usd, min(self.max_trade_usd, base))
 
     def max_position_size(self) -> float:
