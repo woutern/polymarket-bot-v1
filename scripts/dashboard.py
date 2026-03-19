@@ -144,6 +144,8 @@ def _dynamo_scan_all(table, limit=500):
 def get_trades(limit=100, asset=None, tf=None):
     if _USE_DYNAMO:
         items = _dynamo_scan_all(_trades_table, limit=max(limit, 500))
+        # Filter out dedup claim records (id starts with "claim_")
+        items = [t for t in items if not str(t.get("id", "")).startswith("claim_")]
         items.sort(key=lambda x: float(x.get("timestamp", 0)), reverse=True)
         if asset:
             items = [t for t in items if _extract_field(t, "asset", "").upper() == asset.upper()]
@@ -1222,20 +1224,7 @@ HTML = r"""<!DOCTYPE html>
         </table>
       </div>
     </div>
-    <div class="panel-card">
-      <div class="panel-head">
-        <span class="section-title">Recent Signals</span>
-        <span class="section-badge" id="signal-count-overview"></span>
-      </div>
-      <div class="scroll-wrap">
-        <table>
-          <thead><tr>
-            <th>Time</th><th>Asset</th><th>Dir</th><th>Move%</th><th>EV</th><th>Status</th>
-          </tr></thead>
-          <tbody id="signals-overview-body"></tbody>
-        </table>
-      </div>
-    </div>
+    <!-- Signals section removed — use dedicated Signals page -->
   </div>
 
   <!-- Live logs -->
@@ -1530,6 +1519,13 @@ HTML = r"""<!DOCTYPE html>
 </div>
 
 <script>
+// Override fetch to always include Basic Auth credentials (required after Lambda migration)
+const _origFetch = window.fetch;
+window.fetch = function(url, opts = {}) {
+  opts.credentials = opts.credentials || 'same-origin';
+  return _origFetch(url, opts);
+};
+
 // ── State ─────────────────────────────────────────────────────────────────────
 let currentPage = 'overview';
 let pnlChart = null;
@@ -1921,32 +1917,6 @@ async function refreshOverview() {
           '<td>$' + parseFloat(dval(t,'size_usd')||0).toFixed(2) + '</td>' +
           '<td>' + fmtPnl(pnlv) + '</td>' +
           '<td>' + outcomeTag(t) + '</td>' +
-          '</tr>';
-      }
-    }
-
-    // Recent signals panel
-    const sigBody = document.getElementById('signals-overview-body');
-    sigBody.innerHTML = '';
-    const recentSignals = data.recent_signals || [];
-    document.getElementById('signal-count-overview').textContent = recentSignals.length + ' signals';
-    if (recentSignals.length === 0) {
-      sigBody.innerHTML = '<tr class="empty-row"><td colspan="6">No signal evaluations yet...</td></tr>';
-    } else {
-      for (const s of recentSignals) {
-        const outcome = s.outcome || '';
-        const isExecuted = outcome === 'executed';
-        const rowCls = isExecuted ? 'signal-executed' : 'signal-rejected';
-        const statusHtml = isExecuted
-          ? '<span class="tag tag-up">FIRED</span>'
-          : '<span class="tag tag-warn">' + (s.rejection_reason || 'rejected') + '</span>';
-        sigBody.innerHTML += '<tr class="' + rowCls + '">' +
-          '<td>' + fmtTs(s.timestamp) + '</td>' +
-          '<td>' + assetTag(s.asset) + '</td>' +
-          '<td>' + dirTag(s.direction) + '</td>' +
-          '<td>' + fmtPct(s.pct_move) + '</td>' +
-          '<td>' + fmtProb(s.ev) + '</td>' +
-          '<td>' + statusHtml + '</td>' +
           '</tr>';
       }
     }
