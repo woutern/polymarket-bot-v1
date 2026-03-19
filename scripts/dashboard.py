@@ -1207,24 +1207,21 @@ HTML = r"""<!DOCTYPE html>
     <div id="pnl-chart-wrap"><canvas id="pnl-chart"></canvas></div>
   </div>
 
-  <!-- Trades + Signals tables -->
-  <div class="panels-grid">
-    <div class="panel-card">
-      <div class="panel-head">
-        <span class="section-title">Recent Trades</span>
-        <span class="section-badge" id="trade-count"></span>
-      </div>
-      <div class="scroll-wrap">
-        <table>
-          <thead><tr>
-            <th>Time</th><th>Asset</th><th>Side</th>
-            <th>Price</th><th>Size</th><th>P&amp;L</th><th>Outcome</th>
-          </tr></thead>
-          <tbody id="trades-body"></tbody>
-        </table>
-      </div>
+  <!-- Recent Trades (full width) -->
+  <div class="panel-card">
+    <div class="panel-head">
+      <span class="section-title">Recent Trades</span>
+      <span class="section-badge" id="trade-count"></span>
     </div>
-    <!-- Signals section removed — use dedicated Signals page -->
+    <div class="scroll-wrap">
+      <table>
+        <thead><tr>
+          <th>Time</th><th>Asset</th><th>Side</th>
+          <th>Price</th><th>Size</th><th>P&amp;L</th><th>Outcome</th>
+        </tr></thead>
+        <tbody id="trades-body"></tbody>
+      </table>
+    </div>
   </div>
 
   <!-- Live logs -->
