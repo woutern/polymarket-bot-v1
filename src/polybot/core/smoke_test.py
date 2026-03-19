@@ -156,7 +156,28 @@ async def run_smoke_tests(settings) -> SmokeTestResult:
     else:
         result.ok("max_trade_usd")
 
-    # 9. Mode sanity check
+    # 9. Model age check
+    try:
+        profile = "playground" if not os.getenv("AWS_EXECUTION_ENV") else None
+        import boto3 as _b3
+        _ssm = _b3.Session(profile_name=profile, region_name="us-east-1").client("ssm")
+        import time as _t
+        for _pair in ["BTC_5m", "ETH_5m", "SOL_5m"]:
+            try:
+                _resp = _ssm.get_parameter(Name=f"/polymarket/models/{_pair}/trained_at")
+                _trained_at = float(_resp["Parameter"]["Value"])
+                _age_h = (_t.time() - _trained_at) / 3600
+                if _age_h > 24:
+                    result.warn(f"model_age_{_pair}", f"Model is {_age_h:.0f}h old (>24h)")
+                else:
+                    result.ok(f"model_age_{_pair}")
+                logger.info("model_health_check", pair=_pair, age_hours=round(_age_h, 1))
+            except Exception:
+                result.warn(f"model_age_{_pair}", "Could not check model age")
+    except Exception:
+        result.warn("model_health", "Could not check model ages")
+
+    # 10. Mode sanity check
     if settings.mode in ("paper", "live"):
         result.ok(f"mode_{settings.mode}")
     else:
