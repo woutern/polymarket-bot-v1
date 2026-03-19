@@ -1,0 +1,61 @@
+
+=== POLYMARKET FADE NEWS SCAN ===
+Scanned at: 2026-03-19 16:36:04 UTC
+Total markets checked: 52
+Markets with Yes ask >= 0.90: 52
+────────────────────────────────────────────────────────────────────────────────
+Yes Ask  │ No Ask  │ Question
+────────────────────────────────────────────────────────────────────────────────
+$1.00    │ $1.00   │ Total Kills Over/Under 17.5 in Game 1?
+$1.00    │ $1.00   │ Total Kills Over/Under 13.5 in Game 1?
+$1.00    │ $1.00   │ Total Kills Over/Under 14.5 in Game 1?
+$0.99    │ $0.99   │ Map 1: Odd/Even Total Kills?
+$0.99    │ $0.99   │ Map 2: Odd/Even Total Kills?
+$0.99    │ $0.99   │ Map 1: Odd/Even Total Rounds?
+$0.99    │ $0.99   │ Jose Antonio Morante: Anytime Goalscorer
+$0.99    │ $0.99   │ Map 3: Odd/Even Total Rounds?
+$0.99    │ $0.99   │ Total Kills Over/Under 23.5 in Game 2?
+$0.99    │ $0.99   │ Counter-Strike: NIP vs Liquid (BO3) - BLAST Open Rotterdam Group B
+$0.99    │ $0.99   │ Map Handicap: TS (-1.5) vs PARIVISION (+1.5)
+$0.99    │ $0.99   │ Counter-Strike: PARIVISION vs Spirit - Map 2 Winner
+$0.99    │ $0.99   │ Map 2: Odd/Even Total Kills?
+$0.99    │ $0.99   │ Map 2: Odd/Even Total Rounds?
+$0.99    │ $0.99   │ Games Total: O/U 2.5
+$0.99    │ $0.99   │ Map 3: Odd/Even Total Kills?
+$0.99    │ $0.99   │ TCU Horned Frogs vs. Ohio State Buckeyes: O/U 141.5
+$0.99    │ $0.99   │ Valorant: JD Gaming vs Bilibili Gaming (BO3) - China Evolution Series 
+$0.99    │ $0.99   │ Valorant: JD Gaming vs Bilibili Gaming - Map 2 Winner
+$0.99    │ $0.99   │ Map 2: Odd/Even Total Rounds?
+$0.99    │ $0.99   │ Counter-Strike: NIP vs Liquid - Map 1 Winner
+$0.99    │ $0.99   │ Games Total: O/U 2.5
+$0.99    │ $0.99   │ Counter-Strike: NIP vs Liquid - Map 2 Winner
+$0.99    │ $0.99   │ Map 3: Odd/Even Total Rounds?
+$0.99    │ $0.99   │ Map 1: Odd/Even Total Kills?
+$0.99    │ $0.99   │ Map Handicap: NIP (-1.5) vs Liquid (+1.5)
+$0.99    │ $0.99   │ Map 3: Odd/Even Total Kills?
+$0.99    │ $0.99   │ Map 1: Odd/Even Total Rounds?
+$0.99    │ $0.99   │ Counter-Strike: PARIVISION vs Spirit (BO3) - BLAST Open Rotterdam Grou
+$0.99    │ $0.99   │ Games Total: O/U 2.5
+$0.99    │ $0.99   │ Map Handicap: BLG (-1.5) vs JD Gaming (+1.5)
+$0.99    │ $0.99   │ Valorant: JD Gaming vs Bilibili Gaming - Map 1 Winner
+$0.99    │ $0.99   │ Counter-Strike: PARIVISION vs Spirit - Map 1 Winner
+$0.99    │ $0.99   │ Spread: TCU Horned Frogs (-1.5)
+$0.99    │ $0.99   │ TCU Horned Frogs vs. Ohio State Buckeyes: O/U 144.5
+$0.99    │ $0.99   │ TCU Horned Frogs vs. Ohio State Buckeyes: O/U 150.5
+$0.99    │ $0.00   │ Legends Cricket League: Loser of Qualifier vs Winner of Eliminator - T
+$0.99    │ $0.00   │ Legends Cricket League: Loser of Qualifier vs Winner of Eliminator - T
+$0.99    │ $0.00   │ Legends Cricket League: Loser of Qualifier vs Winner of Eliminator - T
+$0.99    │ $0.99   │ Legends Cricket League: Loser of Qualifier vs Winner of Eliminator - T
+$0.99    │ $0.99   │ Legends Cricket League: Loser of Qualifier vs Winner of Eliminator - T
+$0.99    │ $0.99   │ Legends Cricket League: Loser of Qualifier vs Winner of Eliminator - T
+$0.99    │ $0.00   │ T20 International Diamond Premier League: Hong Kong (Idpl) vs India (I
+$0.99    │ $0.00   │ T20 International Diamond Premier League: Hong Kong (Idpl) vs India (I
+$0.99    │ $0.99   │ Will MSC Industrial Direct (MSM) beat quarterly earnings?
+$0.99    │ $0.00   │ T20 International Diamond Premier League: Hong Kong (Idpl) vs India (I
+$0.99    │ $0.00   │ T20 Nigeria Invitational Tournament, Women: Rwanda vs Zimbabwe - Most 
+$0.99    │ $0.00   │ T20 Nigeria Invitational Tournament, Women: Rwanda vs Zimbabwe - Most 
+$0.99    │ $0.99   │ Total Kills Over/Under 15.5 in Game 1?
+$0.99    │ $0.00   │ T20 Nigeria Invitational Tournament, Women: Rwanda vs Zimbabwe - Most 
+$0.99    │ $0.99   │ Will Conagra Brands (CAG) beat quarterly earnings?
+$0.99    │ $0.99   │ Kris Dunn: Assists O/U 5.5
+────────────────────────────────────────────────────────────────────────────────
