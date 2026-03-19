@@ -90,7 +90,8 @@ class RiskManager:
             pct = 0.005
 
         base = round(self.bankroll * pct, 2)
-        return max(self.min_trade_usd, min(self.max_trade_usd, base))
+        # Hard floor $1.00 (Polymarket minimum), hard cap $10.00
+        return max(1.00, min(10.00, base))
 
     def max_position_size(self) -> float:
         return self.bankroll * self.max_position_pct
