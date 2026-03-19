@@ -99,38 +99,46 @@ def scan_once() -> list[dict]:
     all_markets = []
 
     with httpx.Client(timeout=15) as client:
-        # Fetch from markets endpoint (by volume)
-        try:
-            resp = client.get(
-                f"{GAMMA_URL}/markets",
-                params={"active": "true", "closed": "false", "limit": 200,
-                        "order": "volume24hr", "ascending": "false"},
-            )
-            resp.raise_for_status()
-            for m in resp.json():
-                cid = m.get("conditionId", "")
-                if cid and cid not in seen:
-                    seen[cid] = True
-                    all_markets.append(m)
-        except Exception as e:
-            print(f"Markets fetch failed: {e}")
-
-        # Fetch from events endpoint
-        try:
-            resp = client.get(
-                f"{GAMMA_URL}/events",
-                params={"active": "true", "limit": 100,
-                        "order": "startDate", "ascending": "false"},
-            )
-            resp.raise_for_status()
-            for event in resp.json():
-                for m in event.get("markets", []):
+        # Fetch markets — paginate to get more
+        for offset in range(0, 500, 100):
+            try:
+                resp = client.get(
+                    f"{GAMMA_URL}/markets",
+                    params={"active": "true", "closed": "false", "limit": 100,
+                            "offset": offset, "order": "volume24hr", "ascending": "false"},
+                )
+                resp.raise_for_status()
+                batch = resp.json()
+                if not batch:
+                    break
+                for m in batch:
                     cid = m.get("conditionId", "")
                     if cid and cid not in seen:
                         seen[cid] = True
                         all_markets.append(m)
-        except Exception as e:
-            print(f"Events fetch failed: {e}")
+            except Exception:
+                break
+
+        # Fetch events — paginate
+        for offset in range(0, 300, 100):
+            try:
+                resp = client.get(
+                    f"{GAMMA_URL}/events",
+                    params={"active": "true", "limit": 100, "offset": offset,
+                            "order": "startDate", "ascending": "false"},
+                )
+                resp.raise_for_status()
+                batch = resp.json()
+                if not batch:
+                    break
+                for event in batch:
+                    for m in event.get("markets", []):
+                        cid = m.get("conditionId", "")
+                        if cid and cid not in seen:
+                            seen[cid] = True
+                            all_markets.append(m)
+            except Exception:
+                break
 
     results = []
     checked = 0

@@ -1734,7 +1734,7 @@ async function loadFadeNews() {
         '<td style="font-weight:700;color:var(--green)">$' + noAsk.toFixed(2) + '</td>' +
         '<td style="color:var(--blue);font-weight:600">' + payout + '</td>' +
         '<td><span class="tag" style="background:var(--blue-bg);color:var(--blue);border:1px solid var(--blue-bd)">' + (m.keyword||'') + '</span></td>' +
-        '<td>' + q + '</td>' +
+        '<td>' + q + ' <a href="https://polymarket.com/event/' + (m.slug||'') + '" target="_blank" style="opacity:0.4;text-decoration:none;font-size:11px">&#x1F517;</a></td>' +
         '<td>' + status + '</td>' +
         '</tr>';
     }
