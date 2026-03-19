@@ -699,9 +699,14 @@ def api_fade_news():
         except Exception:
             _s = _b3.Session(region_name="us-east-1")
         tbl = _s.resource("dynamodb").Table("polymarket-bot-fade-news")
-        resp = tbl.scan(Limit=100)
-        items = _decimal_to_float(resp.get("Items", []))
-        items.sort(key=lambda x: float(x.get("scanned_at", 0)), reverse=True)
+        resp = tbl.scan(Limit=500)
+        items = resp.get("Items", [])
+        # Paginate if more
+        while resp.get("LastEvaluatedKey") and len(items) < 500:
+            resp = tbl.scan(Limit=500, ExclusiveStartKey=resp["LastEvaluatedKey"])
+            items.extend(resp.get("Items", []))
+        items = _decimal_to_float(items)
+        items.sort(key=lambda x: float(x.get("yes_ask_at_detection", 0)), reverse=True)
         return {"markets": items, "count": len(items)}
     except Exception as e:
         return {"markets": [], "count": 0, "error": str(e)[:100]}
@@ -1734,7 +1739,7 @@ async function loadFadeNews() {
         '<td style="font-weight:700;color:var(--green)">$' + noAsk.toFixed(2) + '</td>' +
         '<td style="color:var(--blue);font-weight:600">' + payout + '</td>' +
         '<td><span class="tag" style="background:var(--blue-bg);color:var(--blue);border:1px solid var(--blue-bd)">' + (m.keyword||'') + '</span></td>' +
-        '<td>' + q + ' <a href="https://polymarket.com/event/' + (m.slug||'') + '" target="_blank" style="opacity:0.4;text-decoration:none;font-size:11px">&#x1F517;</a></td>' +
+        '<td>' + q + ' <a href="https://polymarket.com/market/' + (m.slug||'') + '" target="_blank" style="opacity:0.4;text-decoration:none;font-size:11px">&#x1F517;</a></td>' +
         '<td>' + status + '</td>' +
         '</tr>';
     }
@@ -1866,7 +1871,7 @@ function dirTag(d) {
 function tradeLink(t) {
   const slug = dval(t, 'window_slug') || '';
   if (!slug) return '';
-  return ' <a href="https://polymarket.com/event/' + slug + '" target="_blank" style="text-decoration:none;opacity:0.4;font-size:11px" title="View on Polymarket">&#x1F517;</a>';
+  return ' <a href="https://polymarket.com/market/' + slug + '" target="_blank" style="text-decoration:none;opacity:0.4;font-size:11px" title="View on Polymarket">&#x1F517;</a>';
 }
 function outcomeTag(t) {
   const src = dval(t, 'outcome_source') || 'coinbase_inferred';
@@ -2101,7 +2106,7 @@ async function loadSignalsPage() {
         let link = '';
         const slug = obj.slug || obj.window_slug || '';
         if (slug && (ev.includes('order') || ev.includes('trade') || ev.includes('resolution') || ev.includes('score_entry') || ev.includes('score_override')))
-          link = ' <a href="https://polymarket.com/event/' + slug + '" target="_blank" style="text-decoration:none;opacity:0.4" title="View on Polymarket">&#x1F517;</a>';
+          link = ' <a href="https://polymarket.com/market/' + slug + '" target="_blank" style="text-decoration:none;opacity:0.4" title="View on Polymarket">&#x1F517;</a>';
         formatted = '<span style="color:#868e96">'+ts+'</span>'+asset+' <b>'+ev+'</b>'+link+'  '+parts.join(' ');
       } catch(ex) {}
       el.innerHTML += '<div class="' + cls + '">' + formatted + '</div>';
