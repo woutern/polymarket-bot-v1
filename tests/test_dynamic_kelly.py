@@ -11,22 +11,22 @@ class TestDynamicKelly:
         assert size == 1.0  # 0.5% of 200 = $1.00
 
     def test_medium_confidence_one_percent(self):
-        """lgbm_prob 0.60-0.70 → 1.0% of wallet."""
-        rm = RiskManager(bankroll=200.0, min_trade_usd=1.0, max_trade_usd=10.0)
+        """lgbm_prob 0.60-0.70 → 1.0% of wallet, capped at $1.50."""
+        rm = RiskManager(bankroll=200.0, min_trade_usd=1.0, max_trade_usd=1.50)
         size = rm.get_bet_size(lgbm_prob=0.65)
-        assert size == 2.0  # 1% of 200
+        assert size == 1.50  # 1% of 200 = $2 → capped at $1.50
 
     def test_high_confidence_one_point_five(self):
-        """lgbm_prob 0.70-0.80 → 1.5% of wallet, capped at $2.50."""
-        rm = RiskManager(bankroll=200.0, min_trade_usd=1.0, max_trade_usd=2.50)
+        """lgbm_prob 0.70-0.80 → 1.5% of wallet, capped at $1.50."""
+        rm = RiskManager(bankroll=200.0, min_trade_usd=1.0, max_trade_usd=1.50)
         size = rm.get_bet_size(lgbm_prob=0.75)
-        assert size == 2.50  # 1.5% of 200 = $3 → capped at $2.50
+        assert size == 1.50  # 1.5% of 200 = $3 → capped at $1.50
 
     def test_very_high_confidence_two_percent(self):
-        """lgbm_prob > 0.80 → 2.0% of wallet, capped at $2.50."""
-        rm = RiskManager(bankroll=200.0, min_trade_usd=1.0, max_trade_usd=2.50)
+        """lgbm_prob > 0.80 → 2.0% of wallet, capped at $1.50."""
+        rm = RiskManager(bankroll=200.0, min_trade_usd=1.0, max_trade_usd=1.50)
         size = rm.get_bet_size(lgbm_prob=0.85)
-        assert size == 2.50  # 2% of 200 = $4 → capped at $2.50
+        assert size == 1.50  # 2% of 200 = $4 → capped at $1.50
 
     def test_min_enforced(self):
         """Small bankroll → min $1.00."""
@@ -35,10 +35,10 @@ class TestDynamicKelly:
         assert size == 1.0  # 0.5% of 50 = $0.25 → min $1.00
 
     def test_max_enforced(self):
-        """Large bankroll → max $2.50."""
-        rm = RiskManager(bankroll=1000.0, min_trade_usd=1.0, max_trade_usd=2.50)
+        """Large bankroll → max $1.50."""
+        rm = RiskManager(bankroll=1000.0, min_trade_usd=1.0, max_trade_usd=1.50)
         size = rm.get_bet_size(lgbm_prob=0.85)
-        assert size == 2.50  # 2% of 1000 = $20 → hard cap $2.50
+        assert size == 1.50  # 2% of 1000 = $20 → hard cap $1.50
 
     def test_reduced_sizing_overrides(self):
         """During losing streak, always $1 flat."""

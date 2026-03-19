@@ -73,6 +73,15 @@ class AssetState:
     window_high: float = 0.0  # track high/low within first 15s for body_ratio
     window_low: float = float("inf")
     window_open_price_at_5s: float | None = None  # BTC price at T+5s for cross-asset lead
+    # Scored entry tracking
+    price_at_2s: float | None = None
+    price_at_8s: float | None = None
+    ofi_at_2s: float | None = None
+    ofi_at_8s: float | None = None
+    ask_at_open: float | None = None
+    window_tick_count: int = 0
+    prior_window_tick_counts: deque = field(default_factory=lambda: deque(maxlen=5))
+    score_evaluated: bool = False
 
 
 # ── Binance long/short ratio bias (free, no API key) ─────────────────────────
@@ -399,19 +408,34 @@ class TradingLoop:
         ):
             await self._try_tier_a_entry(state, price, window, oracle, remaining)
 
-        # Capture BTC price at T+5s for cross-asset lead signal
+        # Scored entry: capture data at T+2s and T+8s, evaluate at T+12s
         seconds_since_open = time.time() - window.open_ts
+        state.window_tick_count += 1
+
+        if state.price_at_2s is None and seconds_since_open >= 2.0:
+            state.price_at_2s = price
+            state.ofi_at_2s = self.coinbase.get_ofi_30s(state.asset) if hasattr(self.coinbase, 'get_ofi_30s') else 0.0
+            await self._refresh_orderbook(state)
+            pct_move = state.tracker.pct_move(price) or 0.0
+            state.ask_at_open = state.orderbook.yes_best_ask if pct_move >= 0 else state.orderbook.no_best_ask
+
         if state.window_open_price_at_5s is None and seconds_since_open >= 5.0:
             state.window_open_price_at_5s = self.coinbase.get_price(state.asset)
 
-        # Tier B (PRIMARY): Enter T+2s to T+15s with multi-filter validation
+        if state.price_at_8s is None and seconds_since_open >= 8.0:
+            state.price_at_8s = price
+            state.ofi_at_8s = self.coinbase.get_ofi_30s(state.asset) if hasattr(self.coinbase, 'get_ofi_30s') else 0.0
+
+        # At T+12s: compute score and decide entry (replaces old _on_entry_zone)
         if (
-            2.0 <= seconds_since_open <= 15.0
+            seconds_since_open >= 12.0
+            and not state.score_evaluated
             and not state.traded_this_window
             and window.open_price
             and window.open_price > 0
         ):
-            await self._on_entry_zone(state, price)
+            state.score_evaluated = True
+            await self._evaluate_scored_entry(state, price)
 
         state.prev_open_ts = current_open_ts
 
@@ -523,7 +547,16 @@ class TradingLoop:
         state.traded_this_window = False
         state.window_high = price
         state.window_low = price
-        state.window_open_price_at_5s = None  # reset, will be set at T+5s
+        state.window_open_price_at_5s = None
+        # Reset scored entry fields
+        state.prior_window_tick_counts.append(state.window_tick_count)
+        state.window_tick_count = 0
+        state.price_at_2s = None
+        state.price_at_8s = None
+        state.ofi_at_2s = None
+        state.ofi_at_8s = None
+        state.ask_at_open = None
+        state.score_evaluated = False
         logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
         state.bayesian.reset(price, 0.5)
 
@@ -756,6 +789,202 @@ class TradingLoop:
             state.traded_this_window = True
         elif signal and not orderbook_fresh:
             logger.warning("signal_skipped_stale_orderbook", asset=state.asset, age=round(time.time() - state.orderbook_age, 1))
+
+    async def _evaluate_scored_entry(self, state: AssetState, price: float):
+        """Scored confirmation entry — replaces old single-trigger entry zone."""
+        from polybot.strategy.scorer import compute_score
+
+        window = state.tracker.current
+        if not window:
+            return
+
+        pct_move = state.tracker.pct_move(price) or 0.0
+        remaining = window.seconds_remaining()
+
+        # BTC cross-asset signal
+        btc_move = 0.0
+        if state.asset != "BTC":
+            btc_state = self.asset_states.get("BTC_5m")
+            if btc_state and btc_state.tracker.current and btc_state.tracker.current.open_price:
+                btc_price = self.coinbase.get_price("BTC")
+                btc_open = btc_state.tracker.current.open_price
+                if btc_open > 0:
+                    btc_move = (btc_price - btc_open) / btc_open * 100
+
+        await self._refresh_orderbook(state)
+        current_ask = state.orderbook.yes_best_ask if pct_move >= 0 else state.orderbook.no_best_ask
+
+        score = compute_score(
+            ofi_at_2s=state.ofi_at_2s or 0,
+            ofi_at_8s=state.ofi_at_8s or 0,
+            price_at_2s=state.price_at_2s or price,
+            price_at_8s=state.price_at_8s or price,
+            open_price=window.open_price,
+            btc_move_pct=btc_move,
+            asset=state.asset,
+            ask_at_open=state.ask_at_open or current_ask,
+            ask_now=current_ask,
+            window_volume=state.window_tick_count,
+            avg_prior_volume=(sum(state.prior_window_tick_counts) / len(state.prior_window_tick_counts)
+                              if state.prior_window_tick_counts else 0),
+        )
+
+        # LightGBM prediction
+        pair = f"{state.asset}_5m"
+        vol = compute_realized_vol(list(state.price_history))
+        vol_ma = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol
+        vol_ratio = vol / vol_ma if vol_ma > 0 else 1.0
+        hl_range = state.window_high - state.window_low
+        body = abs(price - (window.open_price or price))
+        body_ratio = body / hl_range if hl_range > 0 else 0.5
+        seconds_since_open = (window.close_ts - window.open_ts) - remaining
+        import math as _math, datetime as _dt
+        now_utc = _dt.datetime.now(_dt.timezone.utc)
+        features = {
+            "move_pct_15s": pct_move,
+            "realized_vol_5m": vol,
+            "vol_ratio": vol_ratio,
+            "body_ratio": body_ratio,
+            "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price and state.prev_window.open_price and state.prev_window.close_price >= state.prev_window.open_price else -1) if state.prev_window else 0,
+            "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price) / state.prev_window.open_price * 100) if state.prev_window and state.prev_window.open_price and state.prev_window.close_price else 0,
+            "hour_sin": _math.sin(2 * _math.pi * now_utc.hour / 24),
+            "hour_cos": _math.cos(2 * _math.pi * now_utc.hour / 24),
+            "dow_sin": _math.sin(2 * _math.pi * now_utc.weekday() / 7),
+            "dow_cos": _math.cos(2 * _math.pi * now_utc.weekday() / 7),
+            "signal_move_pct": abs(pct_move),
+            "signal_ask_price": current_ask,
+            "signal_seconds": seconds_since_open,
+            "signal_ev": 0,
+        }
+        lgbm_prob = self.model_server.predict(pair, features)
+        ev = lgbm_prob * (1 - current_ask) - (1 - lgbm_prob) * current_ask
+        features["signal_ev"] = ev
+
+        # Log score on every window
+        entry_type = "skipped"
+        skip_reason = ""
+
+        logger.info(
+            "window_score",
+            asset=state.asset, slug=window.slug,
+            score=score.total,
+            ofi=score.ofi, no_rev=score.no_reversal,
+            cross=score.cross_asset, pm=score.pm_pressure, vol=score.volume,
+            lgbm_prob=round(lgbm_prob, 4),
+            ask=round(current_ask, 3),
+            pct_move=round(pct_move, 4),
+            ev=round(ev, 4),
+        )
+
+        # Log to DynamoDB signals table
+        try:
+            self.dynamo.put_signal({
+                "window_slug": window.slug,
+                "timestamp": time.time(),
+                "asset": state.asset,
+                "timeframe": "5m",
+                "score_total": score.total,
+                "score_ofi": int(score.ofi),
+                "score_no_reversal": int(score.no_reversal),
+                "score_cross_asset": int(score.cross_asset),
+                "score_polymarket_pressure": int(score.pm_pressure),
+                "score_volume": int(score.volume),
+                "direction": "up" if pct_move >= 0 else "down",
+                "pct_move": round(pct_move, 6),
+                "model_prob": round(lgbm_prob, 4),
+                "market_price": round(current_ask, 4),
+                "ev": round(ev, 4),
+                "p_bayesian": round(state.bayesian.probability, 4),
+                "seconds_remaining": round(remaining, 1),
+                "yes_ask": round(state.orderbook.yes_best_ask, 4),
+                "no_ask": round(state.orderbook.no_best_ask, 4),
+                "current_price": round(price, 2),
+                "open_price": round(window.open_price, 2) if window.open_price else 0,
+            })
+        except Exception:
+            pass
+
+        # Decision based on score
+        if score.total >= 4:
+            # HIGH CONVICTION: taker FOK
+            if lgbm_prob < 0.60:
+                skip_reason = "lgbm_low_taker"
+            elif current_ask > 0.55:
+                skip_reason = "ask_above_0.55"
+            elif ev < self.settings.min_ev_threshold:
+                skip_reason = "insufficient_ev"
+            else:
+                entry_type = "taker"
+        elif score.total >= 2:
+            # LOW CONVICTION: maker GTC at $0.48
+            if lgbm_prob < 0.55:
+                skip_reason = "lgbm_low_maker"
+            elif ev < 0.05:
+                skip_reason = "insufficient_ev_maker"
+            else:
+                entry_type = "maker"
+        else:
+            skip_reason = f"low_score_{score.total}"
+
+        if entry_type == "skipped":
+            logger.info("score_skip", asset=state.asset, slug=window.slug,
+                        score=score.total, reason=skip_reason, lgbm=round(lgbm_prob, 4),
+                        ask=round(current_ask, 3), ev=round(ev, 4))
+            return
+
+        # Build signal
+        from polybot.models import Direction, Signal, SignalSource
+        direction = Direction.UP if pct_move >= 0 else Direction.DOWN
+        market_price = current_ask
+
+        signal = Signal(
+            source=SignalSource.DIRECTIONAL,
+            direction=direction,
+            model_prob=lgbm_prob,
+            market_price=market_price,
+            ev=ev,
+            window_slug=window.slug,
+            asset=state.asset,
+            p_bayesian=state.bayesian.probability,
+            pct_move=pct_move,
+            seconds_remaining=remaining,
+            yes_ask=state.orderbook.yes_best_ask,
+            no_ask=state.orderbook.no_best_ask,
+            yes_bid=state.orderbook.yes_best_bid,
+            no_bid=state.orderbook.no_best_bid,
+            open_price=window.open_price or 0,
+        )
+
+        if not self.risk.can_trade():
+            logger.warning("score_blocked_circuit_breaker", asset=state.asset)
+            return
+
+        # Enforce $1.50 total bet ceiling
+        size = min(self.risk.get_bet_size(lgbm_prob=lgbm_prob), 1.50)
+        if size < 1.0:
+            size = 1.0
+
+        logger.info(
+            "score_entry",
+            asset=state.asset, slug=window.slug,
+            entry_type=entry_type, score=score.total,
+            ask=round(market_price, 3), size=round(size, 2),
+            lgbm=round(lgbm_prob, 4), ev=round(ev, 4),
+        )
+
+        t_start = time.time()
+        if entry_type == "taker":
+            # FOK at market ask
+            signal_ms = (time.time() - t_start) * 1000
+            await self._execute(signal, state, signal_ms, 0)
+            state.traded_this_window = True
+        elif entry_type == "maker":
+            # GTC at $0.48, cancel after 8s
+            # For now, use FOK at current ask (GTC requires separate implementation)
+            # TODO: implement proper GTC maker path
+            signal_ms = (time.time() - t_start) * 1000
+            await self._execute(signal, state, signal_ms, 0)
+            state.traded_this_window = True
 
     async def _on_window_close(self, state: AssetState, price: float):
         window = state.prev_window

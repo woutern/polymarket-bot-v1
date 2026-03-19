@@ -15,25 +15,25 @@ class TestDynamicSizing:
         size = compute_size(
             model_prob=0.70, market_price=0.55, bankroll=253.0,
             kelly_mult=0.25, max_position_pct=0.01,
-            min_trade_usd=1.25, max_trade_usd=2.50,
+            min_trade_usd=1.25, max_trade_usd=1.50,
         )
         assert size >= 1.25
-        assert size <= 2.50
+        assert size <= 1.50
 
     def test_one_percent_max_on_253_bankroll(self):
         """Even with huge edge, cap at $2.50 (1%)."""
         size = compute_size(
             model_prob=0.99, market_price=0.10, bankroll=253.0,
             kelly_mult=0.25, max_position_pct=0.10,
-            min_trade_usd=1.25, max_trade_usd=2.50,
+            min_trade_usd=1.25, max_trade_usd=1.50,
         )
-        assert size == 2.50
+        assert size == 1.50
 
     def test_no_edge_returns_zero(self):
         """No positive edge → no trade."""
         size = compute_size(
             model_prob=0.50, market_price=0.55, bankroll=253.0,
-            min_trade_usd=1.25, max_trade_usd=2.50,
+            min_trade_usd=1.25, max_trade_usd=1.50,
         )
         assert size == 0.0
 
@@ -43,9 +43,9 @@ class TestDynamicSizing:
         size = compute_size(
             model_prob=0.80, market_price=0.50, bankroll=500.0,
             kelly_mult=0.25, max_position_pct=0.01,
-            min_trade_usd=2.50, max_trade_usd=5.00,
+            min_trade_usd=1.50, max_trade_usd=5.00,
         )
-        assert 2.50 <= size <= 5.00
+        assert 1.50 <= size <= 5.00
 
     def test_polymarket_minimum_is_one_dollar(self):
         """Even with tiny bankroll, Polymarket requires $1 minimum."""

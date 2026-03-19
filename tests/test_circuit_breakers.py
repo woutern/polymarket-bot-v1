@@ -76,12 +76,12 @@ class TestBetSizing:
     def test_one_percent_of_bankroll(self):
         rm = RiskManager(bankroll=250.0, max_position_pct=0.01, min_trade_usd=1.0, max_trade_usd=10.0)
         size = rm.get_bet_size(lgbm_prob=0.65)  # 0.60-0.70 tier = 1%
-        assert size == 2.50  # 1% of 250
+        assert size == 1.50  # 1% of 250
 
     def test_min_enforced(self):
         rm = RiskManager(bankroll=50.0, max_position_pct=0.01, min_trade_usd=1.0, max_trade_usd=10.0)
         assert rm.get_bet_size() == 1.0  # 0.50 < min
 
     def test_max_enforced(self):
-        rm = RiskManager(bankroll=2000.0, max_position_pct=0.01, min_trade_usd=1.0, max_trade_usd=2.50)
-        assert rm.get_bet_size() == 2.50  # hard cap $2.50
+        rm = RiskManager(bankroll=2000.0, max_position_pct=0.01, min_trade_usd=1.0, max_trade_usd=1.50)
+        assert rm.get_bet_size() == 1.50  # hard cap $1.50

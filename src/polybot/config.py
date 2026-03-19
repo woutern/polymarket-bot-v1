@@ -2,6 +2,9 @@
 
 from pydantic_settings import BaseSettings
 
+# Module-level constant — cannot be overridden by env var or Secrets Manager
+HARDCODED_MAX_BET = 1.50
+
 
 class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
@@ -21,7 +24,7 @@ class Settings(BaseSettings):
     daily_loss_cap_pct: float = 0.05
     kelly_fraction: float = 0.25
     min_trade_usd: float = 1.0    # Floor — always bet at least this when there's edge (Polymarket min is $1)
-    max_trade_usd: float = 2.50   # Hard cap per trade
+    max_trade_usd: float = 1.50   # Hard cap per trade — matches HARDCODED_MAX_BET
     min_ev_threshold: float = 0.08  # EV > 8% required — blocks low-confidence entries
     directional_entry_seconds: int = 120  # T-120s — Tier B primary entry
     directional_min_move_pct: float = 0.03  # default; overridden per-asset below

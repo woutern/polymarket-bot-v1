@@ -14,7 +14,7 @@ def _make_settings(**overrides):
     s.max_market_price = 0.55
     s.min_ev_threshold = 0.08
     s.min_trade_usd = 1.0
-    s.max_trade_usd = 5.0
+    s.max_trade_usd = 1.50
     s.mode = "paper"
     s.polymarket_private_key = "0x" + "a" * 64
     s.polymarket_api_key = "test"
