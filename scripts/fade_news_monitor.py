@@ -33,17 +33,31 @@ POLITICS_KEYWORDS = [
     "trump", "biden", "zelensky", "putin",
 ]
 
-# Skip even if keyword matches
+# Skip even if keyword matches — sports, entertainment, crypto price
 SKIP_PATTERNS = [
-    "win on 2026", "win the 2025", "win the 2026", "win the 2027",
+    # Sports
+    "tennis", "match o/u", "set 1", "game 1", "game 2", "season", "score",
+    "goal", "player", "team", "tournament", "championship", "league",
     "nba", "nfl", "mlb", "mls", "premier league", "champions league",
     "world cup", "ncaa", "f1 driver", "masters tournament",
+    "win on 2026", "win the 2025", "win the 2026", "win the 2027",
+    "cricket", "legends cricket", "billikens", "howard bison",
+    "cecchinato", "ouakaa",  # tennis players from false positives
+    # Entertainment
+    "episode", "reality", "show", "award", "oscar", "grammy",
+    "proof of love", "mystery couple",
+    # Crypto price
     "price of bitcoin", "price of solana", "price of xrp", "price of ethereum",
     "bitcoin reach", "bitcoin dip", "ethereum dip",
-    "crude oil", "tweets from", "elon musk post",
-    "aliens", "jesus christ", "cricket", "legends cricket",
-    "earnings", "billikens", "howard bison",
+    "crude oil",
+    # Social media
+    "tweets from", "elon musk post",
+    # Misc
+    "aliens", "jesus christ", "earnings",
 ]
+
+# Minimum market age in seconds (10 minutes)
+MIN_MARKET_AGE_SECONDS = 600
 
 # Fade zone: YES ask between these values
 MIN_YES_ASK = 0.70
@@ -133,12 +147,33 @@ def scan_once() -> list[dict]:
                 continue
 
             text = (question + " " + slug).lower()
+
+            # Skip sports/entertainment/crypto
             if any(p in text for p in SKIP_PATTERNS):
                 continue
 
+            # Must match a politics/news keyword
             keyword = _match_keyword(question + " " + slug)
             if not keyword:
                 continue
+
+            # Market age filter — must be open at least 10 minutes
+            start_date = m.get("startDate") or m.get("createdAt") or ""
+            if start_date:
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+                    # Parse ISO format or unix timestamp
+                    if isinstance(start_date, (int, float)):
+                        market_start = float(start_date)
+                    elif "T" in str(start_date):
+                        market_start = _dt.fromisoformat(start_date.replace("Z", "+00:00")).timestamp()
+                    else:
+                        market_start = float(start_date)
+                    age_seconds = time.time() - market_start
+                    if age_seconds < MIN_MARKET_AGE_SECONDS:
+                        continue  # too new, hasn't priced in yet
+                except Exception:
+                    pass  # can't parse date, allow through
 
             token_ids = _parse(m.get("clobTokenIds", []))
             if len(token_ids) < 2:
