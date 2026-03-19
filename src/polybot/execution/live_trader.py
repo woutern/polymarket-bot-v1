@@ -98,12 +98,14 @@ class LiveTrader:
 
         # Lock prevents concurrent execution across pairs hitting same window
         async with self._trade_lock:
-            # DEDUP: one trade per window_slug (memory first, then DynamoDB)
+            # DEDUP layer 1: in-memory (fast, same process)
             if signal.window_slug in self._traded_slugs:
                 logger.info("dedup_blocked", slug=signal.window_slug, source="memory")
                 return None
 
-            # DynamoDB check — survives restarts, authoritative
+            # DEDUP layer 2: DynamoDB (survives restarts + multi-container)
+            # This is the authoritative check — prevents duplicate trades
+            # even when two ECS tasks overlap during deploys.
             if self._dynamo:
                 try:
                     existing = self._dynamo.get_trades_for_window(signal.window_slug)
@@ -113,6 +115,19 @@ class LiveTrader:
                         return None
                 except Exception as e:
                     logger.warning("dedup_dynamo_check_failed", slug=signal.window_slug, error=str(e)[:60])
+
+            # DEDUP layer 3: atomic claim in DynamoDB BEFORE executing
+            # Uses conditional put — if another container already claimed, this fails.
+            # Prevents duplicate trades during deploy overlaps (~400ms window).
+            if self._dynamo:
+                try:
+                    claimed = self._dynamo.claim_slug(signal.window_slug)
+                    if not claimed:
+                        self._traded_slugs.add(signal.window_slug)
+                        logger.info("dedup_blocked", slug=signal.window_slug, source="dynamo_claim")
+                        return None
+                except Exception as e:
+                    logger.warning("dedup_claim_failed", slug=signal.window_slug, error=str(e)[:60])
 
             self._traded_slugs.add(signal.window_slug)
 

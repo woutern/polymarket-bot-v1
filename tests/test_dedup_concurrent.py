@@ -116,6 +116,7 @@ class TestDedupConcurrent:
         # Mock DynamoDB returning existing trade
         mock_dynamo = MagicMock()
         mock_dynamo.get_trades_for_window.return_value = [{"id": "existing"}]
+        mock_dynamo.claim_slug.return_value = True
         trader._dynamo = mock_dynamo
 
         sig = _make_signal(slug=slug)
@@ -123,3 +124,54 @@ class TestDedupConcurrent:
 
         assert result is None  # blocked by DynamoDB dedup
         assert slug in trader._traded_slugs  # cached for next time
+
+    async def test_btc_5m_and_15m_same_slug_one_executes(self):
+        """BTC_5m and BTC_15m fire on same slug → only 1 trade."""
+        trader = _make_live_trader()
+        slug = "btc-updown-5m-test-cross-pair"
+
+        # Simulate two pair trackers hitting same slug concurrently
+        async def try_5m():
+            sig = _make_signal(slug=slug, asset="BTC")
+            return await trader.execute(sig, "yes_token", "no_token")
+
+        async def try_15m():
+            sig = _make_signal(slug=slug, asset="BTC")
+            return await trader.execute(sig, "yes_token", "no_token")
+
+        results = await asyncio.gather(try_5m(), try_15m())
+        executed = sum(1 for r in results if r is not None)
+        assert executed == 1, f"Expected 1 execution from cross-pair, got {executed}"
+
+    async def test_dynamo_claim_blocks_second_container(self):
+        """Atomic DynamoDB claim prevents second container from trading."""
+        trader = _make_live_trader()
+        slug = "btc-updown-5m-test-claim"
+
+        # Mock DynamoDB: no existing trades, but claim fails (already claimed by other container)
+        mock_dynamo = MagicMock()
+        mock_dynamo.get_trades_for_window.return_value = []
+        mock_dynamo.claim_slug.return_value = False  # another container claimed it
+        trader._dynamo = mock_dynamo
+
+        sig = _make_signal(slug=slug)
+        result = await trader.execute(sig, "yes_token", "no_token")
+
+        assert result is None  # blocked by dynamo claim
+        assert slug in trader._traded_slugs
+
+    async def test_dynamo_claim_succeeds_allows_trade(self):
+        """When claim succeeds, trade executes normally."""
+        trader = _make_live_trader()
+        slug = "btc-updown-5m-test-claim-ok"
+
+        mock_dynamo = MagicMock()
+        mock_dynamo.get_trades_for_window.return_value = []
+        mock_dynamo.claim_slug.return_value = True
+        trader._dynamo = mock_dynamo
+
+        sig = _make_signal(slug=slug)
+        result = await trader.execute(sig, "yes_token", "no_token")
+
+        assert result is not None  # trade executed
+        mock_dynamo.claim_slug.assert_called_once_with(slug)

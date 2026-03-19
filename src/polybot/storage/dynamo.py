@@ -119,6 +119,34 @@ class DynamoStore:
         except Exception as e:
             logger.debug("dynamo_update_trade_failed", extra={"error": str(e)})
 
+    def claim_slug(self, window_slug: str) -> bool:
+        """Atomically claim a window slug to prevent duplicate trades across containers.
+
+        Uses DynamoDB conditional put — fails if slug already claimed.
+        Returns True if claimed, False if already taken.
+        """
+        if not self._available:
+            return True  # optimistic if DynamoDB unavailable
+        try:
+            import time
+            self._trades.put_item(
+                Item={
+                    "id": f"claim_{window_slug}",
+                    "window_slug": window_slug,
+                    "timestamp": int(time.time()),
+                    "claimed": True,
+                    "resolved": 0,
+                },
+                ConditionExpression="attribute_not_exists(id)",
+            )
+            return True
+        except self._trades.meta.client.exceptions.ConditionalCheckFailedException:
+            logger.info("dedup_claim_exists", slug=window_slug)
+            return False
+        except Exception as e:
+            logger.warning("dedup_claim_error", slug=window_slug, error=str(e)[:60])
+            return True  # optimistic on error
+
     def get_trades_for_window(self, window_slug: str) -> list[dict]:
         if not self._available:
             return []
