@@ -23,6 +23,11 @@ FEATURE_COLUMNS = [
     "realized_vol_5m", "vol_ratio", "body_ratio",
     "prev_window_direction", "prev_window_move_pct",
     "hour_sin", "hour_cos", "dow_sin", "dow_cos",
+    # Signal-context features (describe our actual entry conditions)
+    "signal_move_pct",    # abs(move) at entry — magnitude regardless of direction
+    "signal_ask_price",   # yes_ask at window open
+    "signal_seconds",     # seconds since open at first significant move
+    "signal_ev",          # estimated EV at entry time
     # NOTE: move_pct_60s and move_pct_300s EXCLUDED — they are look-ahead features
 ]
 
@@ -63,8 +68,16 @@ def load_training_data(dynamo_table, asset: str, timeframe: str, limit: int = 50
     return items[:limit]
 
 
+# New features that default to 0 for historical data that lacks them
+_OPTIONAL_FEATURES = {"signal_move_pct", "signal_ask_price", "signal_seconds", "signal_ev"}
+
+
 def items_to_arrays(items: list[dict]) -> tuple[np.ndarray, np.ndarray]:
-    """Convert DynamoDB items to feature matrix X and label array y."""
+    """Convert DynamoDB items to feature matrix X and label array y.
+
+    New signal-context features default to 0.0 for historical data
+    that was collected before those features existed.
+    """
     X_rows = []
     y_rows = []
     for item in items:
@@ -73,6 +86,9 @@ def items_to_arrays(items: list[dict]) -> tuple[np.ndarray, np.ndarray]:
         for col in FEATURE_COLUMNS:
             val = item.get(col)
             if val is None:
+                if col in _OPTIONAL_FEATURES:
+                    features.append(0.0)
+                    continue
                 valid = False
                 break
             try:
@@ -138,8 +154,15 @@ def train_pair(pair: str, items: list[dict], s3_client=None, ssm_client=None, s3
         return TrainResult(pair=pair, n_train=n_train, n_val=n_val, val_brier=1.0, val_auc=0.5,
                            baseline_brier=0.25, deployed=False, error="Too few rows after split")
 
+    # Signal-weighted: 3x weight on windows where |move_pct_15s| > 0.02%
+    # These are the windows where our bot actually trades — model must learn these well
+    move_col_idx = FEATURE_COLUMNS.index("move_pct_15s")
+    sample_weights = np.where(np.abs(X_train[:, move_col_idx]) > 0.02, 3.0, 1.0)
+    n_signal = int(np.sum(sample_weights > 1))
+    logger.info(f"{pair}: {n_signal}/{n_train} signal windows get 3x weight")
+
     # Train LightGBM
-    train_data = lgb.Dataset(X_train, label=y_train, feature_name=FEATURE_COLUMNS)
+    train_data = lgb.Dataset(X_train, label=y_train, weight=sample_weights, feature_name=FEATURE_COLUMNS)
     val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
 
     params = {
@@ -151,6 +174,7 @@ def train_pair(pair: str, items: list[dict], s3_client=None, ssm_client=None, s3
         "bagging_fraction": 0.8,
         "bagging_freq": 5,
         "min_child_samples": 20,
+        "is_unbalance": True,  # handle outcome class imbalance
         "verbose": -1,
     }
 

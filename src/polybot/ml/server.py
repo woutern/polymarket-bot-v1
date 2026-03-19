@@ -10,6 +10,7 @@ import io
 import os
 import pickle
 import time
+from collections import deque
 
 import numpy as np
 import structlog
@@ -18,6 +19,12 @@ logger = structlog.get_logger()
 
 PAIRS = ["BTC_5m", "BTC_15m", "ETH_5m", "ETH_15m", "SOL_5m", "SOL_15m"]
 
+# Adaptive threshold bounds
+_DEFAULT_GATE = 0.52
+_MIN_GATE = 0.50
+_MAX_GATE = 0.60
+_MIN_HISTORY = 20  # predictions needed before adapting
+
 
 class ModelServer:
     def __init__(self, region: str = "us-east-1"):
@@ -25,6 +32,7 @@ class ModelServer:
         self._model_ages: dict[str, float] = {}
         self._region = region
         self._last_refresh = 0.0
+        self._pred_history: dict[str, deque] = {}  # pair → last 100 predictions
 
     def load_models(self):
         """Load all available models from S3 via SSM paths."""
@@ -85,7 +93,12 @@ class ModelServer:
             raw = model.predict(X)[0]
             platt_prob = platt.predict_proba(np.array([[raw]]))[0, 1]
             final = isotonic.predict([platt_prob])[0]
-            return float(max(0.01, min(0.99, final)))
+            result = float(max(0.01, min(0.99, final)))
+            # Track prediction for adaptive threshold
+            if pair not in self._pred_history:
+                self._pred_history[pair] = deque(maxlen=100)
+            self._pred_history[pair].append(result)
+            return result
         except Exception as e:
             logger.debug("predict_failed", pair=pair, error=str(e)[:60])
             return 0.5
@@ -98,6 +111,41 @@ class ModelServer:
 
     def has_model(self, pair: str) -> bool:
         return pair in self._models
+
+    def get_adaptive_threshold(self, pair: str) -> float:
+        """Return lgbm_prob gate that adapts to model confidence level.
+
+        If rolling mean < 0.55: model is underconfident → lower gate to 0.52
+        If rolling mean > 0.65: model is well-trained → raise gate to 0.60
+        Linear interpolation between.
+        """
+        history = self._pred_history.get(pair)
+        if not history or len(history) < _MIN_HISTORY:
+            return _DEFAULT_GATE
+
+        rolling_mean = sum(history) / len(history)
+
+        if rolling_mean < 0.55:
+            threshold = _DEFAULT_GATE  # 0.52 — loose gate for undertrained model
+        elif rolling_mean > 0.65:
+            threshold = _MAX_GATE  # 0.60 — tight gate for confident model
+        else:
+            # Linear interpolation: 0.55→0.52, 0.65→0.60
+            t = (rolling_mean - 0.55) / 0.10
+            threshold = _DEFAULT_GATE + t * (_MAX_GATE - _DEFAULT_GATE)
+
+        threshold = max(_MIN_GATE, min(_MAX_GATE, threshold))
+
+        if len(history) % 50 == 0:  # log every 50 predictions
+            logger.info(
+                "adaptive_threshold",
+                pair=pair,
+                rolling_mean=round(rolling_mean, 4),
+                threshold=round(threshold, 4),
+                n_predictions=len(history),
+            )
+
+        return threshold
 
     def refresh_if_needed(self):
         """Reload models if >4 hours since last refresh."""

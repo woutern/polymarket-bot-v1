@@ -594,6 +594,7 @@ class TradingLoop:
         # LightGBM prediction (logged alongside existing signal, not blocking yet)
         tf = "15m" if "15m" in window.slug else "5m"
         pair = f"{state.asset}_{tf}"
+        seconds_since_open = window.window_seconds - remaining
         features = {
             "move_pct_15s": pct_move,
             "realized_vol_5m": vol,
@@ -605,6 +606,11 @@ class TradingLoop:
             "hour_cos": __import__("math").cos(2 * __import__("math").pi * __import__("datetime").datetime.now(__import__("datetime").timezone.utc).hour / 24),
             "dow_sin": __import__("math").sin(2 * __import__("math").pi * __import__("datetime").datetime.now(__import__("datetime").timezone.utc).weekday() / 7),
             "dow_cos": __import__("math").cos(2 * __import__("math").pi * __import__("datetime").datetime.now(__import__("datetime").timezone.utc).weekday() / 7),
+            # Signal-context features
+            "signal_move_pct": abs(pct_move),
+            "signal_ask_price": state.orderbook.yes_best_ask,
+            "signal_seconds": seconds_since_open,
+            "signal_ev": evaluation.ev if evaluation.ev else 0,
         }
         lgbm_prob = self.model_server.predict(pair, features)
         model_has = self.model_server.has_model(pair)
@@ -620,10 +626,11 @@ class TradingLoop:
                 pct_move=round(pct_move, 4),
             )
 
-        # If model loaded and confident, use as additional filter
+        # If model loaded and confident, use adaptive threshold as filter
         if model_has and signal is not None:
-            if lgbm_prob < 0.55:
-                logger.info("lgbm_low_confidence", pair=pair, prob=round(lgbm_prob, 4))
+            threshold = self.model_server.get_adaptive_threshold(pair)
+            if lgbm_prob < threshold:
+                logger.info("lgbm_low_confidence", pair=pair, prob=round(lgbm_prob, 4), threshold=round(threshold, 4))
                 signal = None  # block trade — model not confident
 
         # Log every evaluation to DynamoDB (throttle: 1 per window per asset)
@@ -711,6 +718,7 @@ class TradingLoop:
                 if window.open_price and window.close_price and window.open_price > 0:
                     pct_move = (window.close_price - window.open_price) / window.open_price * 100
                 outcome = 1 if went_up else 0
+                realized_vol = compute_realized_vol(list(state.price_history))
                 self.dynamo.put_training_data({
                     "window_id": f"{state.asset}_{tf}_{window.slug}",
                     "timestamp": time.time(),
@@ -726,8 +734,19 @@ class TradingLoop:
                     "yes_bid_at_open": round(state.orderbook.yes_best_bid, 4),
                     "no_bid_at_open": round(state.orderbook.no_best_bid, 4),
                     "p_bayesian": round(state.bayesian.probability, 4),
-                    "realized_vol": round(compute_realized_vol(list(state.price_history)), 6),
+                    "realized_vol": round(realized_vol, 6),
                     "oracle_lag_pct": round(self.rtds.get_state(state.asset).oracle_lag_pct, 6),
+                    # Signal-context features for LightGBM
+                    "signal_move_pct": round(abs(pct_move), 6),
+                    "signal_ask_price": round(state.orderbook.yes_best_ask, 4),
+                    "signal_seconds": 0,  # filled by live collection
+                    "signal_ev": 0,  # filled by live collection
+                    # Orderbook microstructure features
+                    "ofi_30s": round(self.coinbase.get_ofi_30s(state.asset), 6) if hasattr(self.coinbase, "get_ofi_30s") else 0,
+                    "bid_ask_spread": round(self.coinbase.get_bid_ask_spread(state.asset), 6) if hasattr(self.coinbase, "get_bid_ask_spread") else 0,
+                    "depth_imbalance": round(self.coinbase.get_depth_imbalance(state.asset), 6) if hasattr(self.coinbase, "get_depth_imbalance") else 0,
+                    "trade_arrival_rate": round(self.coinbase.get_trade_arrival_rate(state.asset), 6) if hasattr(self.coinbase, "get_trade_arrival_rate") else 0,
+                    "data_source": "live_with_orderbook" if hasattr(self.coinbase, "get_ofi_30s") else "live",
                 })
                 logger.debug("training_data_logged", asset=state.asset, slug=window.slug, outcome=outcome)
             except Exception as e:
