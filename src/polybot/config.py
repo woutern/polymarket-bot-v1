@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     max_market_price: float = 0.88  # Late-entry: allow up to $0.88
     late_entry_seconds: int = 210   # Enter at T+3.5min (210s into 5min window)
     late_entry_min_ask: float = 0.50  # Follow whichever side is higher
-    late_entry_max_ask: float = 0.78  # Don't buy fully-priced moves (EV negative above this)
+    late_entry_max_ask: float = 0.68  # Tighter ceiling for better EV
     assets: str = "BTC,ETH,SOL"  # Comma-separated asset list
     # Enabled pairs — granular control over which asset×timeframe combos are active.
     # Default "" means all combinations of assets (5m only).
