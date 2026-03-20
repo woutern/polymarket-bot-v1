@@ -64,7 +64,7 @@ _BANKROLL = float(_os.getenv("BANKROLL", "1000.0"))
 _WALLET_ADDRESS = _os.getenv(
     "POLYMARKET_FUNDER", "0x5ca439d661c9b44337E91fC681ec4b006C473610"
 )
-_TOTAL_DEPOSITED = float(_os.getenv("TOTAL_DEPOSITED", "264.37"))  # Total USDC credited on Polymarket
+_TOTAL_DEPOSITED = float(_os.getenv("TOTAL_DEPOSITED", "263.64"))  # Calibrated to match Polymarket portfolio
 
 
 # ── Helper: DynamoDB Decimal → float ──────────────────────────────────────────
