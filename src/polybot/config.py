@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     directional_min_move_pct: float = 0.03  # default; overridden per-asset below
     max_market_price: float = 0.88  # Late-entry: allow up to $0.88
     late_entry_seconds: int = 240   # Enter at T+4min (240s into 5min window)
-    late_entry_min_ask: float = 0.52  # Market must show some conviction
+    late_entry_min_ask: float = 0.50  # Follow whichever side is higher
     late_entry_max_ask: float = 0.78  # Don't buy fully-priced moves (EV negative above this)
     assets: str = "BTC,ETH,SOL"  # Comma-separated asset list
     # Enabled pairs — granular control over which asset×timeframe combos are active.

@@ -394,11 +394,17 @@ class TradingLoop:
         seconds_since_open = time.time() - window.open_ts
         state.window_tick_count += 1
 
+        # Log progress every 60s for debugging
+        if int(seconds_since_open) % 60 == 0 and int(seconds_since_open) > 0:
+            logger.debug("tick_progress", asset=state.asset, seconds=int(seconds_since_open),
+                         target=self.settings.late_entry_seconds, evaluated=state.late_entry_evaluated)
+
         if (
             seconds_since_open >= self.settings.late_entry_seconds
             and not state.late_entry_evaluated
             and not state.traded_this_window
         ):
+            logger.info("late_entry_triggered", asset=state.asset, seconds=round(seconds_since_open, 1))
             state.late_entry_evaluated = True
             await self._evaluate_late_entry(state, price)
 
@@ -421,7 +427,7 @@ class TradingLoop:
         yes_ask = state.orderbook.yes_best_ask
         no_ask = state.orderbook.no_best_ask
 
-        # Direction: buy whichever side the market prices higher
+        # Direction: buy whichever side the market prices higher (default UP on tie)
         if yes_ask >= no_ask:
             direction_up = True
             current_ask = yes_ask
@@ -432,11 +438,9 @@ class TradingLoop:
         pct_move = state.tracker.pct_move(price) or 0.0
         remaining = window.seconds_remaining()
 
-        # Hard guards
+        # Only 2 hard guards — trade every window unless these fire
         skip_reason = ""
-        if current_ask < self.settings.late_entry_min_ask:
-            skip_reason = "no_conviction"
-        elif current_ask > self.settings.late_entry_max_ask:
+        if current_ask > self.settings.late_entry_max_ask:
             skip_reason = "fully_priced"
         elif not self.risk.can_trade():
             skip_reason = "circuit_breaker"
@@ -498,7 +502,7 @@ class TradingLoop:
             open_price=window.open_price or 0,
         )
 
-        size = 1.50  # flat $1.50 per trade for 24hr test
+        size = 3.00  # flat $3.00 per trade — hard cap
 
         logger.info(
             "late_entry_trade",
