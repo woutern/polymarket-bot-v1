@@ -131,8 +131,8 @@ class LiveTrader:
 
             self._traded_slugs.add(signal.window_slug)
 
-            # Hard cap at $3.00 for late-entry strategy
-            size = min(3.00, self.risk.get_bet_size(lgbm_prob=signal.model_prob))
+            # Hard cap at $5.00 per trade
+            size = min(5.00, self.risk.get_bet_size(lgbm_prob=signal.model_prob))
             if size <= 0:
                 return None
 

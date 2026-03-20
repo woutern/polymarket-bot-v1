@@ -507,7 +507,7 @@ class TradingLoop:
             open_price=window.open_price or 0,
         )
 
-        size = 3.00  # flat $3.00 per trade — hard cap
+        size = 5.00  # flat $5.00 per trade
 
         logger.info(
             "late_entry_trade",
