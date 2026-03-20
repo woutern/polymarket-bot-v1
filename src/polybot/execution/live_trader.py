@@ -132,7 +132,7 @@ class LiveTrader:
             self._traded_slugs.add(signal.window_slug)
 
             # Hard cap at $5.00 per trade
-            size = min(5.00, self.risk.get_bet_size(lgbm_prob=signal.model_prob))
+            size = min(10.00, self.risk.get_bet_size(lgbm_prob=signal.model_prob))
             if size <= 0:
                 return None
 
