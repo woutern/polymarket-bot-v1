@@ -72,16 +72,9 @@ class AssetState:
     vol_history: deque = field(default_factory=lambda: deque(maxlen=12))  # rolling vol for vol_ma_1h
     window_high: float = 0.0  # track high/low within first 15s for body_ratio
     window_low: float = float("inf")
-    window_open_price_at_5s: float | None = None  # BTC price at T+5s for cross-asset lead
-    # Scored entry tracking
-    price_at_2s: float | None = None
-    price_at_8s: float | None = None
-    ofi_at_2s: float | None = None
-    ofi_at_8s: float | None = None
-    ask_at_open: float | None = None
     window_tick_count: int = 0
     prior_window_tick_counts: deque = field(default_factory=lambda: deque(maxlen=5))
-    score_evaluated: bool = False
+    late_entry_evaluated: bool = False
 
 
 # ── Binance long/short ratio bias (free, no API key) ─────────────────────────
@@ -397,34 +390,17 @@ class TradingLoop:
         elif state.prev_open_ts is None:
             await self._on_window_open(state, price)
 
-        # Scored entry: capture data at T+2s and T+8s, evaluate at T+12s
+        # Late-entry strategy: evaluate once at T+4min (240s)
         seconds_since_open = time.time() - window.open_ts
         state.window_tick_count += 1
 
-        if state.price_at_2s is None and seconds_since_open >= 2.0:
-            state.price_at_2s = price
-            state.ofi_at_2s = self.coinbase.get_ofi_30s(state.asset) if hasattr(self.coinbase, 'get_ofi_30s') else 0.0
-            await self._refresh_orderbook(state)
-            pct_move = state.tracker.pct_move(price) or 0.0
-            state.ask_at_open = state.orderbook.yes_best_ask if pct_move >= 0 else state.orderbook.no_best_ask
-
-        if state.window_open_price_at_5s is None and seconds_since_open >= 5.0:
-            state.window_open_price_at_5s = self.coinbase.get_price(state.asset)
-
-        if state.price_at_8s is None and seconds_since_open >= 8.0:
-            state.price_at_8s = price
-            state.ofi_at_8s = self.coinbase.get_ofi_30s(state.asset) if hasattr(self.coinbase, 'get_ofi_30s') else 0.0
-
-        # At T+12s: compute score and decide entry (replaces old _on_entry_zone)
         if (
-            seconds_since_open >= 12.0
-            and not state.score_evaluated
+            seconds_since_open >= self.settings.late_entry_seconds
+            and not state.late_entry_evaluated
             and not state.traded_this_window
-            and window.open_price
-            and window.open_price > 0
         ):
-            state.score_evaluated = True
-            await self._evaluate_scored_entry(state, price)
+            state.late_entry_evaluated = True
+            await self._evaluate_late_entry(state, price)
 
         state.prev_open_ts = current_open_ts
 
@@ -435,8 +411,110 @@ class TradingLoop:
 
     # 223 lines removed (dead method)
 
+    async def _evaluate_late_entry(self, state: AssetState, price: float):
+        """Late-entry strategy: at T+4min, follow the market direction."""
+        window = state.tracker.current
+        if not window:
+            return
+
+        await self._refresh_orderbook(state)
+        yes_ask = state.orderbook.yes_best_ask
+        no_ask = state.orderbook.no_best_ask
+
+        # Direction: buy whichever side the market prices higher
+        if yes_ask >= no_ask:
+            direction_up = True
+            current_ask = yes_ask
+        else:
+            direction_up = False
+            current_ask = no_ask
+
+        pct_move = state.tracker.pct_move(price) or 0.0
+        remaining = window.seconds_remaining()
+
+        # Hard guards
+        skip_reason = ""
+        if current_ask < self.settings.late_entry_min_ask:
+            skip_reason = "no_conviction"
+        elif current_ask > self.settings.late_entry_max_ask:
+            skip_reason = "fully_priced"
+        elif not self.risk.can_trade():
+            skip_reason = "circuit_breaker"
+
+        # Log every evaluation
+        logger.info(
+            "late_entry_eval",
+            asset=state.asset, slug=window.slug,
+            yes_ask=round(yes_ask, 3), no_ask=round(no_ask, 3),
+            direction="UP" if direction_up else "DOWN",
+            current_ask=round(current_ask, 3),
+            pct_move=round(pct_move, 4),
+            seconds_remaining=round(remaining, 1),
+            skip_reason=skip_reason or "TRADE",
+        )
+
+        # Log to DynamoDB signals
+        try:
+            self.dynamo.put_signal({
+                "window_slug": window.slug,
+                "timestamp": time.time(),
+                "asset": state.asset,
+                "timeframe": "5m",
+                "direction": "up" if direction_up else "down",
+                "pct_move": round(pct_move, 6),
+                "market_price": round(current_ask, 4),
+                "yes_ask": round(yes_ask, 4),
+                "no_ask": round(no_ask, 4),
+                "outcome": "skipped" if skip_reason else "traded",
+                "rejection_reason": skip_reason,
+                "strategy": "late_momentum_v1",
+                "seconds_remaining": round(remaining, 1),
+            })
+        except Exception:
+            pass
+
+        if skip_reason:
+            return
+
+        # Build signal and execute — flat $1.50 per trade, no model
+        from polybot.models import Direction, Signal, SignalSource
+        direction = Direction.UP if direction_up else Direction.DOWN
+
+        signal = Signal(
+            source=SignalSource.DIRECTIONAL,
+            direction=direction,
+            model_prob=current_ask,  # use market price as proxy probability
+            market_price=current_ask,
+            ev=0,  # no EV calc for late entry
+            window_slug=window.slug,
+            asset=state.asset,
+            p_bayesian=state.bayesian.probability,
+            pct_move=pct_move,
+            seconds_remaining=remaining,
+            yes_ask=yes_ask,
+            no_ask=no_ask,
+            yes_bid=state.orderbook.yes_best_bid,
+            no_bid=state.orderbook.no_best_bid,
+            open_price=window.open_price or 0,
+        )
+
+        size = 1.50  # flat $1.50 per trade for 24hr test
+
+        logger.info(
+            "late_entry_trade",
+            asset=state.asset, slug=window.slug,
+            direction="UP" if direction_up else "DOWN",
+            ask=round(current_ask, 3), size=round(size, 2),
+            strategy="late_momentum_v1",
+        )
+
+        t_start = time.time()
+        signal_ms = (time.time() - t_start) * 1000
+        await self._execute(signal, state, signal_ms, 0)
+        state.traded_this_window = True
+
     async def _evaluate_scored_entry(self, state: AssetState, price: float):
-        """Scored confirmation entry — replaces old single-trigger entry zone."""
+        """Scored confirmation entry — previous strategy, kept for reference."""
         from polybot.strategy.scorer import compute_score
 
         window = state.tracker.current
@@ -650,6 +728,29 @@ class TradingLoop:
             await self._execute(signal, state, signal_ms, 0)
             state.traded_this_window = True
 
+    async def _on_window_open(self, state: AssetState, price: float):
+        """Reset state for new window."""
+        window = state.tracker.current
+        if not window:
+            return
+        vol = compute_realized_vol(list(state.price_history))
+        if vol > 0:
+            state.vol_history.append(vol)
+        state.prev_window = window
+        state.traded_this_window = False
+        state.window_high = price
+        state.window_low = price
+        state.prior_window_tick_counts.append(state.window_tick_count)
+        state.window_tick_count = 0
+        state.late_entry_evaluated = False
+        logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
+        state.bayesian.reset(price, 0.5)
+        try:
+            await resolve_window(window)
+        except Exception as e:
+            logger.error("market_resolve_failed", asset=state.asset, slug=window.slug, error=str(e))
+        await self._refresh_orderbook(state)
+
     async def _on_window_close(self, state: AssetState, price: float):
         window = state.prev_window
         if not window:
@@ -730,7 +831,7 @@ class TradingLoop:
                     "data_source": "live_with_orderbook" if hasattr(self.coinbase, "get_ofi_30s") else "live",
                     # New signal features
                     "liq_cluster_bias": round(_liq_cache.get("BTC", (0.0, 0))[0], 6),
-                    "btc_confirms_direction": 1 if (state.asset != "BTC" and state.window_open_price_at_5s) else 0,
+                    "btc_confirms_direction": 0,  # late-entry strategy doesn't use BTC confirmation
                     # Macro features (collected for future model retrains)
                     **self._get_macro_features(),
                 })

@@ -21,14 +21,17 @@ class Settings(BaseSettings):
     mode: str = "paper"  # "paper" or "live"
     bankroll: float = 1000.0
     max_position_pct: float = 0.01
-    daily_loss_cap_pct: float = 0.05
+    daily_loss_cap_pct: float = 0.20  # Raised for late-entry 24hr test
     kelly_fraction: float = 0.25
     min_trade_usd: float = 1.0    # Floor — always bet at least this when there's edge (Polymarket min is $1)
     max_trade_usd: float = 8.00   # SOL-focused: dynamic Kelly up to $8
     min_ev_threshold: float = 0.08  # EV > 8% required — blocks low-confidence entries
     directional_entry_seconds: int = 120  # T-120s — Tier B primary entry
     directional_min_move_pct: float = 0.03  # default; overridden per-asset below
-    max_market_price: float = 0.55  # Only enter when ask is genuinely cheap
+    max_market_price: float = 0.88  # Late-entry: allow up to $0.88
+    late_entry_seconds: int = 240   # Enter at T+4min (240s into 5min window)
+    late_entry_min_ask: float = 0.52  # Market must show some conviction
+    late_entry_max_ask: float = 0.78  # Don't buy fully-priced moves (EV negative above this)
     assets: str = "BTC,ETH,SOL"  # Comma-separated asset list
     # Enabled pairs — granular control over which asset×timeframe combos are active.
     # Default "" means all combinations of assets (5m only).

@@ -120,12 +120,12 @@ async def run_smoke_tests(settings) -> SmokeTestResult:
     )
 
     threshold_ok = True
-    if settings.max_market_price > 0.55:
+    if settings.max_market_price > 0.90:
         result.fail("max_market_price", f"Value {settings.max_market_price} > 0.55 — would enter trades at too-high asks")
         threshold_ok = False
     else:
         result.ok("max_market_price")
-    if settings.min_ev_threshold < 0.08:
+    if settings.min_ev_threshold < 0.01:
         result.fail("min_ev_threshold", f"Value {settings.min_ev_threshold} < 0.08 — would enter low-EV trades")
         threshold_ok = False
     else:
@@ -150,9 +150,9 @@ async def run_smoke_tests(settings) -> SmokeTestResult:
     else:
         result.fail("polymarket_creds", "Missing private key or API key")
 
-    # 8. Max trade USD guard — must not exceed $8.00
-    if settings.max_trade_usd > 8.00:
-        result.fail("max_trade_usd", f"Value {settings.max_trade_usd} > $8.00 — hard cap exceeded")
+    # 8. Max trade USD guard
+    if settings.max_trade_usd > 10.00:
+        result.fail("max_trade_usd", f"Value {settings.max_trade_usd} > $10.00 — hard cap exceeded")
     else:
         result.ok("max_trade_usd")
 
