@@ -361,12 +361,7 @@ class TradingLoop:
             except Exception as e:
                 logger.warning("model_refresh_failed", error=str(e)[:60])
 
-            # Auto-claim winnings every 30 minutes
-            if not hasattr(self, '_last_claim'):
-                self._last_claim = 0.0
-            if time.time() - self._last_claim >= 1800:
-                self._last_claim = time.time()
-                asyncio.create_task(self._run_claim(), name="auto_claim")
+            # Auto-claim removed — Gnosis Safe proxy incompatible, claim manually via UI
 
     async def _tick_asset(self, state: AssetState, price: float):
         tracker = state.tracker
@@ -443,12 +438,14 @@ class TradingLoop:
         pct_move = state.tracker.pct_move(price) or 0.0
         remaining = window.seconds_remaining()
 
-        # Only 2 hard guards — trade every window unless these fire
+        # Guards — only these block a trade
         skip_reason = ""
         if current_ask > self.settings.late_entry_max_ask:
             skip_reason = "fully_priced"
         elif not self.risk.can_trade():
             skip_reason = "circuit_breaker"
+        elif state.asset == "BTC" and current_ask < 0.62:
+            skip_reason = "btc_no_conviction"
 
         # Log every evaluation
         logger.info(
@@ -507,7 +504,7 @@ class TradingLoop:
             open_price=window.open_price or 0,
         )
 
-        size = 10.00  # flat $5.00 per trade
+        size = 10.00  # flat $10 per trade — no Kelly, no tiers
 
         logger.info(
             "late_entry_trade",

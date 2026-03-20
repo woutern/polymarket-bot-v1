@@ -131,11 +131,8 @@ class LiveTrader:
 
             self._traded_slugs.add(signal.window_slug)
 
-            # $10 default, $5 if Kelly suggests low confidence
-            kelly = self.risk.get_bet_size(lgbm_prob=signal.model_prob)
-            size = 5.00 if kelly <= self.risk.min_trade_usd else 10.00
-            if size <= 0:
-                return None
+            # Flat $10 per trade — no Kelly, no tiers
+            size = 10.00
 
             return await self._execute_directional(signal, yes_token_id, no_token_id, size, signal_ms, bedrock_ms)
 
