@@ -131,8 +131,9 @@ class LiveTrader:
 
             self._traded_slugs.add(signal.window_slug)
 
-            # Hard cap at $5.00 per trade
-            size = min(10.00, self.risk.get_bet_size(lgbm_prob=signal.model_prob))
+            # $10 default, $5 if Kelly suggests low confidence
+            kelly = self.risk.get_bet_size(lgbm_prob=signal.model_prob)
+            size = 5.00 if kelly <= self.risk.min_trade_usd else 10.00
             if size <= 0:
                 return None
 
