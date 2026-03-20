@@ -300,6 +300,8 @@ def api_data():
         if not (t.get("resolved") or _bool_field(t, "resolved")):
             continue
         asset = _extract_field(t, "asset", "BTC").upper() or "BTC"
+        if asset == "ETH":
+            continue  # ETH disabled — exclude from stats
         slug = _extract_field(t, "window_slug", "")
         key = f"{asset} 5m"
         p = _float_field(t, "pnl")
@@ -616,44 +618,46 @@ def api_pnl_history():
 
 @app.get("/api/balance")
 async def api_balance():
-    """Return wallet balance from Polymarket data-api activity history.
+    """Return wallet balance from on-chain USDC + Polymarket data-api.
 
-    Computes cash balance from: deposits - trade_spend + trade_redeems.
-    Also fetches open position value from /value endpoint.
-    Same data source as Polymarket UI — no auth needed.
+    Cash: on-chain Polygon USDC balance (bridged USDC, 6 decimals).
+    This is the actual liquid USDC — no auth needed, no calculation drift.
+    Positions: from data-api /value endpoint.
+    P&L: from activity history (spend vs redeems).
     """
     import httpx
+
+    # Polygon bridged USDC contract + balanceOf selector
+    USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+    BALANCE_OF = "0x70a08231"
+    POLYGON_RPCS = [
+        "https://rpc-mainnet.matic.quiknode.pro",
+        "https://polygon.llamarpc.com",
+        "https://rpc.ankr.com/polygon",
+    ]
 
     result = {"cash": 0.0, "positions": 0.0, "portfolio": 0.0, "total_pnl": 0.0}
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            # 1. Compute P&L from activity history (same as Polymarket UI)
-            total_spent = 0.0
-            total_redeemed = 0.0
-            offset = 0
-            while offset < 2000:  # safety limit
-                resp = await client.get(
-                    "https://data-api.polymarket.com/activity",
-                    params={"user": _WALLET_ADDRESS, "limit": 500, "offset": offset},
-                )
-                if resp.status_code != 200:
-                    break
-                batch = resp.json()
-                if not batch:
-                    break
-                for a in batch:
-                    usdc = float(a.get("usdcSize", 0) or 0)
-                    if a.get("type") == "TRADE":
-                        total_spent += usdc
-                    elif a.get("type") == "REDEEM":
-                        total_redeemed += usdc
-                if len(batch) < 500:
-                    break
-                offset += 500
-
-            pnl = round(total_redeemed - total_spent, 2)
-            cash = round(_TOTAL_DEPOSITED - total_spent + total_redeemed, 2)
+            # 1. On-chain USDC balance (liquid cash)
+            addr_padded = _WALLET_ADDRESS.lower().replace("0x", "").zfill(64)
+            call_data = BALANCE_OF + addr_padded
+            payload = {
+                "jsonrpc": "2.0", "id": 1,
+                "method": "eth_call",
+                "params": [{"to": USDC_CONTRACT, "data": call_data}, "latest"],
+            }
+            cash = 0.0
+            for rpc in POLYGON_RPCS:
+                try:
+                    resp = await client.post(rpc, json=payload, timeout=5.0)
+                    if resp.status_code == 200:
+                        hex_val = resp.json().get("result", "0x0") or "0x0"
+                        cash = int(hex_val, 16) / 1_000_000
+                        break
+                except Exception:
+                    continue
 
             # 2. Open position value
             positions = 0.0
@@ -669,11 +673,59 @@ async def api_balance():
             except Exception:
                 pass
 
+            # 3. P&L from activity history (excluding opportunity bot trades)
+            # Load opportunity condition_ids to exclude from crypto bot P&L
+            opp_condition_ids = set()
+            try:
+                _opp_tbl = _ddb.Table("polymarket-bot-opportunity-trades")
+                _opp_resp = _opp_tbl.scan(ProjectionExpression="condition_id")
+                for _oi in _opp_resp.get("Items", []):
+                    cid = _oi.get("condition_id", "")
+                    if cid:
+                        opp_condition_ids.add(cid)
+            except Exception:
+                pass  # table may not exist yet
+
+            total_spent = 0.0
+            total_redeemed = 0.0
+            opp_spent = 0.0
+            opp_redeemed = 0.0
+            offset = 0
+            while offset < 2000:
+                resp = await client.get(
+                    "https://data-api.polymarket.com/activity",
+                    params={"user": _WALLET_ADDRESS, "limit": 500, "offset": offset},
+                )
+                if resp.status_code != 200:
+                    break
+                batch = resp.json()
+                if not batch:
+                    break
+                for a in batch:
+                    usdc = float(a.get("usdcSize", 0) or 0)
+                    cid = a.get("conditionId", "")
+                    is_opp = cid in opp_condition_ids
+                    if a.get("type") == "TRADE":
+                        total_spent += usdc
+                        if is_opp:
+                            opp_spent += usdc
+                    elif a.get("type") == "REDEEM":
+                        total_redeemed += usdc
+                        if is_opp:
+                            opp_redeemed += usdc
+                if len(batch) < 500:
+                    break
+                offset += 500
+
+            # Bot P&L excludes opportunity trades
+            bot_spent = total_spent - opp_spent
+            bot_redeemed = total_redeemed - opp_redeemed
+            pnl = round(bot_redeemed - bot_spent, 2)
             portfolio = round(cash + positions, 2)
 
             result = {
-                "cash": cash,
-                "positions": positions,
+                "cash": round(cash, 2),
+                "positions": round(positions, 2),
                 "portfolio": portfolio,
                 "total_pnl": pnl,
                 "total_deposited": _TOTAL_DEPOSITED,
@@ -685,6 +737,203 @@ async def api_balance():
 
     return result
 
+
+@app.get("/api/opportunities")
+async def api_opportunities():
+    """Return opportunity trades and stats from DynamoDB."""
+    result = {"active": [], "resolved": [], "deployed_today": 0, "win_rate": 0, "total_pnl": 0, "trades_today": 0}
+    try:
+        import time as _t
+        from decimal import Decimal
+        _opp_table = _ddb.Table("polymarket-bot-opportunity-trades")
+        resp = _opp_table.scan()
+        items = resp.get("Items", [])
+        while "LastEvaluatedKey" in resp:
+            resp = _opp_table.scan(ExclusiveStartKey=resp["LastEvaluatedKey"])
+            items.extend(resp.get("Items", []))
+
+        today_start = _t.time() - 86400
+        active = []
+        resolved = []
+        today_pnl = 0.0
+        today_wins = 0
+        today_total = 0
+        today_deployed = 0.0
+
+        for i in items:
+            i = {k: float(v) if isinstance(v, Decimal) else v for k, v in i.items()}
+            ts = float(i.get("timestamp", 0))
+            is_today = ts >= today_start
+
+            if int(i.get("resolved", 0)):
+                resolved.append(i)
+                if is_today:
+                    pnl = float(i.get("pnl", 0))
+                    today_pnl += pnl
+                    today_total += 1
+                    if pnl > 0:
+                        today_wins += 1
+                    today_deployed += float(i.get("size_usd", 0))
+            else:
+                # Calculate hours_left from end_date
+                active.append(i)
+                if is_today:
+                    today_deployed += float(i.get("size_usd", 0))
+                    today_total += 1
+
+        resolved.sort(key=lambda x: float(x.get("timestamp", 0)), reverse=True)
+        active.sort(key=lambda x: float(x.get("timestamp", 0)), reverse=True)
+
+        # P&L by category (all time)
+        by_cat = {}
+        for i in resolved + active:
+            cat = str(i.get("category", "") or i.get("worker", "") or "other")
+            if cat not in by_cat:
+                by_cat[cat] = {"trades": 0, "wins": 0, "pnl": 0.0, "deployed": 0.0}
+            by_cat[cat]["trades"] += 1
+            by_cat[cat]["deployed"] += float(i.get("size_usd", 0))
+            if int(i.get("resolved", 0)):
+                p = float(i.get("pnl", 0))
+                by_cat[cat]["pnl"] += p
+                if p > 0:
+                    by_cat[cat]["wins"] += 1
+
+        result = {
+            "active": active,
+            "resolved": resolved[:50],
+            "deployed_today": round(today_deployed, 2),
+            "win_rate": round(today_wins / today_total * 100, 1) if today_total else 0,
+            "total_pnl": round(today_pnl, 2),
+            "trades_today": today_total,
+            "by_category": {k: {kk: round(vv, 2) if isinstance(vv, float) else vv for kk, vv in v.items()} for k, v in by_cat.items()},
+        }
+    except Exception as e:
+        result["error"] = str(e)[:100]
+    return result
+
+
+@app.get("/api/opportunities/skipped")
+async def api_opportunities_skipped():
+    """Return skipped opportunities from the last scan for manual review."""
+    result = {"skipped": []}
+    try:
+        from decimal import Decimal
+        _skip_tbl = _ddb.Table("polymarket-bot-opportunity-skipped")
+        resp = _skip_tbl.scan()
+        items = resp.get("Items", [])
+        # Convert Decimals and sort by volume desc
+        converted = []
+        for i in items:
+            converted.append({k: float(v) if isinstance(v, Decimal) else v for k, v in i.items()})
+        converted.sort(key=lambda x: float(x.get("volume", 0)), reverse=True)
+        result["skipped"] = converted[:30]
+    except Exception as e:
+        result["error"] = str(e)[:100]
+    return result
+
+
+@app.post("/api/opportunities/trade")
+async def api_opportunities_trade(slug: str, side: str, price: float):
+    """Place a manual $2 FOK trade on a skipped opportunity.
+
+    Called from the dashboard Trade button. Uses same wallet as main bot.
+    Moves the market from skipped to trades table.
+    """
+    import httpx as _hx
+
+    result = {"success": False, "error": ""}
+    try:
+        # 1. Get market data from skipped table
+        from decimal import Decimal
+        _skip_tbl = _ddb.Table("polymarket-bot-opportunity-skipped")
+        resp = _skip_tbl.get_item(Key={"slug": slug})
+        item = resp.get("Item")
+        if not item:
+            return {"success": False, "error": "Market not found in skipped list"}
+
+        # 2. Get fresh market data from Gamma
+        async with _hx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"https://gamma-api.polymarket.com/markets", params={"slug": slug})
+            if resp.status_code != 200:
+                return {"success": False, "error": f"Gamma API error: {resp.status_code}"}
+            markets = resp.json()
+            if not markets:
+                return {"success": False, "error": "Market not found on Gamma"}
+            market = markets[0]
+
+        import json as _j
+        tokens = market.get("clobTokenIds", [])
+        if isinstance(tokens, str):
+            tokens = _j.loads(tokens)
+        prices = market.get("outcomePrices", [])
+        if isinstance(prices, str):
+            prices = _j.loads(prices)
+
+        token_id = tokens[0] if side == "YES" else (tokens[1] if len(tokens) > 1 else "")
+        current_price = float(prices[0]) if side == "YES" else (float(prices[1]) if len(prices) > 1 else 0)
+        neg_risk = market.get("negRisk", False)
+        condition_id = market.get("conditionId", "")
+
+        if not token_id or current_price <= 0 or current_price >= 1:
+            return {"success": False, "error": f"Bad token/price: {current_price}"}
+
+        # 3. Place FOK order
+        from polybot.config import Settings as _S
+        from py_clob_client.client import ClobClient as _CC
+        from py_clob_client.clob_types import ApiCreds as _AC, CreateOrderOptions as _CO, OrderArgs as _OA, OrderType as _OT
+
+        _s = _S()
+        _creds = _AC(api_key=_s.polymarket_api_key, api_secret=_s.polymarket_api_secret, api_passphrase=_s.polymarket_api_passphrase)
+        _funder = _s.polymarket_funder or None
+        _sig = 2 if _funder else 0
+        _client = _CC(host="https://clob.polymarket.com", chain_id=_s.polymarket_chain_id, key=_s.polymarket_private_key, creds=_creds, signature_type=_sig, funder=_funder)
+
+        _price = round(current_price, 2)
+        _shares = max(round(2.00 / _price, 0), 5)
+        _cost = round(_shares * _price, 2)
+
+        _signed = _client.create_order(_OA(token_id=token_id, price=_price, size=_shares, side="BUY"), _CO(tick_size="0.01", neg_risk=neg_risk))
+        _resp = _client.post_order(_signed, _OT.FOK)
+        _success = _resp.get("success", False) if _resp else False
+        _order_id = _resp.get("orderID", "") if _resp else ""
+        _error = _resp.get("errorMsg", "") if _resp else ""
+
+        if not _success:
+            return {"success": False, "error": _error[:80]}
+
+        # 4. Move from skipped → trades table
+        import time as _t
+        _trades_tbl = _ddb.Table("polymarket-bot-opportunity-trades")
+        _trades_tbl.put_item(Item={
+            "slug": slug,
+            "timestamp": Decimal(str(_t.time())),
+            "question": str(item.get("question", "?"))[:200],
+            "condition_id": condition_id,
+            "side": side,
+            "ask_price": Decimal(str(_price)),
+            "size_usd": Decimal(str(_cost)),
+            "shares": Decimal(str(_shares)),
+            "order_id": _order_id,
+            "ai_verdict": str(item.get("ai_verdict", "manual")),
+            "ai_confidence": item.get("ai_confidence", Decimal("0")),
+            "ai_reasoning": "Manual trade from dashboard",
+            "category": str(item.get("category", "")),
+            "hours_left": item.get("hours_left", Decimal("0")),
+            "volume": item.get("volume", Decimal("0")),
+            "neg_risk": neg_risk,
+            "resolved": 0,
+            "outcome": "pending",
+            "pnl": Decimal("0"),
+        })
+
+        # Remove from skipped
+        _skip_tbl.delete_item(Key={"slug": slug})
+
+        result = {"success": True, "order_id": _order_id, "price": _price, "shares": _shares, "cost": _cost}
+    except Exception as e:
+        result = {"success": False, "error": str(e)[:100]}
+
+    return result
 
 
 # ── HTML dashboard ────────────────────────────────────────────────────────────
@@ -730,7 +979,7 @@ HTML = r"""<!DOCTYPE html>
   .card-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--text3);margin-bottom:8px}
   .card-value{font-size:28px;font-weight:800;letter-spacing:-.5px;line-height:1.1}
   .card-sub{font-size:12px;color:var(--text2);margin-top:6px}
-  .green{color:var(--green)}.red{color:var(--red)}.purple{color:var(--purple)}
+  .green{color:var(--green)}.red{color:var(--red)}.purple{color:var(--purple)}.blue{color:#2563eb}
 
   /* Tables */
   table{width:100%;border-collapse:collapse}
@@ -744,6 +993,8 @@ HTML = r"""<!DOCTYPE html>
   .tag-down{background:#fef2f2;color:#dc2626}
   .tag-win{background:#ecfdf5;color:#059669}
   .tag-loss{background:#fef2f2;color:#dc2626}
+  .tag-prov-win{background:#eff6ff;color:#2563eb}
+  .tag-prov-loss{background:#eff6ff;color:#2563eb}
   .tag-open{background:#f0f9ff;color:#0284c7}
   .empty{text-align:center;padding:40px;color:var(--text3);font-size:13px}
 
@@ -777,6 +1028,18 @@ HTML = r"""<!DOCTYPE html>
     .nav-tabs{display:none}
     .hamburger{display:block}
   }
+  .sortable th[data-sort]{cursor:pointer;user-select:none;position:relative;padding-right:18px}
+  .sortable th[data-sort]:hover{background:#f1f5f9}
+  .sortable th[data-sort]::after{content:'↕';position:absolute;right:4px;opacity:0.3;font-size:11px}
+  .sortable th.sort-asc::after{content:'↑';opacity:0.8}
+  .sortable th.sort-desc::after{content:'↓';opacity:0.8}
+  .btn-trade{background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
+  .btn-trade:hover{background:#2563eb}
+  .btn-trade:disabled{background:#94a3b8;cursor:not-allowed}
+  .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+  .badge-pending{background:#fef3c7;color:#92400e}
+  .badge-win{background:#d1fae5;color:#065f46}
+  .badge-loss{background:#fee2e2;color:#991b1b}
 </style>
 </head>
 <body>
@@ -787,6 +1050,7 @@ HTML = r"""<!DOCTYPE html>
     <button class="nav-tab active" onclick="showPage('overview',this)">Overview</button>
     <button class="nav-tab" onclick="showPage('trades',this)">Trades</button>
     <button class="nav-tab" onclick="showPage('analytics',this)">Analytics</button>
+    <button class="nav-tab" onclick="showPage('opportunities',this)">Opportunities</button>
   </div>
   <div class="nav-mode" id="mode-badge">LIVE</div>
   <button class="hamburger" onclick="document.getElementById('mobile-menu').classList.toggle('open')" aria-label="Menu">
@@ -799,6 +1063,7 @@ HTML = r"""<!DOCTYPE html>
   <button class="active" onclick="showPage('overview',this);document.getElementById('mobile-menu').classList.remove('open')">Overview</button>
   <button onclick="showPage('trades',this);document.getElementById('mobile-menu').classList.remove('open')">Trades</button>
   <button onclick="showPage('analytics',this);document.getElementById('mobile-menu').classList.remove('open')">Analytics</button>
+  <button onclick="showPage('opportunities',this);document.getElementById('mobile-menu').classList.remove('open')">Opportunities</button>
 </div>
 
 <!-- ═══ OVERVIEW ═══ -->
@@ -901,6 +1166,30 @@ HTML = r"""<!DOCTYPE html>
 </div>
 </div>
 
+<!-- ═══ OPPORTUNITIES ═══ -->
+<div id="page-opportunities" class="page-content">
+<div class="page">
+  <div class="grid grid-4">
+    <div class="card"><div class="card-label">Deployed Today</div><div class="card-value" id="opp-deployed">—</div></div>
+    <div class="card"><div class="card-label">Win Rate</div><div class="card-value" id="opp-wr">—</div></div>
+    <div class="card"><div class="card-label">P&L</div><div class="card-value" id="opp-pnl">—</div></div>
+    <div class="card"><div class="card-label">Trades Today</div><div class="card-value" id="opp-count">—</div></div>
+  </div>
+  <div class="section">
+    <div class="section-title">Active Trades</div>
+    <div class="panel"><table class="t sortable" id="tbl-opp-active"><thead><tr>
+      <th data-sort="str">Market</th><th data-sort="str">Side</th><th data-sort="num">Entry</th><th data-sort="num">Invested</th><th data-sort="num">To Win</th><th data-sort="str">AI Reasoning</th><th data-sort="num">Resolves</th><th data-sort="str">Status</th>
+    </tr></thead><tbody id="opp-active"></tbody></table></div>
+  </div>
+  <div class="section">
+    <div class="section-title">Resolved Trades (7 days)</div>
+    <div class="panel"><table class="t sortable" id="tbl-opp-resolved"><thead><tr>
+      <th data-sort="str">Market</th><th data-sort="str">Side</th><th data-sort="num">Entry</th><th data-sort="str">Result</th><th data-sort="num">P&L</th><th data-sort="str">AI Verdict</th><th data-sort="num">Confidence</th>
+    </tr></thead><tbody id="opp-resolved"></tbody></table></div>
+  </div>
+</div>
+</div>
+
 <script>
 let pnlChart = null, hourChart = null;
 
@@ -912,6 +1201,7 @@ function showPage(name, btn) {
   if (name === 'overview') refresh();
   else if (name === 'trades') loadTrades();
   else if (name === 'analytics') loadAnalytics();
+  else if (name === 'opportunities') loadOpportunities();
 }
 
 function fmtTs(ts) {
@@ -936,7 +1226,7 @@ async function refresh() {
     const data = await dataResp.json();
     const bal = await balResp.json();
     const s = data.stats;
-    const trades = data.trades || [];
+    const trades = (data.trades || []).filter(t => (t.asset||'') !== 'ETH');
 
     // Stats — Polymarket is source of truth for P&L and portfolio
     const pnl = bal.total_pnl || 0;
@@ -990,10 +1280,13 @@ async function refresh() {
       const pnl = parseFloat(t.pnl||0);
       const resolved = t.resolved && parseFloat(t.resolved) === 1;
       const won = pnl > 0;
-      const result = !resolved ? '<span class="tag tag-open">OPEN</span>' : won ? '<span class="tag tag-win">WIN</span>' : '<span class="tag tag-loss">LOSS</span>';
+      const verified = t.outcome_source === 'polymarket_verified' || t.outcome_source === 'manual_sell';
+      const result = !resolved ? '<span class="tag tag-open">OPEN</span>'
+        : verified ? (won ? '<span class="tag tag-win">WIN</span>' : '<span class="tag tag-loss">LOSS</span>')
+        : (won ? '<span class="tag tag-prov-win">WIN?</span>' : '<span class="tag tag-prov-loss">LOSS?</span>');
       const dir = t.direction === 'up' || t.side === 'YES' ? '<span class="tag tag-up">UP</span>' : '<span class="tag tag-down">DOWN</span>';
       const pnlStr = resolved ? (pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2) : '—';
-      const pnlCls = resolved ? (won?'green':'red') : '';
+      const pnlCls = resolved ? (verified ? (won?'green':'red') : 'blue') : '';
       const slug = t.window_slug || '';
       const link = slug ? ' <a href="https://polymarket.com/market/'+slug+'" target="_blank" style="opacity:.4;text-decoration:none;font-size:11px">&#x1F517;</a>' : '';
       tbody.innerHTML += '<tr><td style="white-space:nowrap">'+fmtTs(t.timestamp)+'</td><td>'+assetTag(t.asset||'')+'</td><td>'+dir+'</td><td>\$'+(parseFloat(t.fill_price||0)).toFixed(2)+'</td><td>\$'+(parseFloat(t.size_usd||0)).toFixed(2)+'</td><td class="'+pnlCls+'" style="font-weight:600">'+pnlStr+'</td><td>'+result+link+'</td></tr>';
@@ -1026,15 +1319,19 @@ async function loadTrades() {
     const data = await resp.json();
     const tbody = document.getElementById('tl-body');
     tbody.innerHTML = '';
-    for (const t of (data.trades||[])) {
+    for (const t of (data.trades||[]).filter(t => (t.asset||'') !== 'ETH')) {
       const pnl = parseFloat(t.pnl||0);
       const resolved = t.resolved && parseFloat(t.resolved) === 1;
       const won = pnl > 0;
-      const result = !resolved ? '<span class="tag tag-open">OPEN</span>' : won ? '<span class="tag tag-win">WIN</span>' : '<span class="tag tag-loss">LOSS</span>';
+      const verified2 = t.outcome_source === 'polymarket_verified' || t.outcome_source === 'manual_sell';
+      const result = !resolved ? '<span class="tag tag-open">OPEN</span>'
+        : verified2 ? (won ? '<span class="tag tag-win">WIN</span>' : '<span class="tag tag-loss">LOSS</span>')
+        : (won ? '<span class="tag tag-prov-win">WIN?</span>' : '<span class="tag tag-prov-loss">LOSS?</span>');
       const dir = t.direction === 'up' || t.side === 'YES' ? 'UP' : 'DOWN';
       const slug2 = t.window_slug || '';
       const link2 = slug2 ? ' <a href="https://polymarket.com/market/'+slug2+'" target="_blank" style="opacity:.4;text-decoration:none;font-size:11px">&#x1F517;</a>' : '';
-      tbody.innerHTML += '<tr><td style="white-space:nowrap">'+fmtTs(t.timestamp)+'</td><td>'+assetTag(t.asset||'')+'</td><td>'+t.side+'</td><td>'+dir+'</td><td>\$'+(parseFloat(t.fill_price||0)).toFixed(2)+'</td><td>\$'+(parseFloat(t.size_usd||0)).toFixed(2)+'</td><td class="'+(resolved?(won?'green':'red'):'')+'" style="font-weight:600">'+(resolved?(pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2):'—')+'</td><td>'+result+link2+'</td></tr>';
+      const pnlCls2 = resolved ? (verified2 ? (won?'green':'red') : 'blue') : '';
+      tbody.innerHTML += '<tr><td style="white-space:nowrap">'+fmtTs(t.timestamp)+'</td><td>'+assetTag(t.asset||'')+'</td><td>'+t.side+'</td><td>'+dir+'</td><td>\$'+(parseFloat(t.fill_price||0)).toFixed(2)+'</td><td>\$'+(parseFloat(t.size_usd||0)).toFixed(2)+'</td><td class="'+pnlCls2+'" style="font-weight:600">'+(resolved?(pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2):'—')+'</td><td>'+result+link2+'</td></tr>';
     }
   } catch(e) {}
 }
@@ -1043,7 +1340,7 @@ async function loadAnalytics() {
   try {
     const resp = await fetch('/api/data');
     const data = await resp.json();
-    const trades = data.trades || [];
+    const trades = (data.trades || []).filter(t => (t.asset||'') !== 'ETH');
     const sp = data.stats.strategy_pnl || {};
 
     // PnL by asset
@@ -1091,6 +1388,115 @@ async function loadAnalytics() {
     });
   } catch(e) { console.error('analytics error', e); }
 }
+
+async function loadOpportunities() {
+  try {
+    const resp = await fetch('/api/opportunities');
+    const data = await resp.json();
+    // KPIs
+    document.getElementById('opp-deployed').textContent = '$'+(data.deployed_today||0).toFixed(2);
+    document.getElementById('opp-wr').textContent = (data.win_rate||0).toFixed(0)+'%';
+    document.getElementById('opp-pnl').textContent = (data.total_pnl>=0?'+':'')+'\$'+(data.total_pnl||0).toFixed(2);
+    document.getElementById('opp-pnl').className = 'card-value '+(data.total_pnl>=0?'green':'red');
+    document.getElementById('opp-count').textContent = data.trades_today||0;
+    // Active
+    let ah = '';
+    for (const t of (data.active||[])) {
+      const aSlug = t.slug||'';
+      const aLink = aSlug ? ' <a href="https://polymarket.com/market/'+aSlug+'" target="_blank" style="opacity:0.4">&#x1F517;</a>' : '';
+      // Compute live countdown from end_date if available
+      let aTimeStr = '—';
+      if (t.end_date) {
+        const aHrs = Math.max(0,(new Date(t.end_date).getTime()-Date.now())/3600000);
+        const aH = Math.floor(aHrs); const aM = Math.round((aHrs-aH)*60);
+        aTimeStr = aHrs <= 0 ? 'Ended' : aH > 0 ? aH+'h '+aM+'m' : aM+'m';
+      } else {
+        const hrs = parseFloat(t.hours_left||0);
+        aTimeStr = hrs > 0 ? hrs.toFixed(1)+'h' : '—';
+      }
+      const invested = parseFloat(t.size_usd||0);
+      const shares = parseFloat(t.shares||0);
+      const toWin = shares > 0 ? (shares - invested).toFixed(2) : '—';
+      ah += '<tr><td>'+t.question.slice(0,50)+aLink+'</td><td>'+t.side+'</td><td>$'+parseFloat(t.ask_price).toFixed(2)+'</td><td>$'+invested.toFixed(2)+'</td><td class="green">$'+toWin+'</td><td style="font-size:12px;color:#64748b">'+(t.ai_reasoning||'').slice(0,120)+'</td><td>'+aTimeStr+'</td><td><span class="badge badge-pending">Pending</span></td></tr>';
+    }
+    document.getElementById('opp-active').innerHTML = ah || '<tr><td colspan="8" class="empty">No active trades</td></tr>';
+    // Resolved
+    let rh = '';
+    for (const t of (data.resolved||[])) {
+      const pnl = parseFloat(t.pnl||0);
+      const won = pnl > 0;
+      const rSlug = t.slug||'';
+      const rLink = rSlug ? ' <a href="https://polymarket.com/market/'+rSlug+'" target="_blank" style="opacity:0.4">&#x1F517;</a>' : '';
+      rh += '<tr><td>'+t.question.slice(0,50)+rLink+'</td><td>'+t.side+'</td><td>$'+parseFloat(t.ask_price).toFixed(2)+'</td><td><span class="badge badge-'+(won?'win':'loss')+'">'+(won?'WIN':'LOSS')+'</span></td><td class="'+(won?'green':'red')+'">'+(pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2)+'</td><td>'+t.ai_verdict+'</td><td>'+parseFloat(t.ai_confidence||0).toFixed(2)+'</td></tr>';
+    }
+    document.getElementById('opp-resolved').innerHTML = rh || '<tr><td colspan="7" class="empty">No resolved trades yet</td></tr>';
+
+  } catch(e) { console.error('opportunities error', e); }
+}
+
+async function manualTrade(slug, side, price) {
+  if (!confirm('Place $2 FOK trade on '+slug+' ('+side+' at $'+price.toFixed(2)+')?')) return;
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    let resp;
+    try {
+      resp = await fetch('/api/opportunities/trade?slug='+encodeURIComponent(slug)+'&side='+side+'&price='+price, {method:'POST'});
+    } catch(fetchErr) {
+      // CloudFront may block POST — try direct API Gateway
+      resp = await fetch('https://r1a61boamb.execute-api.us-east-1.amazonaws.com/api/opportunities/trade?slug='+encodeURIComponent(slug)+'&side='+side+'&price='+price, {method:'POST'});
+    }
+    const txt = await resp.text();
+    let data;
+    try { data = JSON.parse(txt); } catch(e) {
+      // CloudFront returned HTML — retry via direct API Gateway
+      const resp2 = await fetch('https://r1a61boamb.execute-api.us-east-1.amazonaws.com/api/opportunities/trade?slug='+encodeURIComponent(slug)+'&side='+side+'&price='+price, {method:'POST'});
+      data = await resp2.json();
+    }
+    if (data.success) {
+      btn.textContent = 'Filled $'+data.cost.toFixed(2);
+      btn.style.background = '#22c55e';
+      setTimeout(() => loadOpportunities(), 2000);
+    } else {
+      btn.textContent = 'Failed';
+      btn.style.background = '#ef4444';
+      alert('Trade failed: '+(data.error||'unknown'));
+      setTimeout(() => { btn.textContent = 'Trade $2'; btn.disabled = false; btn.style.background = ''; }, 3000);
+    }
+  } catch(e) {
+    btn.textContent = 'Error';
+    alert('Error: '+e.message);
+    setTimeout(() => { btn.textContent = 'Trade $2'; btn.disabled = false; btn.style.background = ''; }, 3000);
+  }
+}
+
+// Sortable tables
+document.addEventListener('click', function(e) {
+  const th = e.target.closest('th[data-sort]');
+  if (!th) return;
+  const table = th.closest('table');
+  const tbody = table.querySelector('tbody');
+  const idx = Array.from(th.parentNode.children).indexOf(th);
+  const type = th.dataset.sort; // "str" or "num"
+  const isAsc = th.classList.contains('sort-asc');
+  // Reset all headers in this table
+  th.parentNode.querySelectorAll('th').forEach(h => h.classList.remove('sort-asc','sort-desc'));
+  th.classList.add(isAsc ? 'sort-desc' : 'sort-asc');
+  const dir = isAsc ? -1 : 1;
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  rows.sort((a, b) => {
+    let av = a.children[idx]?.textContent?.trim() || '';
+    let bv = b.children[idx]?.textContent?.trim() || '';
+    if (type === 'num') {
+      av = parseFloat(av.replace(/[^0-9.\-]/g, '')) || 0;
+      bv = parseFloat(bv.replace(/[^0-9.\-]/g, '')) || 0;
+      return (av - bv) * dir;
+    }
+    return av.localeCompare(bv) * dir;
+  });
+  rows.forEach(r => tbody.appendChild(r));
+});
 
 // Auto-refresh overview every 30s
 refresh();

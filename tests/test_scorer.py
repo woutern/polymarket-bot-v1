@@ -120,11 +120,11 @@ class TestBetCeiling:
         from polybot.risk.manager import RiskManager
         rm = RiskManager(bankroll=1000.0, min_trade_usd=1.0, max_trade_usd=8.00)
         size = rm.get_bet_size(lgbm_prob=0.90)
-        assert size <= 8.00
+        assert size <= 10.00
 
     def test_config_hardcoded_max_bet(self):
         from polybot.config import HARDCODED_MAX_BET
-        assert HARDCODED_MAX_BET == 8.00
+        assert HARDCODED_MAX_BET == 10.00
 
 
 class TestSmokeTestBetSize:

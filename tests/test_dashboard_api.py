@@ -111,9 +111,8 @@ class TestApiData:
         assert "BTC 5m" in strats
         assert strats["BTC 5m"]["count"] == 1
         assert strats["BTC 5m"]["wins"] == 1
-        assert "ETH 5m" in strats
-        assert strats["ETH 5m"]["count"] == 1
-        assert strats["ETH 5m"]["wins"] == 0
+        # ETH filtered from dashboard (disabled pair)
+        assert "ETH 5m" not in strats
 
 
 class TestApiTrades:

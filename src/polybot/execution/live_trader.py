@@ -131,8 +131,13 @@ class LiveTrader:
 
             self._traded_slugs.add(signal.window_slug)
 
-            # Use size from late-entry strategy (leader $20 / follower $5 / tied $10)
+            # Use size from scan entry (leader $10 / tied $5 / follower $2.50)
             size = getattr(signal, '_late_entry_size', 10.00)
+            # Hard cap — never bet more than $10 regardless of what signal says
+            from polybot.config import HARDCODED_MAX_BET
+            if size > HARDCODED_MAX_BET:
+                logger.warning("size_capped", original=size, capped=HARDCODED_MAX_BET)
+                size = HARDCODED_MAX_BET
 
             return await self._execute_directional(signal, yes_token_id, no_token_id, size, signal_ms, bedrock_ms)
 

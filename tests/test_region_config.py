@@ -26,7 +26,15 @@ class TestNoEuWest1InSource:
     """After migration, no source code should reference eu-west-1."""
 
     def test_no_eu_west_1_in_executable_code(self):
-        """No hardcoded 'eu-west-1' in executable Python code (comments/docstrings OK)."""
+        """No hardcoded 'eu-west-1' in executable Python code (comments/docstrings OK).
+
+        Allowlist: smoke_test.py _ECS_CLUSTER_REGION constant is legitimate —
+        the ECS cluster MUST be in eu-west-1 (CLOB geoblocks us-east-1).
+        """
+        # Files + patterns that legitimately need eu-west-1
+        allowlist = {
+            "polybot/core/smoke_test.py": "_ECS_CLUSTER_REGION",
+        }
         violations = []
         for path, content in _read_py_files():
             in_docstring = False
@@ -42,7 +50,14 @@ class TestNoEuWest1InSource:
                     continue
                 # Check for region in executable code
                 if 'eu-west-1' in line and ('region' in line.lower() or '=' in line or '(' in line):
-                    violations.append(f"{path}:{i}: {stripped}")
+                    # Check allowlist
+                    allowed = False
+                    for apath, apattern in allowlist.items():
+                        if apath in path and apattern in stripped:
+                            allowed = True
+                            break
+                    if not allowed:
+                        violations.append(f"{path}:{i}: {stripped}")
         assert not violations, f"eu-west-1 references found:\n" + "\n".join(violations)
 
     def test_no_eu_prefix_bedrock_model(self):

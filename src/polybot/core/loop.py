@@ -75,6 +75,13 @@ class AssetState:
     window_tick_count: int = 0
     prior_window_tick_counts: deque = field(default_factory=lambda: deque(maxlen=5))
     late_entry_evaluated: bool = False
+    # Scan window state (T+210s to T+255s — find best entry price)
+    scan_active: bool = False
+    scan_best_ask: float | None = None
+    scan_best_ask_ts: float | None = None
+    scan_direction: str | None = None  # "up" or "down"
+    scan_direction_flipped: bool = False
+    scan_last_checked: float | None = None
 
 
 # ── Binance long/short ratio bias (free, no API key) ─────────────────────────
@@ -238,6 +245,12 @@ class TradingLoop:
         self._start_time = time.time()
         self._last_heartbeat = 0.0
 
+        # Balance-proportional sizing — base_balance set at startup from CLOB cashBalance
+        self._base_balance: float = 750.0  # reference for sizing scale (half of ~$1,452 wallet)
+        self._cached_balance: float = 0.0
+        self._balance_fetched_at: float = 0.0
+        self._BALANCE_REFRESH_INTERVAL = 1800  # 30 minutes
+
     async def start(self):
         logger.info(
             "loop_starting",
@@ -254,9 +267,11 @@ class TradingLoop:
         if smoke.failed:
             raise RuntimeError(f"Smoke test failed: {smoke.failed}")
 
-        # Balance check at startup only (no longer in hot loop)
+        # Balance check at startup — seeds sizing scale from CLOB cashBalance
         if self._wallet_address:
             try:
+                await self._refresh_balance()
+                # Also check on-chain balance for bankroll sync
                 from polybot.market.balance_checker import BalanceChecker
                 checker = BalanceChecker()
                 balances = await checker.check(self._wallet_address)
@@ -390,7 +405,7 @@ class TradingLoop:
         elif state.prev_open_ts is None:
             await self._on_window_open(state, price)
 
-        # Late-entry strategy: evaluate once at T+4min (240s)
+        # Late-entry scan window: T+210s start scan, T+240s execute (or early if cheap)
         seconds_since_open = time.time() - window.open_ts
         state.window_tick_count += 1
 
@@ -399,14 +414,8 @@ class TradingLoop:
             logger.debug("tick_progress", asset=state.asset, seconds=int(seconds_since_open),
                          target=self.settings.late_entry_seconds, evaluated=state.late_entry_evaluated)
 
-        if (
-            seconds_since_open >= self.settings.late_entry_seconds
-            and not state.late_entry_evaluated
-            and not state.traded_this_window
-        ):
-            logger.info("late_entry_triggered", asset=state.asset, seconds=round(seconds_since_open, 1))
-            state.late_entry_evaluated = True
-            await self._evaluate_late_entry(state, price)
+        if not state.late_entry_evaluated and not state.traded_this_window:
+            await self._scan_tick(state, price, seconds_since_open)
 
         state.prev_open_ts = current_open_ts
 
@@ -417,24 +426,191 @@ class TradingLoop:
 
     # 223 lines removed (dead method)
 
-    async def _evaluate_late_entry(self, state: AssetState, price: float):
-        """Late-entry v2: adaptive ceilings, min conviction, trailing-the-leader sizing."""
+    async def _refresh_balance(self):
+        """Fetch liquid USDC from Polymarket CLOB balance_allowance, cache for 30 minutes.
+
+        Uses get_balance_allowance(COLLATERAL) which returns the raw USDC balance
+        (6 decimals) — liquid cash available to trade, excluding open positions.
+        On first successful fetch, sets _base_balance as the reference point
+        for proportional sizing.
+        """
+        if time.time() - self._balance_fetched_at < self._BALANCE_REFRESH_INTERVAL:
+            return
+        try:
+            # Use the live trader's authenticated CLOB client
+            if not hasattr(self.trader, 'client'):
+                return
+            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.COLLATERAL,
+                signature_type=self.trader.client.builder.sig_type,
+            )
+            result = self.trader.client.get_balance_allowance(params)
+            raw = int(result.get("balance", 0) or 0)
+            cash = raw / 1_000_000  # USDC has 6 decimals
+            if cash > 0:
+                self._cached_balance = cash
+                self._balance_fetched_at = time.time()
+                logger.info("balance_refreshed", cash=round(cash, 2), base=round(self._base_balance, 2), scale=round(self._size_scale(), 3))
+        except Exception as e:
+            logger.warning("balance_refresh_failed", error=str(e)[:60])
+
+    def _size_scale(self) -> float:
+        """Compute sizing scale factor from cached balance.
+
+        scale = min(current_balance / base_balance, 1.0)
+        Caps at 1.0 so we never exceed base tier sizes.
+        Returns 1.0 if no balance data available yet.
+        """
+        if self._cached_balance <= 0 or self._base_balance <= 0:
+            return 1.0
+        return min(self._cached_balance / self._base_balance, 1.0)
+
+    def _scaled_size(self, base_size: float) -> float:
+        """Apply balance scale to a base size, enforcing $1.50 floor."""
+        return max(round(base_size * self._size_scale(), 2), 1.50)
+
+    async def _scan_tick(self, state: AssetState, price: float, seconds_since_open: float):
+        """Scan window logic: T+210s–T+255s, find best entry price.
+
+        Phase 1 (T+210s): Start scan — record direction and initial ask.
+        Phase 2 (T+210s–T+240s): Every 3s, refresh orderbook. Track best ask.
+            - If direction flips → abort (direction_unstable).
+            - If ask <= $0.58 → enter immediately (cheap enough).
+        Phase 3 (T+240s): Execute at best ask found during scan.
+        """
+        SCAN_START = self.settings.late_entry_seconds  # 210
+        SCAN_END = SCAN_START + 30  # 240
+        SCAN_DEADLINE = SCAN_START + 45  # 255 hard cutoff
+        SCAN_INTERVAL = 3.0  # seconds between orderbook checks
+        EARLY_ENTRY_ASK = 0.58  # enter immediately if ask this low
+
+        # Phase 1: Start scan at T+210s
+        if seconds_since_open >= SCAN_START and not state.scan_active and not state.scan_direction_flipped:
+            await self._refresh_orderbook(state)
+            yes_ask = state.orderbook.yes_best_ask
+            no_ask = state.orderbook.no_best_ask
+            if yes_ask >= no_ask:
+                direction = "up"
+                current_ask = yes_ask
+            else:
+                direction = "down"
+                current_ask = no_ask
+
+            state.scan_active = True
+            state.scan_direction = direction
+            state.scan_best_ask = current_ask
+            state.scan_best_ask_ts = time.time()
+            state.scan_last_checked = time.time()
+
+            logger.info("scan_started", asset=state.asset, direction=direction,
+                        ask=round(current_ask, 3), seconds=round(seconds_since_open, 1))
+
+            # Early entry: cheap enough, don't wait
+            if 0.55 <= current_ask <= EARLY_ENTRY_ASK:
+                logger.info("scan_early_entry", asset=state.asset, ask=round(current_ask, 3))
+                await self._execute_scan_entry(state, price)
+                return
+            return
+
+        # Phase 2: Scan in progress — check every 3s
+        if state.scan_active and seconds_since_open < SCAN_END:
+            now = time.time()
+            if state.scan_last_checked and (now - state.scan_last_checked) < SCAN_INTERVAL:
+                return  # too soon, wait
+
+            await self._refresh_orderbook(state)
+            state.scan_last_checked = now
+            yes_ask = state.orderbook.yes_best_ask
+            no_ask = state.orderbook.no_best_ask
+
+            if yes_ask >= no_ask:
+                direction = "up"
+                current_ask = yes_ask
+            else:
+                direction = "down"
+                current_ask = no_ask
+
+            # Direction flip check
+            if direction != state.scan_direction:
+                state.scan_direction_flipped = True
+                state.scan_active = False
+                logger.info("scan_direction_flipped", asset=state.asset,
+                            original=state.scan_direction, new=direction,
+                            seconds=round(seconds_since_open, 1))
+                # Log the skip to DynamoDB
+                self._log_scan_signal(state, price, skip_reason="direction_unstable")
+                state.late_entry_evaluated = True
+                return
+
+            # Track best (lowest) ask
+            if current_ask < state.scan_best_ask:
+                state.scan_best_ask = current_ask
+                state.scan_best_ask_ts = now
+                logger.debug("scan_better_ask", asset=state.asset,
+                             ask=round(current_ask, 3), seconds=round(seconds_since_open, 1))
+
+            # Early entry: cheap enough
+            if 0.55 <= current_ask <= EARLY_ENTRY_ASK:
+                state.scan_best_ask = current_ask
+                state.scan_best_ask_ts = now
+                logger.info("scan_early_entry", asset=state.asset, ask=round(current_ask, 3))
+                await self._execute_scan_entry(state, price)
+                return
+            return
+
+        # Phase 3: Scan deadline — execute at best ask found
+        if state.scan_active and seconds_since_open >= SCAN_END:
+            await self._execute_scan_entry(state, price)
+            return
+
+        # Hard deadline: if scan was aborted (direction flip) but we haven't marked evaluated
+        if seconds_since_open >= SCAN_DEADLINE and not state.late_entry_evaluated:
+            state.late_entry_evaluated = True
+
+    def _log_scan_signal(self, state: AssetState, price: float, skip_reason: str = ""):
+        """Log a scan evaluation to DynamoDB signals table."""
+        window = state.tracker.current
+        if not window:
+            return
+        scan_duration = (time.time() - (state.scan_best_ask_ts or time.time()))
+        try:
+            self.dynamo.put_signal({
+                "window_slug": window.slug,
+                "timestamp": time.time(),
+                "asset": state.asset,
+                "timeframe": "5m",
+                "direction": state.scan_direction or "unknown",
+                "pct_move": round(state.tracker.pct_move(price) or 0.0, 6),
+                "market_price": round(state.scan_best_ask or 0, 4),
+                "yes_ask": round(state.orderbook.yes_best_ask, 4),
+                "no_ask": round(state.orderbook.no_best_ask, 4),
+                "outcome": "skipped" if skip_reason else "traded",
+                "rejection_reason": skip_reason,
+                "strategy": "late_momentum_v3_scan",
+                "seconds_remaining": round(window.seconds_remaining(), 1),
+                "scan_best_ask": round(state.scan_best_ask or 0, 4),
+                "scan_duration_s": round(scan_duration, 1),
+                "direction_flipped": state.scan_direction_flipped,
+            })
+        except Exception:
+            pass
+
+    async def _execute_scan_entry(self, state: AssetState, price: float):
+        """Execute trade at the best ask found during the scan window."""
+        state.late_entry_evaluated = True
+        state.scan_active = False
+
         window = state.tracker.current
         if not window:
             return
 
-        await self._refresh_orderbook(state)
-        yes_ask = state.orderbook.yes_best_ask
-        no_ask = state.orderbook.no_best_ask
+        # Refresh balance for proportional sizing (every 30 min)
+        await self._refresh_balance()
 
-        # Direction: buy whichever side the market prices higher (default UP on tie)
-        if yes_ask >= no_ask:
-            direction_up = True
-            current_ask = yes_ask
-        else:
-            direction_up = False
-            current_ask = no_ask
-
+        # Use scan results
+        direction_up = state.scan_direction == "up"
+        current_ask = state.scan_best_ask or 0
         pct_move = state.tracker.pct_move(price) or 0.0
         remaining = window.seconds_remaining()
 
@@ -466,46 +642,37 @@ class TradingLoop:
 
         if skip_reason:
             size = 0
+            role = ""
         elif best_other > 0 and abs(my_ask - best_other) <= 0.03:
-            size = 10.00  # tied — both get $10
+            size = self._scaled_size(5.00)   # tied — base $5
+            role = "tied"
         elif my_ask >= best_other:
-            size = 20.00  # leader — strongest conviction
+            size = self._scaled_size(10.00)  # leader — base $10
+            role = "leader"
         else:
-            size = 5.00   # follower
+            size = self._scaled_size(2.50)   # follower — base $2.50
+            role = "follower"
 
-        # Log every evaluation
+        scan_duration = time.time() - (state.scan_best_ask_ts or time.time())
+
+        # Log evaluation
         logger.info(
             "late_entry_eval",
             asset=state.asset, slug=window.slug,
-            yes_ask=round(yes_ask, 3), no_ask=round(no_ask, 3),
             direction="UP" if direction_up else "DOWN",
             current_ask=round(current_ask, 3),
             max_ask=max_ask,
             size=size,
+            size_scale=round(self._size_scale(), 3),
             pct_move=round(pct_move, 4),
             seconds_remaining=round(remaining, 1),
+            scan_duration_s=round(scan_duration, 1),
+            direction_flipped=state.scan_direction_flipped,
             skip_reason=skip_reason or "TRADE",
         )
 
-        # Log to DynamoDB signals
-        try:
-            self.dynamo.put_signal({
-                "window_slug": window.slug,
-                "timestamp": time.time(),
-                "asset": state.asset,
-                "timeframe": "5m",
-                "direction": "up" if direction_up else "down",
-                "pct_move": round(pct_move, 6),
-                "market_price": round(current_ask, 4),
-                "yes_ask": round(yes_ask, 4),
-                "no_ask": round(no_ask, 4),
-                "outcome": "skipped" if skip_reason else "traded",
-                "rejection_reason": skip_reason,
-                "strategy": "late_momentum_v2",
-                "seconds_remaining": round(remaining, 1),
-            })
-        except Exception:
-            pass
+        # Log to DynamoDB
+        self._log_scan_signal(state, price, skip_reason=skip_reason)
 
         if skip_reason:
             return
@@ -513,6 +680,9 @@ class TradingLoop:
         # Build signal and execute
         from polybot.models import Direction, Signal, SignalSource
         direction = Direction.UP if direction_up else Direction.DOWN
+
+        # Refresh orderbook one final time for accurate yes/no asks
+        await self._refresh_orderbook(state)
 
         signal = Signal(
             source=SignalSource.DIRECTIONAL,
@@ -525,8 +695,8 @@ class TradingLoop:
             p_bayesian=state.bayesian.probability,
             pct_move=pct_move,
             seconds_remaining=remaining,
-            yes_ask=yes_ask,
-            no_ask=no_ask,
+            yes_ask=state.orderbook.yes_best_ask,
+            no_ask=state.orderbook.no_best_ask,
             yes_bid=state.orderbook.yes_best_bid,
             no_bid=state.orderbook.no_best_bid,
             open_price=window.open_price or 0,
@@ -537,10 +707,10 @@ class TradingLoop:
             asset=state.asset, slug=window.slug,
             direction="UP" if direction_up else "DOWN",
             ask=round(current_ask, 3), size=round(size, 2),
-            strategy="late_momentum_v2",
+            scan_duration_s=round(scan_duration, 1),
+            strategy="late_momentum_v3_scan",
         )
 
-        # Store size on signal for live_trader to use
         signal._late_entry_size = size
         t_start = time.time()
         signal_ms = (time.time() - t_start) * 1000
@@ -777,6 +947,12 @@ class TradingLoop:
         state.prior_window_tick_counts.append(state.window_tick_count)
         state.window_tick_count = 0
         state.late_entry_evaluated = False
+        state.scan_active = False
+        state.scan_best_ask = None
+        state.scan_best_ask_ts = None
+        state.scan_direction = None
+        state.scan_direction_flipped = False
+        state.scan_last_checked = None
         logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
         state.bayesian.reset(price, 0.5)
         try:
@@ -803,9 +979,11 @@ class TradingLoop:
             direction="UP" if went_up else "DOWN",
         )
 
+        # Provisional resolve using Coinbase (blue indicator) — will be overwritten
+        # by Polymarket Chainlink oracle once confirmed
         await self.trader.resolve_window(window.slug, went_up)
 
-        # Schedule Polymarket outcome verification 90s after window close (retry 3x at 60s)
+        # Schedule authoritative Polymarket verification 90s after close
         slug = window.slug
         task = asyncio.create_task(self._verify_outcome_after_delay(slug, 90), name=f"verify_{slug}")
         task.add_done_callback(lambda t: logger.error("verify_task_exception", error=str(t.exception())) if t.exception() else None)
@@ -895,6 +1073,31 @@ class TradingLoop:
 
                 logger.info("resolution_winner_found", slug=window_slug, winner=winner, attempt=attempt + 1)
 
+                # Check for manual sells via activity API — look for SELL trades
+                # on the same condition_id AFTER our buy timestamp
+                manual_sell_pnl: dict[str, float] = {}
+                try:
+                    import httpx as _hx
+                    async with _hx.AsyncClient(timeout=10) as _ac:
+                        _act_resp = await _ac.get(
+                            "https://data-api.polymarket.com/activity",
+                            params={"user": self._wallet_address, "limit": 100},
+                        )
+                        if _act_resp.status_code == 200:
+                            for _a in _act_resp.json():
+                                _cid = _a.get("conditionId", "")
+                                _side = _a.get("side", "")
+                                _type = _a.get("type", "")
+                                _usdc = float(_a.get("usdcSize", 0) or 0)
+                                # A manual sell shows as type=TRADE side=SELL
+                                if _type == "TRADE" and _side == "SELL" and _cid:
+                                    manual_sell_pnl[_cid] = manual_sell_pnl.get(_cid, 0) + _usdc
+                                # A redeem also counts
+                                elif _type == "REDEEM" and _cid:
+                                    manual_sell_pnl[_cid] = manual_sell_pnl.get(_cid, 0) + _usdc
+                except Exception:
+                    pass
+
                 # Winner confirmed — get trades from DynamoDB (NOT SQLite)
                 trades = self.dynamo.get_trades_for_window(window_slug)
                 for t in trades:
@@ -905,7 +1108,17 @@ class TradingLoop:
                     fill_price = float(t.get("fill_price", 0) or 0)
                     size_usd = float(t.get("size_usd", 0) or 0)
 
-                    if correct and fill_price > 0:
+                    # Check if user manually sold this position
+                    _cid = t.get("condition_id", "") or ""
+                    _slug_for_cid = t.get("window_slug", "")
+                    sell_proceeds = manual_sell_pnl.get(_cid, 0)
+
+                    if sell_proceeds > 0:
+                        # User sold manually — P&L = sell proceeds - cost
+                        pnl = sell_proceeds - size_usd
+                        source = "manual_sell"
+                        logger.info("manual_sell_detected", slug=window_slug, proceeds=round(sell_proceeds, 2), cost=round(size_usd, 2), pnl=round(pnl, 2))
+                    elif correct and fill_price > 0:
                         shares = size_usd / fill_price
                         pnl = shares * (1.0 - fill_price)
                     else:

@@ -388,3 +388,376 @@ class TestRegressionAutoRetrainTarget:
         assert "TradingLoop" not in content
         assert "CoinbaseWS" not in content
         assert "LiveTrader" not in content
+
+
+class TestSizingV2:
+    """Sizing tiers must be halved: leader $10, tied $5, follower $2.50."""
+
+    def test_leader_size_is_10(self):
+        """Leader tier max is $10, not $20."""
+        from polybot.core.loop import TradingLoop
+        # Verify the sizing constants in the code
+        import inspect
+        source = inspect.getsource(TradingLoop._execute_scan_entry)
+        assert "10.00" in source  # leader base
+        assert "5.00" in source   # tied base
+        assert "2.50" in source   # follower base
+        # Old sizes must NOT appear
+        assert "20.00" not in source
+
+    def test_size_scale_capped_at_1(self):
+        """Scale factor must never exceed 1.0 (no over-betting)."""
+        from polybot.core.loop import TradingLoop
+        from unittest.mock import MagicMock
+        loop = MagicMock(spec=TradingLoop)
+        loop._base_balance = 200.0
+        # Balance higher than base → cap at 1.0
+        loop._cached_balance = 300.0
+        scale = TradingLoop._size_scale(loop)
+        assert scale == 1.0
+
+    def test_size_scale_proportional(self):
+        """Scale factor is proportional to balance."""
+        from polybot.core.loop import TradingLoop
+        from unittest.mock import MagicMock
+        loop = MagicMock(spec=TradingLoop)
+        loop._base_balance = 200.0
+        loop._cached_balance = 100.0  # half of base
+        scale = TradingLoop._size_scale(loop)
+        assert scale == 0.5
+
+    def test_scaled_size_floor_150(self):
+        """Scaled size must never go below $1.50."""
+        from polybot.core.loop import TradingLoop
+        from unittest.mock import MagicMock
+        loop = MagicMock(spec=TradingLoop)
+        loop._base_balance = 200.0
+        loop._cached_balance = 10.0  # very low balance
+        loop._size_scale = lambda: TradingLoop._size_scale(loop)
+        size = TradingLoop._scaled_size(loop, 2.50)
+        assert size >= 1.50
+
+    def test_scale_defaults_to_1_without_balance(self):
+        """No balance data → scale = 1.0 (full base sizes)."""
+        from polybot.core.loop import TradingLoop
+        from unittest.mock import MagicMock
+        loop = MagicMock(spec=TradingLoop)
+        loop._base_balance = 200.0
+        loop._cached_balance = 0.0
+        scale = TradingLoop._size_scale(loop)
+        assert scale == 1.0
+
+    def test_base_balance_is_750(self):
+        """Base balance fixed at $750 (half of wallet for 5m bot)."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop.__init__)
+        assert "750.0" in source
+
+
+class TestPairsFiltering:
+    """PAIRS config must control which assets trade. ETH disabled = no ETH trades.
+
+    Root cause: task definition didn't map PAIRS from Secrets Manager,
+    so config defaulted to "" → all assets enabled → ETH traded.
+    """
+
+    def test_pairs_btc_sol_excludes_eth(self):
+        """PAIRS=BTC_5m,SOL_5m must return only BTC and SOL, not ETH."""
+        from polybot.config import Settings
+        s = Settings(pairs="BTC_5m,SOL_5m", assets="BTC,ETH,SOL")
+        pairs = s.enabled_pairs
+        assets_enabled = {a for a, _ in pairs}
+        assert "BTC" in assets_enabled
+        assert "SOL" in assets_enabled
+        assert "ETH" not in assets_enabled, "ETH must NOT be enabled when PAIRS=BTC_5m,SOL_5m"
+
+    def test_empty_pairs_enables_all_assets(self):
+        """Empty PAIRS falls back to all assets — this is the bug vector."""
+        from polybot.config import Settings
+        s = Settings(pairs="", assets="BTC,ETH,SOL")
+        pairs = s.enabled_pairs
+        assets_enabled = {a for a, _ in pairs}
+        assert assets_enabled == {"BTC", "ETH", "SOL"}
+
+    def test_loop_only_creates_states_for_enabled_pairs(self):
+        """TradingLoop.__init__ must only create AssetState for enabled pairs."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop.__init__)
+        # Must iterate enabled_pairs, not asset_list
+        assert "enabled_pairs" in source, "Loop must use settings.enabled_pairs, not settings.asset_list"
+
+    def test_pairs_config_in_ecs_task_definition(self):
+        """PAIRS must be in the ECS task definition secrets mapping.
+
+        This test checks the deploy script awareness — if PAIRS is a
+        Settings field that controls trading, it must be documented as
+        required in the task definition.
+        """
+        from polybot.config import Settings
+        # PAIRS is a valid Settings field
+        s = Settings(pairs="BTC_5m")
+        assert s.pairs == "BTC_5m"
+        # enabled_pairs must parse it
+        pairs = s.enabled_pairs
+        assert len(pairs) == 1
+        assert pairs[0] == ("BTC", 300)
+
+    def test_late_entry_only_trades_enabled_assets(self):
+        """_evaluate_late_entry is only called for assets in asset_states.
+
+        asset_states is built from enabled_pairs, so if ETH is not in
+        enabled_pairs, there's no ETH AssetState, and _evaluate_late_entry
+        is never called for it.
+        """
+        from polybot.core.loop import TradingLoop
+        import inspect
+        # The main loop iterates asset_states (built from enabled_pairs)
+        source = inspect.getsource(TradingLoop._tick_asset)
+        assert "_scan_tick" in source, "_tick_asset must call _scan_tick"
+        # __init__ builds asset_states from enabled_pairs
+        init_source = inspect.getsource(TradingLoop.__init__)
+        assert "enabled_pairs" in init_source, "__init__ must use enabled_pairs to build asset_states"
+
+
+class TestSizingCalculation:
+    """Sizing math must produce correct dollar amounts.
+
+    Root cause: follower $2.50 at ask $0.57 → shares=round(2.50/0.57)=4 → cost=$2.28.
+    But we saw $1.71 = 3 shares × $0.57 = round(1.50/0.57). Means the floor was hit.
+    """
+
+    def test_leader_size_at_full_scale(self):
+        """Leader at scale=1.0 should produce ~$10 trade."""
+        from polybot.core.loop import TradingLoop
+        from unittest.mock import MagicMock
+        loop = MagicMock(spec=TradingLoop)
+        loop._base_balance = 200.0
+        loop._cached_balance = 200.0
+        loop._size_scale = lambda: TradingLoop._size_scale(loop)
+        size = TradingLoop._scaled_size(loop, 10.00)
+        assert size == 10.00
+
+    def test_follower_size_at_full_scale(self):
+        """Follower at scale=1.0 should produce $2.50 trade."""
+        from polybot.core.loop import TradingLoop
+        from unittest.mock import MagicMock
+        loop = MagicMock(spec=TradingLoop)
+        loop._base_balance = 200.0
+        loop._cached_balance = 200.0
+        loop._size_scale = lambda: TradingLoop._size_scale(loop)
+        size = TradingLoop._scaled_size(loop, 2.50)
+        assert size == 2.50
+
+    def test_tied_size_at_full_scale(self):
+        """Tied at scale=1.0 should produce $5.00 trade."""
+        from polybot.core.loop import TradingLoop
+        from unittest.mock import MagicMock
+        loop = MagicMock(spec=TradingLoop)
+        loop._base_balance = 200.0
+        loop._cached_balance = 200.0
+        loop._size_scale = lambda: TradingLoop._size_scale(loop)
+        size = TradingLoop._scaled_size(loop, 5.00)
+        assert size == 5.00
+
+    def test_half_balance_halves_sizes(self):
+        """At 50% balance, leader should be $5, follower $1.50 (floor)."""
+        from polybot.core.loop import TradingLoop
+        from unittest.mock import MagicMock
+        loop = MagicMock(spec=TradingLoop)
+        loop._base_balance = 200.0
+        loop._cached_balance = 100.0
+        loop._size_scale = lambda: TradingLoop._size_scale(loop)
+        leader = TradingLoop._scaled_size(loop, 10.00)
+        follower = TradingLoop._scaled_size(loop, 2.50)
+        assert leader == 5.00
+        assert follower == 1.50  # $1.25 rounds to $1.25 but floor is $1.50
+
+    def test_floor_never_below_150(self):
+        """Even at very low balance, size must be >= $1.50."""
+        from polybot.core.loop import TradingLoop
+        from unittest.mock import MagicMock
+        loop = MagicMock(spec=TradingLoop)
+        loop._base_balance = 200.0
+        loop._cached_balance = 5.0  # 2.5% of base
+        loop._size_scale = lambda: TradingLoop._size_scale(loop)
+        for base in [10.00, 5.00, 2.50]:
+            size = TradingLoop._scaled_size(loop, base)
+            assert size >= 1.50, f"Size {size} for base {base} below $1.50 floor"
+
+    def test_shares_times_price_matches_size(self):
+        """Verify that shares × price ≈ size_usd (the live_trader math)."""
+        # Simulate live_trader math for a $2.50 follower at ask=0.57
+        size = 2.50
+        price = 0.57
+        shares = round(size / price, 0)  # = round(4.386) = 4
+        actual_cost = round(shares * price, 2)  # = 4 * 0.57 = 2.28
+        assert shares == 4
+        assert actual_cost == 2.28
+        # NOT 3 shares (which would be $1.71 — the bug we saw)
+        assert actual_cost > 1.50
+
+    def test_no_base_balance_gives_full_sizes(self):
+        """Before CLOB balance is fetched, scale=1.0 (don't under-bet)."""
+        from polybot.core.loop import TradingLoop
+        from unittest.mock import MagicMock
+        loop = MagicMock(spec=TradingLoop)
+        loop._base_balance = 0.0  # not yet set
+        loop._cached_balance = 0.0
+        scale = TradingLoop._size_scale(loop)
+        assert scale == 1.0, "No balance data should default to scale=1.0"
+
+    def test_balance_refresh_updates_cached(self):
+        """_refresh_balance must update _cached_balance from CLOB."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._refresh_balance)
+        assert "_cached_balance = cash" in source
+
+
+class TestEcsTaskDefinitionSecrets:
+    """Every Settings field used for trading must be in the task definition.
+
+    Root cause: PAIRS was in Secrets Manager but not mapped in the task
+    definition → container never saw it → defaulted to all assets.
+    """
+
+    def test_critical_settings_have_safe_code_defaults(self):
+        """Settings class defaults must be safe — the code defaults are the
+        fallback when env vars / Secrets Manager are misconfigured."""
+        from polybot.config import Settings
+        import inspect
+        source = inspect.getsource(Settings)
+        # mode defaults to "paper" (safe — won't trade real money)
+        assert 'mode: str = "paper"' in source, "mode must default to paper"
+        # pairs defaults to "" (trades all assets — NOT safe, but can't change without breaking)
+        assert 'pairs: str = ""' in source, "pairs must default to empty"
+        # assets includes ETH — so PAIRS is the critical filter
+        assert 'assets: str = "BTC,ETH,SOL"' in source
+
+    def test_pairs_filters_assets_correctly(self):
+        """PAIRS=BTC_5m,SOL_5m must exclude ETH even if ASSETS includes it."""
+        from polybot.config import Settings
+        # Simulate what happens when PAIRS is properly set
+        s = Settings(pairs="BTC_5m,SOL_5m", assets="BTC,ETH,SOL")
+        enabled = {a for a, _ in s.enabled_pairs}
+        assert enabled == {"BTC", "SOL"}, f"Expected BTC,SOL but got {enabled}"
+
+        # Simulate the bug: PAIRS not set → all assets enabled
+        s2 = Settings(pairs="", assets="BTC,ETH,SOL")
+        enabled2 = {a for a, _ in s2.enabled_pairs}
+        assert "ETH" in enabled2, "Empty PAIRS enables all assets (the bug vector)"
+
+
+class TestRogueTaskDetection:
+    """Smoke test must detect rogue ECS tasks on old task-defs.
+
+    Root cause: A standalone task on task-def rev 13 ran for 3+ hours
+    alongside the service on rev 16, placing $20 trades with old sizing.
+    """
+
+    def test_smoke_test_checks_task_count(self):
+        """Smoke test must include a duplicate task check."""
+        from polybot.core.smoke_test import run_smoke_tests
+        import inspect
+        source = inspect.getsource(run_smoke_tests)
+        assert "duplicate_tasks" in source, "Smoke test must detect duplicate tasks"
+        assert "list_tasks" in source, "Smoke test must list ECS tasks"
+        assert "taskDefinitionArn" in source or "task_defs" in source, "Must compare task definitions"
+
+    def test_live_trader_hard_cap(self):
+        """live_trader must enforce HARDCODED_MAX_BET regardless of signal size."""
+        from polybot.execution.live_trader import LiveTrader
+        import inspect
+        source = inspect.getsource(LiveTrader.execute)
+        assert "HARDCODED_MAX_BET" in source, "live_trader.execute must enforce HARDCODED_MAX_BET"
+
+    def test_hardcoded_max_bet_is_10(self):
+        """HARDCODED_MAX_BET must be $10."""
+        from polybot.config import HARDCODED_MAX_BET
+        assert HARDCODED_MAX_BET == 10.00
+
+
+class TestScanWindow:
+    """Scan window: T+210s–T+240s finds best entry, replaces single-shot T+210s."""
+
+    def test_scan_state_fields_exist(self):
+        """AssetState must have all scan fields."""
+        from polybot.core.loop import AssetState
+        from polybot.market.window_tracker import WindowTracker
+        from polybot.strategy.bayesian import BayesianUpdater
+        from polybot.strategy.base_rate import BaseRateTable
+        state = AssetState(asset="BTC", tracker=WindowTracker(asset="BTC"), bayesian=BayesianUpdater(BaseRateTable()))
+        assert hasattr(state, "scan_active")
+        assert hasattr(state, "scan_best_ask")
+        assert hasattr(state, "scan_best_ask_ts")
+        assert hasattr(state, "scan_direction")
+        assert hasattr(state, "scan_direction_flipped")
+        assert hasattr(state, "scan_last_checked")
+        # Defaults
+        assert state.scan_active is False
+        assert state.scan_best_ask is None
+        assert state.scan_direction is None
+
+    def test_scan_resets_on_window_open(self):
+        """All scan state must reset when a new window opens."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._on_window_open)
+        assert "scan_active = False" in source
+        assert "scan_best_ask = None" in source
+        assert "scan_direction = None" in source
+        assert "scan_direction_flipped = False" in source
+
+    def test_scan_phases_in_code(self):
+        """_scan_tick must implement 3 phases: start, monitor, execute."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._scan_tick)
+        # Phase 1: start scan
+        assert "scan_active = True" in source
+        # Phase 2: direction flip detection
+        assert "scan_direction_flipped" in source
+        assert "direction_unstable" in source
+        # Phase 3: execute at deadline
+        assert "_execute_scan_entry" in source
+        # Early entry threshold
+        assert "0.58" in source
+
+    def test_scan_interval_is_3s(self):
+        """Scan checks orderbook every 3 seconds, not every tick."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._scan_tick)
+        assert "SCAN_INTERVAL = 3.0" in source
+
+    def test_scan_entry_has_guards(self):
+        """_execute_scan_entry must apply all guards: conviction, ceiling, circuit breaker."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._execute_scan_entry)
+        assert "no_conviction" in source
+        assert "fully_priced" in source
+        assert "circuit_breaker" in source
+        assert "0.82" in source  # SOL ceiling
+        assert "0.78" in source  # BTC ceiling
+
+    def test_scan_entry_has_sizing(self):
+        """_execute_scan_entry must use trailing-the-leader sizing."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._execute_scan_entry)
+        assert "leader" in source
+        assert "follower" in source
+        assert "tied" in source
+        assert "_scaled_size" in source
+
+    def test_strategy_tag_is_v3_scan(self):
+        """Trades from scan window must be tagged late_momentum_v3_scan."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._execute_scan_entry)
+        assert "late_momentum_v3_scan" in source
+        log_source = inspect.getsource(TradingLoop._log_scan_signal)
+        assert "late_momentum_v3_scan" in log_source

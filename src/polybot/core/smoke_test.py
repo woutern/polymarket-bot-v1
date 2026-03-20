@@ -2,6 +2,8 @@
 
 Called once at bot startup. Logs results and raises on critical failures.
 Non-critical failures log warnings but don't halt the bot.
+
+ECS cluster region: eu-west-1 (Polymarket CLOB geoblocks us-east-1 AWS IPs)
 """
 
 from __future__ import annotations
@@ -11,6 +13,9 @@ import os
 import structlog
 
 logger = structlog.get_logger()
+
+# ECS cluster region — bot must run here (CLOB geoblocks us-east-1)
+_ECS_CLUSTER_REGION = "eu-west-1"
 
 
 class SmokeTestResult:
@@ -182,6 +187,69 @@ async def run_smoke_tests(settings) -> SmokeTestResult:
         result.ok(f"mode_{settings.mode}")
     else:
         result.fail("mode", f"Invalid mode: {settings.mode}")
+
+    # 11. PAIRS must be explicitly set in live mode (empty = all assets, dangerous)
+    if settings.mode == "live" and not settings.pairs.strip():
+        result.fail("pairs_not_set", "PAIRS env var is empty in live mode — would trade ALL assets. Set PAIRS=BTC_5m,SOL_5m")
+    elif settings.pairs.strip():
+        enabled = [a for a, _ in settings.enabled_pairs]
+        result.ok(f"pairs_{','.join(enabled)}")
+    else:
+        result.warn("pairs_not_set", "PAIRS not set — trading all assets from ASSETS config")
+
+    # 12. No other bot tasks running in the cluster (prevents duplicate trades)
+    # This is CRITICAL — a rogue task on an old task-def caused $20 trades.
+    if settings.mode == "live":
+        try:
+            import boto3 as _b3_ecs
+            _ecs_profile = "playground" if not os.getenv("AWS_EXECUTION_ENV") else None
+            # Bot runs in same region as ECS cluster; detect from ECS_CONTAINER_METADATA or env
+            _ecs_region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or _ECS_CLUSTER_REGION
+            _ecs_session = _b3_ecs.Session(profile_name=_ecs_profile, region_name=_ecs_region)
+            _ecs = _ecs_session.client("ecs")
+            _cluster = "polymarket-bot"
+
+            # List ALL running tasks in the cluster (not just our service)
+            _task_arns = []
+            _paginator = _ecs.get_paginator("list_tasks")
+            for _page in _paginator.paginate(cluster=_cluster, desiredStatus="RUNNING"):
+                _task_arns.extend(_page.get("taskArns", []))
+
+            if len(_task_arns) > 1:
+                # Describe all tasks to check task definitions
+                _tasks = _ecs.describe_tasks(cluster=_cluster, tasks=_task_arns).get("tasks", [])
+                _task_defs = set()
+                _task_info = []
+                for _t in _tasks:
+                    _td = _t.get("taskDefinitionArn", "")
+                    _task_defs.add(_td)
+                    _started = _t.get("startedAt", "?")
+                    _task_info.append(f"{_td.split('/')[-1]} started={_started}")
+
+                if len(_task_defs) > 1:
+                    # CRITICAL: multiple task definitions = old + new code running together
+                    result.fail(
+                        "duplicate_tasks",
+                        f"HALT: {len(_task_arns)} tasks on {len(_task_defs)} different task-defs! "
+                        f"Rogue task will cause wrong sizing. Tasks: {_task_info}"
+                    )
+                elif len(_task_arns) > 1:
+                    # Same task-def but multiple tasks — likely rolling deploy, warn only
+                    result.warn(
+                        "multiple_tasks",
+                        f"{len(_task_arns)} tasks running (same task-def — likely rolling deploy). "
+                        f"Dedup should protect, but monitor closely."
+                    )
+                else:
+                    result.ok("single_task")
+            elif len(_task_arns) == 1:
+                result.ok("single_task")
+            else:
+                result.warn("no_tasks", "No tasks found in cluster — are we running?")
+
+            logger.info("task_count_check", tasks=len(_task_arns))
+        except Exception as _e:
+            result.warn("task_count_check", f"Could not check ECS tasks: {str(_e)[:60]}")
 
     # Summary
     logger.info(

@@ -3,7 +3,7 @@
 from pydantic_settings import BaseSettings
 
 # Module-level constant — cannot be overridden by env var or Secrets Manager
-HARDCODED_MAX_BET = 8.00
+HARDCODED_MAX_BET = 10.00
 
 
 class Settings(BaseSettings):
