@@ -908,6 +908,19 @@ class TradingLoop:
         # This is the first check. Nothing trades above $0.55.
         if current_ask > self.settings.max_market_price:
             skip_reason = f"ask_{current_ask:.2f}_above_{self.settings.max_market_price}"
+        # TIERED MOVE FILTER — small moves need stronger confirmation
+        elif abs(pct_move) < 0.03:
+            # Small move (0.015-0.03%): require BTC confirmation + higher lgbm
+            if not btc_confirms:
+                skip_reason = "small_move_no_btc_confirm"
+            elif lgbm_prob < 0.68:
+                skip_reason = "small_move_lgbm_low"
+            elif ev < 0.05:
+                skip_reason = "small_move_low_ev"
+            else:
+                entry_type = "override" if lgbm_prob >= 0.68 and current_ask <= 0.55 and ev >= 0.10 else "taker"
+                logger.info("small_move_confirmed", asset=state.asset, slug=window.slug,
+                            move=round(pct_move, 4), lgbm=round(lgbm_prob, 4), btc=btc_confirms)
         # Decision based on score — with hard filter override
         elif lgbm_prob >= 0.65 and current_ask <= 0.55 and current_ask > 0 and ev >= 0.10:
             entry_type = "override"
