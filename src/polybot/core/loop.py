@@ -190,6 +190,9 @@ class TradingLoop:
         from polybot.ml.kpi_tracker import KPITracker
         self.model_server = ModelServer()
         self.kpi_tracker = KPITracker()
+        # Macro features (fear/greed, funding, OI) — collected for future model retrains
+        from polybot.features.macro_features import MacroFeatures
+        self._macro = MacroFeatures()
         try:
             self.model_server.load_models()
         except Exception as e:
@@ -728,6 +731,8 @@ class TradingLoop:
                     # New signal features
                     "liq_cluster_bias": round(_liq_cache.get("BTC", (0.0, 0))[0], 6),
                     "btc_confirms_direction": 1 if (state.asset != "BTC" and state.window_open_price_at_5s) else 0,
+                    # Macro features (collected for future model retrains)
+                    **self._get_macro_features(),
                 })
                 logger.debug("training_data_logged", asset=state.asset, slug=window.slug, outcome=outcome)
             except Exception as e:
@@ -898,6 +903,13 @@ class TradingLoop:
             logger.warning("auto_claim_failed", error=str(e))
 
     # 134 lines removed (dead method)
+
+    def _get_macro_features(self) -> dict:
+        """Get macro features for training data. Never fails — returns defaults if API down."""
+        try:
+            return {k: round(v, 6) if isinstance(v, float) else v for k, v in self._macro.get_all().items()}
+        except Exception:
+            return {}
 
     async def _refresh_orderbook(self, state: AssetState):
         window = state.tracker.current
