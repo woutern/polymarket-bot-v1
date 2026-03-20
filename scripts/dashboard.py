@@ -694,7 +694,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Polymarket Bot — Trading Desk</title>
+<title>Polymarket Bot — SOL 5m Trading Desk</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -703,24 +703,24 @@ HTML = r"""<!DOCTYPE html>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg:         #f5f7fa;
-    --bg-alt:     #edf0f5;
+    --bg:         #f8f7ff;
+    --bg-alt:     #f0edf8;
     --surface:    #ffffff;
-    --surface-2:  #f1f3f5;
-    --border:     #e4e8ee;
-    --border-2:   #d1d5db;
-    --text:       #1a1d23;
-    --text-2:     #4b5563;
-    --text-3:     #9ca3af;
-    --green:      #16a34a;
-    --green-bg:   #f0fdf4;
-    --green-bd:   #bbf7d0;
-    --red:        #dc2626;
+    --surface-2:  #f3f0ff;
+    --border:     #e8e4f0;
+    --border-2:   #d1cbe0;
+    --text:       #1a1528;
+    --text-2:     #4b4563;
+    --text-3:     #9c96af;
+    --green:      #14F195;
+    --green-bg:   #edfdf7;
+    --green-bd:   #a0f7d4;
+    --red:        #ef4444;
     --red-bg:     #fef2f2;
     --red-bd:     #fecaca;
-    --blue:       #2563eb;
-    --blue-bg:    #eff6ff;
-    --blue-bd:    #bfdbfe;
+    --blue:       #9945FF;
+    --blue-bg:    #f3f0ff;
+    --blue-bd:    #d0bfff;
     --gold:       #d97706;
     --gold-bg:    #fffbeb;
     --gold-bd:    #fde68a;
@@ -731,9 +731,9 @@ HTML = r"""<!DOCTYPE html>
     --btc-bg:     #fff8f0;
     --eth:        #627eea;
     --eth-bg:     #f0f2ff;
-    --sol:        #9945ff;
-    --sol-bg:     #f5f0ff;
-    --nav-bg:     #0f172a;
+    --sol:        #9945FF;
+    --sol-bg:     #f3f0ff;
+    --nav-bg:     #0c0a1a;
     --nav-text:   #94a3b8;
     --shadow-sm:  0 1px 2px rgba(0,0,0,.04), 0 1px 3px rgba(0,0,0,.06);
     --shadow-md:  0 4px 6px rgba(0,0,0,.04), 0 10px 15px rgba(0,0,0,.06);
@@ -762,7 +762,7 @@ HTML = r"""<!DOCTYPE html>
   }
   #refresh-progress {
     height: 100%;
-    background: linear-gradient(90deg, #1971c2, #339af0);
+    background: linear-gradient(90deg, #9945FF, #14F195);
     width: 0%;
     transition: width linear;
   }
@@ -787,7 +787,7 @@ HTML = r"""<!DOCTYPE html>
   }
   .nav-logo {
     width: 30px; height: 30px;
-    background: linear-gradient(135deg, #1971c2, #339af0);
+    background: linear-gradient(135deg, #9945FF, #14F195);
     border-radius: 8px;
     display: flex; align-items: center; justify-content: center;
     font-size: 15px; color: #fff; font-weight: 800;
@@ -795,7 +795,7 @@ HTML = r"""<!DOCTYPE html>
   .nav-title {
     font-size: 16px; font-weight: 700; color: #e8eaed; letter-spacing: -0.3px;
   }
-  .nav-title span { color: #339af0; }
+  .nav-title span { color: #9945FF; }
   .nav-tabs {
     display: flex;
     gap: 2px;
@@ -834,7 +834,7 @@ HTML = r"""<!DOCTYPE html>
   .status-dot {
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 12px; font-weight: 600; color: var(--green);
-    background: rgba(47,158,68,.15); border: 1px solid rgba(47,158,68,.3);
+    background: rgba(20,241,149,.15); border: 1px solid rgba(20,241,149,.3);
     padding: 3px 10px; border-radius: 20px;
   }
   .status-dot::before {
@@ -868,7 +868,7 @@ HTML = r"""<!DOCTYPE html>
     transition: box-shadow .2s, transform .2s;
   }
   .stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
-  .stat-card.primary { border-left: 4px solid var(--blue); background: linear-gradient(135deg, #fafbff, #f0f4ff); }
+  .stat-card.primary { border-left: 4px solid var(--sol); background: linear-gradient(135deg, #fdfaff, #f3f0ff); }
   .stat-label {
     font-size: 11px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.8px; color: var(--text-3); margin-bottom: 10px;
@@ -899,7 +899,7 @@ HTML = r"""<!DOCTYPE html>
 
   /* ── Strategy cards ── */
   .strategy-grid {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px;
+    display: grid; grid-template-columns: 1fr; gap: 16px; margin-bottom: 24px; max-width: 480px;
   }
   #strategy-section { display: contents; }
   .strat-card {
@@ -919,7 +919,7 @@ HTML = r"""<!DOCTYPE html>
   .win-bar-wrap { height: 4px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
   .win-bar-fill {
     height: 100%; border-radius: 3px;
-    background: linear-gradient(90deg, #2f9e44, #51cf66);
+    background: linear-gradient(90deg, #0cc97e, #14F195);
     transition: width .6s cubic-bezier(.4,0,.2,1);
   }
 
@@ -1061,7 +1061,7 @@ HTML = r"""<!DOCTYPE html>
   /* ── Responsive ── */
   @media (max-width: 1200px) {
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
-    .strategy-grid { grid-template-columns: repeat(3, 1fr); }
+    .strategy-grid { grid-template-columns: 1fr; }
     .stats-grid { grid-template-columns: repeat(4, 1fr); }
   }
   /* ── Hamburger menu (mobile) ── */
@@ -1106,7 +1106,7 @@ HTML = r"""<!DOCTYPE html>
     .page { padding: 12px 16px 32px; }
     nav { padding: 0 16px; }
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
-    .strategy-grid { grid-template-columns: repeat(2, 1fr); }
+    .strategy-grid { grid-template-columns: 1fr; }
     .panels-grid, .analytics-grid { grid-template-columns: 1fr; }
     .nav-meta { display: none; }
     .stat-value { font-size: 22px; }
@@ -1135,7 +1135,7 @@ HTML = r"""<!DOCTYPE html>
     <div class="nav-meta">
       <span>us-east-1</span>
       <span class="sep">|</span>
-      <span>BTC &middot; ETH &middot; SOL</span>
+      <span>SOL 5m</span>
       <span class="sep">|</span>
       <span>Updated: <strong id="last-update">&mdash;</strong></span>
     </div>
@@ -1164,7 +1164,7 @@ HTML = r"""<!DOCTYPE html>
   <!-- Stats row — matches Polymarket portfolio layout -->
   <div class="stats-grid">
     <div class="stat-card primary">
-      <div class="stat-label" id="s-balance-label">Portfolio</div>
+      <div class="stat-label" id="s-balance-label">SOL 5m Strategy</div>
       <div class="stat-value" id="s-balance">&mdash;</div>
       <div class="stat-sub" id="s-balance-sub">Loading...</div>
     </div>
@@ -1234,9 +1234,6 @@ HTML = r"""<!DOCTYPE html>
     <span class="section-title">Trade Log</span>
     <div class="filter-bar">
       <select id="tl-asset" onchange="loadTradeLog()" class="filter-select">
-        <option value="">All assets</option>
-        <option value="BTC">BTC</option>
-        <option value="ETH">ETH</option>
         <option value="SOL">SOL</option>
       </select>
       <select id="tl-tf" onchange="loadTradeLog()" class="filter-select">
@@ -1566,6 +1563,7 @@ async function loadKPIs() {
     const tbody = document.getElementById('kpi-pairs-body');
     tbody.innerHTML = '';
     for (const [pair, ps] of Object.entries(pairs)) {
+      if (!pair.toUpperCase().startsWith('SOL')) continue;
       const wr = ps.win_rate || 0;
       const pnlColor = ps.total_pnl >= 0 ? '#2f9e44' : '#c92a2a';
       const sprtBadge = ps.sprt_status === 'EDGE_CONFIRMED' ? '<span style=\"color:#2f9e44\">CONFIRMED</span>'
@@ -1873,7 +1871,7 @@ async function refreshOverview() {
 
     // Per-asset x timeframe performance cards
     const strats = s.strategy_pnl || {};
-    const all_strats = ['BTC 5m', 'ETH 5m', 'SOL 5m'];
+    const all_strats = ['SOL 5m'];
     let scHtml = '';
     for (const st of all_strats) {
       const d = strats[st] || { pnl: 0, count: 0, wins: 0 };
