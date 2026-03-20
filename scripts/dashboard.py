@@ -762,12 +762,20 @@ HTML = r"""<!DOCTYPE html>
   .wr-bar{height:100%;border-radius:4px;display:flex;align-items:center;padding:0 8px;font-size:11px;font-weight:700;color:#fff;min-width:30px}
   .wr-val{width:50px;text-align:right;font-size:12px;font-weight:600;color:var(--text);flex-shrink:0}
 
+  /* Hamburger + mobile menu */
+  .hamburger{display:none;background:none;border:none;cursor:pointer;color:#9ca3af;padding:4px}
+  .mobile-menu{display:none;position:fixed;top:48px;left:0;right:0;background:#111;padding:8px 16px 12px;z-index:49;flex-direction:column;gap:4px}
+  .mobile-menu.open{display:flex}
+  .mobile-menu button{width:100%;padding:10px;border-radius:8px;font-size:14px;font-weight:600;color:#9ca3af;border:none;background:none;text-align:left;cursor:pointer}
+  .mobile-menu button:hover,.mobile-menu button.active{color:#fff;background:rgba(139,92,246,.2)}
+
   /* Responsive */
   @media(max-width:768px){
     .grid-4{grid-template-columns:repeat(2,1fr)}
     .page{padding:16px 12px 40px}
     nav{padding:0 12px}
     .nav-tabs{display:none}
+    .hamburger{display:block}
   }
 </style>
 </head>
@@ -781,7 +789,17 @@ HTML = r"""<!DOCTYPE html>
     <button class="nav-tab" onclick="showPage('analytics',this)">Analytics</button>
   </div>
   <div class="nav-mode" id="mode-badge">LIVE</div>
+  <button class="hamburger" onclick="document.getElementById('mobile-menu').classList.toggle('open')" aria-label="Menu">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="22" height="22">
+      <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+    </svg>
+  </button>
 </nav>
+<div class="mobile-menu" id="mobile-menu">
+  <button class="active" onclick="showPage('overview',this);document.getElementById('mobile-menu').classList.remove('open')">Overview</button>
+  <button onclick="showPage('trades',this);document.getElementById('mobile-menu').classList.remove('open')">Trades</button>
+  <button onclick="showPage('analytics',this);document.getElementById('mobile-menu').classList.remove('open')">Analytics</button>
+</div>
 
 <!-- ═══ OVERVIEW ═══ -->
 <div id="page-overview" class="page-content active">
@@ -924,7 +942,7 @@ async function refresh() {
     const pnl = s.total_pnl || 0;
     document.getElementById('s-pnl').textContent = (pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2);
     document.getElementById('s-pnl').className = 'card-value '+(pnl>=0?'green':'red');
-    document.getElementById('s-pnl-sub').textContent = 'Portfolio: \$'+(bal.portfolio||0).toFixed(2);
+    document.getElementById('s-pnl-sub').textContent = 'Wallet: \$'+(bal.portfolio||0).toFixed(2)+' | Cash: \$'+(bal.cash||0).toFixed(2);
 
     const wr = s.total_resolved > 0 ? Math.round(s.wins/s.total_resolved*100) : 0;
     document.getElementById('s-wr').textContent = wr+'%';
@@ -974,17 +992,18 @@ async function refresh() {
       const dir = t.direction === 'up' || t.side === 'YES' ? '<span class="tag tag-up">UP</span>' : '<span class="tag tag-down">DOWN</span>';
       const pnlStr = resolved ? (pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2) : '—';
       const pnlCls = resolved ? (won?'green':'red') : '';
-      tbody.innerHTML += '<tr><td style="white-space:nowrap">'+fmtTs(t.timestamp)+'</td><td>'+assetTag(t.asset||'')+'</td><td>'+dir+'</td><td>\$'+(parseFloat(t.fill_price||0)).toFixed(2)+'</td><td>\$'+(parseFloat(t.size_usd||0)).toFixed(2)+'</td><td class="'+pnlCls+'" style="font-weight:600">'+pnlStr+'</td><td>'+result+'</td></tr>';
+      const slug = t.window_slug || '';
+      const link = slug ? ' <a href="https://polymarket.com/market/'+slug+'" target="_blank" style="opacity:.4;text-decoration:none;font-size:11px">&#x1F517;</a>' : '';
+      tbody.innerHTML += '<tr><td style="white-space:nowrap">'+fmtTs(t.timestamp)+'</td><td>'+assetTag(t.asset||'')+'</td><td>'+dir+'</td><td>\$'+(parseFloat(t.fill_price||0)).toFixed(2)+'</td><td>\$'+(parseFloat(t.size_usd||0)).toFixed(2)+'</td><td class="'+pnlCls+'" style="font-weight:600">'+pnlStr+'</td><td>'+result+link+'</td></tr>';
     }
 
-    // Equity curve
+    // Equity curve from resolved trades
     try {
-      const pnlResp = await fetch('/api/pnl-history');
-      const pnlData = await pnlResp.json();
-      const values = pnlData.values || [];
-      if (values.length > 1) {
-        const labels = values.map(v => v.label || '');
-        const points = values.map(v => v.cumulative_pnl || 0);
+      const resolved = trades.filter(t => t.resolved && parseFloat(t.resolved) === 1).reverse();
+      if (resolved.length > 1) {
+        let cum = 0;
+        const labels = resolved.map(t => fmtTs(t.timestamp));
+        const points = resolved.map(t => { cum += parseFloat(t.pnl||0); return Math.round(cum*100)/100; });
         const ctx = document.getElementById('pnl-chart').getContext('2d');
         if (pnlChart) pnlChart.destroy();
         pnlChart = new Chart(ctx, {
@@ -1011,7 +1030,9 @@ async function loadTrades() {
       const won = pnl > 0;
       const result = !resolved ? '<span class="tag tag-open">OPEN</span>' : won ? '<span class="tag tag-win">WIN</span>' : '<span class="tag tag-loss">LOSS</span>';
       const dir = t.direction === 'up' || t.side === 'YES' ? 'UP' : 'DOWN';
-      tbody.innerHTML += '<tr><td style="white-space:nowrap">'+fmtTs(t.timestamp)+'</td><td>'+assetTag(t.asset||'')+'</td><td>'+t.side+'</td><td>'+dir+'</td><td>\$'+(parseFloat(t.fill_price||0)).toFixed(2)+'</td><td>\$'+(parseFloat(t.size_usd||0)).toFixed(2)+'</td><td class="'+(resolved?(won?'green':'red'):'')+'" style="font-weight:600">'+(resolved?(pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2):'—')+'</td><td>'+result+'</td></tr>';
+      const slug2 = t.window_slug || '';
+      const link2 = slug2 ? ' <a href="https://polymarket.com/market/'+slug2+'" target="_blank" style="opacity:.4;text-decoration:none;font-size:11px">&#x1F517;</a>' : '';
+      tbody.innerHTML += '<tr><td style="white-space:nowrap">'+fmtTs(t.timestamp)+'</td><td>'+assetTag(t.asset||'')+'</td><td>'+t.side+'</td><td>'+dir+'</td><td>\$'+(parseFloat(t.fill_price||0)).toFixed(2)+'</td><td>\$'+(parseFloat(t.size_usd||0)).toFixed(2)+'</td><td class="'+(resolved?(won?'green':'red'):'')+'" style="font-weight:600">'+(resolved?(pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2):'—')+'</td><td>'+result+link2+'</td></tr>';
     }
   } catch(e) {}
 }
