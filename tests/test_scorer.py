@@ -116,15 +116,15 @@ class TestScoreComputation:
 
 
 class TestBetCeiling:
-    def test_risk_manager_cap_1_50(self):
+    def test_risk_manager_cap_8(self):
         from polybot.risk.manager import RiskManager
-        rm = RiskManager(bankroll=1000.0, min_trade_usd=1.0, max_trade_usd=1.50)
+        rm = RiskManager(bankroll=1000.0, min_trade_usd=1.0, max_trade_usd=8.00)
         size = rm.get_bet_size(lgbm_prob=0.90)
-        assert size <= 1.50
+        assert size <= 8.00
 
     def test_config_hardcoded_max_bet(self):
         from polybot.config import HARDCODED_MAX_BET
-        assert HARDCODED_MAX_BET == 1.50
+        assert HARDCODED_MAX_BET == 8.00
 
 
 class TestSmokeTestBetSize:
@@ -135,7 +135,7 @@ class TestSmokeTestBetSize:
         s.max_market_price = 0.55
         s.min_ev_threshold = 0.08
         s.min_trade_usd = 1.0
-        s.max_trade_usd = 1.50
+        s.max_trade_usd = 8.00
         s.mode = "paper"
         s.polymarket_private_key = "0x" + "a" * 64
         s.polymarket_api_key = "test"
@@ -143,14 +143,14 @@ class TestSmokeTestBetSize:
         result = await run_smoke_tests(s)
         assert "max_trade_usd" in result.passed
 
-    async def test_2_50_fails(self):
+    async def test_10_fails(self):
         from unittest.mock import MagicMock
         from polybot.core.smoke_test import run_smoke_tests
         s = MagicMock()
         s.max_market_price = 0.55
         s.min_ev_threshold = 0.08
         s.min_trade_usd = 1.0
-        s.max_trade_usd = 2.50
+        s.max_trade_usd = 10.00
         s.mode = "paper"
         s.polymarket_private_key = "0x" + "a" * 64
         s.polymarket_api_key = "test"

@@ -80,18 +80,17 @@ class RiskManager:
         if self._reduced_sizing:
             return self.min_trade_usd  # $1 flat during losing streak
 
-        if lgbm_prob >= 0.80:
-            pct = 0.02
-        elif lgbm_prob >= 0.70:
-            pct = 0.015
+        if lgbm_prob >= 0.75:
+            pct = 0.035  # SOL high conviction
+        elif lgbm_prob >= 0.65:
+            pct = 0.03
         elif lgbm_prob >= 0.60:
-            pct = 0.01
+            pct = 0.02
         else:
-            pct = 0.005
+            pct = 0.01
 
         base = round(self.bankroll * pct, 2)
-        # Hard floor $1.00 (Polymarket minimum), cap $2.50
-        return max(1.00, min(1.50, base))
+        return max(1.00, min(8.00, base))
 
     def max_position_size(self) -> float:
         return self.bankroll * self.max_position_pct

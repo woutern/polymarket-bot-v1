@@ -3,7 +3,7 @@
 from pydantic_settings import BaseSettings
 
 # Module-level constant — cannot be overridden by env var or Secrets Manager
-HARDCODED_MAX_BET = 1.50
+HARDCODED_MAX_BET = 8.00
 
 
 class Settings(BaseSettings):
@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     daily_loss_cap_pct: float = 0.05
     kelly_fraction: float = 0.25
     min_trade_usd: float = 1.0    # Floor — always bet at least this when there's edge (Polymarket min is $1)
-    max_trade_usd: float = 1.50   # Hard cap per trade — matches HARDCODED_MAX_BET
+    max_trade_usd: float = 8.00   # SOL-focused: dynamic Kelly up to $8
     min_ev_threshold: float = 0.08  # EV > 8% required — blocks low-confidence entries
     directional_entry_seconds: int = 120  # T-120s — Tier B primary entry
     directional_min_move_pct: float = 0.03  # default; overridden per-asset below
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # Per-asset move thresholds (T+2s-T+15s early entry with quality filters)
     min_move_btc_5m: float = 0.02   # BTC 5m: lowered to see more signals
     min_move_eth_5m: float = 0.02   # ETH 5m: same
-    min_move_sol_5m: float = 0.02   # SOL 5m: same
+    min_move_sol_5m: float = 0.015  # SOL 5m: lowered for more trades
 
     # Logging
     log_level: str = "INFO"
