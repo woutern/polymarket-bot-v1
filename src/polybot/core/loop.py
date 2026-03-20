@@ -418,7 +418,7 @@ class TradingLoop:
     # 223 lines removed (dead method)
 
     async def _evaluate_late_entry(self, state: AssetState, price: float):
-        """Late-entry strategy: at T+4min, follow the market direction."""
+        """Late-entry v2: adaptive ceilings, min conviction, trailing-the-leader sizing."""
         window = state.tracker.current
         if not window:
             return
@@ -438,14 +438,40 @@ class TradingLoop:
         pct_move = state.tracker.pct_move(price) or 0.0
         remaining = window.seconds_remaining()
 
-        # Guards — only these block a trade
+        # Per-asset adaptive ceilings
+        max_ask = 0.82 if state.asset == "SOL" else 0.78
+
+        # Guards
         skip_reason = ""
-        if current_ask > self.settings.late_entry_max_ask:
+        if current_ask < 0.55:
+            skip_reason = "no_conviction"
+        elif current_ask > max_ask:
             skip_reason = "fully_priced"
         elif not self.risk.can_trade():
             skip_reason = "circuit_breaker"
-        elif state.asset == "BTC" and current_ask < 0.62:
-            skip_reason = "btc_no_conviction"
+
+        # Store this asset's ask for trailing-the-leader comparison
+        if not hasattr(self, '_window_asks'):
+            self._window_asks = {}
+        window_key = window.open_ts
+        if window_key not in self._window_asks:
+            self._window_asks = {window_key: {}}  # reset on new window
+        self._window_asks[window_key][state.asset] = current_ask if not skip_reason else 0
+
+        # Trailing-the-leader sizing
+        asks = self._window_asks.get(window_key, {})
+        my_ask = current_ask if not skip_reason else 0
+        other_asks = [v for k, v in asks.items() if k != state.asset and v > 0]
+        best_other = max(other_asks) if other_asks else 0
+
+        if skip_reason:
+            size = 0
+        elif best_other > 0 and abs(my_ask - best_other) <= 0.03:
+            size = 10.00  # tied — both get $10
+        elif my_ask >= best_other:
+            size = 20.00  # leader — strongest conviction
+        else:
+            size = 5.00   # follower
 
         # Log every evaluation
         logger.info(
@@ -454,6 +480,8 @@ class TradingLoop:
             yes_ask=round(yes_ask, 3), no_ask=round(no_ask, 3),
             direction="UP" if direction_up else "DOWN",
             current_ask=round(current_ask, 3),
+            max_ask=max_ask,
+            size=size,
             pct_move=round(pct_move, 4),
             seconds_remaining=round(remaining, 1),
             skip_reason=skip_reason or "TRADE",
@@ -473,7 +501,7 @@ class TradingLoop:
                 "no_ask": round(no_ask, 4),
                 "outcome": "skipped" if skip_reason else "traded",
                 "rejection_reason": skip_reason,
-                "strategy": "late_momentum_v1",
+                "strategy": "late_momentum_v2",
                 "seconds_remaining": round(remaining, 1),
             })
         except Exception:
@@ -482,16 +510,16 @@ class TradingLoop:
         if skip_reason:
             return
 
-        # Build signal and execute — flat $1.50 per trade, no model
+        # Build signal and execute
         from polybot.models import Direction, Signal, SignalSource
         direction = Direction.UP if direction_up else Direction.DOWN
 
         signal = Signal(
             source=SignalSource.DIRECTIONAL,
             direction=direction,
-            model_prob=current_ask,  # use market price as proxy probability
+            model_prob=current_ask,
             market_price=current_ask,
-            ev=0,  # no EV calc for late entry
+            ev=0,
             window_slug=window.slug,
             asset=state.asset,
             p_bayesian=state.bayesian.probability,
@@ -504,16 +532,16 @@ class TradingLoop:
             open_price=window.open_price or 0,
         )
 
-        size = 10.00  # flat $10 per trade — no Kelly, no tiers
-
         logger.info(
             "late_entry_trade",
             asset=state.asset, slug=window.slug,
             direction="UP" if direction_up else "DOWN",
             ask=round(current_ask, 3), size=round(size, 2),
-            strategy="late_momentum_v1",
+            strategy="late_momentum_v2",
         )
 
+        # Store size on signal for live_trader to use
+        signal._late_entry_size = size
         t_start = time.time()
         signal_ms = (time.time() - t_start) * 1000
         await self._execute(signal, state, signal_ms, 0)

@@ -131,8 +131,8 @@ class LiveTrader:
 
             self._traded_slugs.add(signal.window_slug)
 
-            # Flat $10 per trade — no Kelly, no tiers
-            size = 10.00
+            # Use size from late-entry strategy (leader $20 / follower $5 / tied $10)
+            size = getattr(signal, '_late_entry_size', 10.00)
 
             return await self._execute_directional(signal, yes_token_id, no_token_id, size, signal_ms, bedrock_ms)
 
