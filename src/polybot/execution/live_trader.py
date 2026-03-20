@@ -131,8 +131,8 @@ class LiveTrader:
 
             self._traded_slugs.add(signal.window_slug)
 
-            # Dynamic Kelly sizing based on model confidence
-            size = self.risk.get_bet_size(lgbm_prob=signal.model_prob)
+            # Hard cap at $3.00 for late-entry strategy
+            size = min(3.00, self.risk.get_bet_size(lgbm_prob=signal.model_prob))
             if size <= 0:
                 return None
 
