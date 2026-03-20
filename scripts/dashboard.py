@@ -938,11 +938,11 @@ async function refresh() {
     const s = data.stats;
     const trades = data.trades || [];
 
-    // Stats
-    const pnl = s.total_pnl || 0;
+    // Stats — use Polymarket data (source of truth)
+    const pnl = bal.total_pnl || 0;
     document.getElementById('s-pnl').textContent = (pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2);
     document.getElementById('s-pnl').className = 'card-value '+(pnl>=0?'green':'red');
-    document.getElementById('s-pnl-sub').textContent = 'Wallet: \$'+(bal.portfolio||0).toFixed(2)+' | Cash: \$'+(bal.cash||0).toFixed(2);
+    document.getElementById('s-pnl-sub').textContent = 'Wallet: \$'+(bal.portfolio||0).toFixed(2)+' | Cash: \$'+(bal.cash||0).toFixed(2)+' | Positions: \$'+(bal.positions||0).toFixed(2);
 
     const wr = s.total_resolved > 0 ? Math.round(s.wins/s.total_resolved*100) : 0;
     document.getElementById('s-wr').textContent = wr+'%';
