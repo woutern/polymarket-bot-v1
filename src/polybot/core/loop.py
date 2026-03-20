@@ -361,7 +361,12 @@ class TradingLoop:
             except Exception as e:
                 logger.warning("model_refresh_failed", error=str(e)[:60])
 
-            # (strategy review removed — was unused Bedrock call)
+            # Auto-claim winnings every 30 minutes
+            if not hasattr(self, '_last_claim'):
+                self._last_claim = 0.0
+            if time.time() - self._last_claim >= 1800:
+                self._last_claim = time.time()
+                asyncio.create_task(self._run_claim(), name="auto_claim")
 
     async def _tick_asset(self, state: AssetState, price: float):
         tracker = state.tracker
