@@ -228,6 +228,45 @@ async def force_trade(asset: str, side: str | None, amount: float, dry_run: bool
         })
         print(f"  Recorded in DynamoDB")
 
+        # Auto-resolve after window closes
+        remaining = window["remaining"]
+        wait = remaining + 90  # wait for window close + 90s for Gamma API
+        print(f"\n  Waiting {wait:.0f}s for resolution...")
+        await asyncio.sleep(wait)
+
+        # Resolve via Gamma API
+        try:
+            import json as _json
+            slug = window["slug"]
+            resp = httpx.get("https://gamma-api.polymarket.com/markets", params={"slug": slug}, timeout=10)
+            m = resp.json()[0]
+            if m.get("closed"):
+                outcomes = _json.loads(m["outcomes"]) if isinstance(m.get("outcomes"), str) else m.get("outcomes", [])
+                prices = _json.loads(m["outcomePrices"]) if isinstance(m.get("outcomePrices"), str) else m.get("outcomePrices", [])
+                outcome_map = dict(zip(outcomes, [float(p) for p in prices]))
+                up_price = outcome_map.get("Up", 0)
+                winner = "YES" if up_price >= 0.99 else ("NO" if up_price <= 0.01 else None)
+                if winner:
+                    correct = (side == winner)
+                    pnl = round((actual_cost / price * (1 - price)) if correct else -actual_cost, 4)
+                    from decimal import Decimal
+                    dynamo._trades.update_item(
+                        Key={"id": order_id},
+                        UpdateExpression="SET resolved = :r, pnl = :p, polymarket_winner = :w, correct_prediction = :c, outcome_source = :s",
+                        ExpressionAttributeValues={
+                            ":r": 1, ":p": Decimal(str(pnl)), ":w": winner,
+                            ":c": int(correct), ":s": "polymarket_verified",
+                        },
+                    )
+                    emoji = "WIN ✅" if correct else "LOSS ❌"
+                    print(f"  RESOLVED: {winner} → {emoji} (pnl=${pnl:+.2f})")
+                else:
+                    print(f"  Resolution ambiguous — check dashboard")
+            else:
+                print(f"  Market not closed yet — will be resolved by orphan resolver")
+        except Exception as e:
+            print(f"  Auto-resolve failed: {e} — will be resolved by orphan resolver")
+
     except Exception as e:
         print(f"\nTRADE FAILED: {e}")
 
