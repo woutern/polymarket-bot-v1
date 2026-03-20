@@ -694,7 +694,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Polymarket Bot — SOL 5m Trading Desk</title>
+<title>Polymarket Bot — Late Momentum</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -1135,7 +1135,7 @@ HTML = r"""<!DOCTYPE html>
     <div class="nav-meta">
       <span>us-east-1</span>
       <span class="sep">|</span>
-      <span>SOL 5m</span>
+      <span>BTC · ETH · SOL</span>
       <span class="sep">|</span>
       <span>Updated: <strong id="last-update">&mdash;</strong></span>
     </div>
@@ -1164,7 +1164,7 @@ HTML = r"""<!DOCTYPE html>
   <!-- Stats row — matches Polymarket portfolio layout -->
   <div class="stats-grid">
     <div class="stat-card primary">
-      <div class="stat-label" id="s-balance-label">SOL 5m Strategy</div>
+      <div class="stat-label" id="s-balance-label">Late Momentum</div>
       <div class="stat-value" id="s-balance">&mdash;</div>
       <div class="stat-sub" id="s-balance-sub">Loading...</div>
     </div>
@@ -1234,6 +1234,9 @@ HTML = r"""<!DOCTYPE html>
     <span class="section-title">Trade Log</span>
     <div class="filter-bar">
       <select id="tl-asset" onchange="loadTradeLog()" class="filter-select">
+        <option value="">All assets</option>
+        <option value="BTC">BTC</option>
+        <option value="ETH">ETH</option>
         <option value="SOL">SOL</option>
       </select>
       <select id="tl-tf" onchange="loadTradeLog()" class="filter-select">
@@ -1563,7 +1566,7 @@ async function loadKPIs() {
     const tbody = document.getElementById('kpi-pairs-body');
     tbody.innerHTML = '';
     for (const [pair, ps] of Object.entries(pairs)) {
-      if (!pair.toUpperCase().startsWith('SOL')) continue;
+      // Show all pairs (BTC, ETH, SOL)
       const wr = ps.win_rate || 0;
       const pnlColor = ps.total_pnl >= 0 ? '#2f9e44' : '#c92a2a';
       const sprtBadge = ps.sprt_status === 'EDGE_CONFIRMED' ? '<span style=\"color:#2f9e44\">CONFIRMED</span>'
@@ -1871,7 +1874,7 @@ async function refreshOverview() {
 
     // Per-asset x timeframe performance cards
     const strats = s.strategy_pnl || {};
-    const all_strats = ['SOL 5m'];
+    const all_strats = ['BTC 5m', 'ETH 5m', 'SOL 5m'];
     let scHtml = '';
     for (const st of all_strats) {
       const d = strats[st] || { pnl: 0, count: 0, wins: 0 };
