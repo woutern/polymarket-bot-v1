@@ -807,9 +807,14 @@ HTML = r"""<!DOCTYPE html>
 
   <div class="grid grid-4">
     <div class="card">
-      <div class="card-label">Today's P&L</div>
+      <div class="card-label">Total P&L</div>
       <div class="card-value" id="s-pnl">—</div>
       <div class="card-sub" id="s-pnl-sub"></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Portfolio</div>
+      <div class="card-value purple" id="s-portfolio">—</div>
+      <div class="card-sub" id="s-portfolio-sub"></div>
     </div>
     <div class="card">
       <div class="card-label">Win Rate</div>
@@ -817,14 +822,9 @@ HTML = r"""<!DOCTYPE html>
       <div class="card-sub" id="s-wr-sub"></div>
     </div>
     <div class="card">
-      <div class="card-label">Trades Today</div>
-      <div class="card-value purple" id="s-count">—</div>
+      <div class="card-label">Trades</div>
+      <div class="card-value" id="s-count">—</div>
       <div class="card-sub" id="s-count-sub"></div>
-    </div>
-    <div class="card">
-      <div class="card-label">Open Positions</div>
-      <div class="card-value" id="s-open">0</div>
-      <div class="card-sub" id="s-open-sub"></div>
     </div>
   </div>
 
@@ -938,11 +938,14 @@ async function refresh() {
     const s = data.stats;
     const trades = data.trades || [];
 
-    // Stats — use Polymarket data (source of truth)
+    // Stats — Polymarket is source of truth for P&L and portfolio
     const pnl = bal.total_pnl || 0;
     document.getElementById('s-pnl').textContent = (pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2);
     document.getElementById('s-pnl').className = 'card-value '+(pnl>=0?'green':'red');
-    document.getElementById('s-pnl-sub').textContent = 'Wallet: \$'+(bal.portfolio||0).toFixed(2)+' | Cash: \$'+(bal.cash||0).toFixed(2)+' | Positions: \$'+(bal.positions||0).toFixed(2);
+    document.getElementById('s-pnl-sub').textContent = 'Deposited: \$'+(bal.total_deposited||0).toFixed(2);
+
+    document.getElementById('s-portfolio').textContent = '\$'+(bal.portfolio||0).toFixed(2);
+    document.getElementById('s-portfolio-sub').textContent = 'Cash: \$'+(bal.cash||0).toFixed(2)+(bal.positions > 0.01 ? ' + Positions: \$'+(bal.positions).toFixed(2) : '');
 
     const wr = s.total_resolved > 0 ? Math.round(s.wins/s.total_resolved*100) : 0;
     document.getElementById('s-wr').textContent = wr+'%';
@@ -950,8 +953,7 @@ async function refresh() {
     document.getElementById('s-wr-sub').textContent = s.wins+'W / '+s.losses+'L';
 
     document.getElementById('s-count').textContent = s.total_resolved + s.open_trades;
-    document.getElementById('s-count-sub').textContent = s.open_trades+' open';
-    document.getElementById('s-open').textContent = s.open_trades;
+    document.getElementById('s-count-sub').textContent = s.open_trades > 0 ? s.open_trades+' open' : 'all resolved';
 
     // WR by asset
     const sp = s.strategy_pnl || {};
