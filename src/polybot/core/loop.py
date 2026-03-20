@@ -1003,14 +1003,23 @@ class TradingLoop:
         return await self.trader.execute(signal, signal_ms=signal_ms, bedrock_ms=bedrock_ms)
 
     async def _run_claim(self):
-        """Run claim_all in a thread so it never blocks the event loop."""
+        """Run redeem.py in a subprocess so it never blocks the event loop."""
         try:
-            claim_all = _import_claim_all()
+            import subprocess
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, partial(claim_all, self.settings))
-            logger.info("auto_claim_completed")
+            result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    [".venv/bin/python", "scripts/redeem.py"],
+                    capture_output=True, text=True, timeout=120,
+                ),
+            )
+            if result.returncode == 0:
+                logger.info("auto_claim_completed", output=result.stdout[-200:] if result.stdout else "")
+            else:
+                logger.warning("auto_claim_failed", stderr=result.stderr[-200:] if result.stderr else "")
         except Exception as e:
-            logger.warning("auto_claim_failed", error=str(e))
+            logger.warning("auto_claim_failed", error=str(e)[:100])
 
     # 134 lines removed (dead method)
 
