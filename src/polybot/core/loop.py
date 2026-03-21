@@ -594,29 +594,11 @@ class TradingLoop:
         vol_avg = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol_now
         choppy = vol_now > 2 * vol_avg if vol_avg > 0 else False
 
-        # Guards
-        skip_reason = ""
-        if current_ask < min_ask:
-            skip_reason = "no_conviction"
-        elif current_ask > max_ask:
-            skip_reason = "fully_priced"
-        elif not self.risk.can_trade():
-            skip_reason = "circuit_breaker"
-        elif choppy:
-            skip_reason = "choppy_market"
-
-        # Flat sizing: $5 default, $10 high conviction ($0.75+ peak hours only)
         is_peak = not weak_hours and not is_weekend
-        if skip_reason:
-            size = 0
-        elif current_ask >= 0.75 and is_peak:
-            size = 10.00
-        else:
-            size = 5.00
 
         scan_duration = time.time() - (state.scan_best_ask_ts or time.time())
 
-        # LightGBM prediction — used as entry filter (lgbm >= 0.62)
+        # LightGBM prediction (compute FIRST — gates everything)
         lgbm_prob = 0.0
         try:
             import math as _math
@@ -652,10 +634,40 @@ class TradingLoop:
         except Exception:
             pass
 
-        # LightGBM entry gate: skip if model says < 0.62
-        if not skip_reason and lgbm_prob > 0 and lgbm_prob < 0.62:
+        # Scenario C entry rules — lgbm gates first, ask ceiling relaxed for high conviction
+        skip_reason = ""
+
+        # 1. LightGBM gate (must pass before anything else)
+        if lgbm_prob > 0 and lgbm_prob < 0.62:
             skip_reason = "lgbm_low"
-            size = 0
+        # 2. Absolute ask floor
+        elif current_ask < 0.60:
+            skip_reason = "ask_floor"
+        # 3. Absolute ask ceiling
+        elif current_ask > 0.95:
+            skip_reason = "ask_ceiling"
+        # 4. Standard guards
+        elif not self.risk.can_trade():
+            skip_reason = "circuit_breaker"
+        elif choppy:
+            skip_reason = "choppy_market"
+        # 5. Time-of-day min ask
+        elif current_ask < min_ask:
+            skip_reason = "no_conviction"
+
+        # Sizing — ask-based tiers with lgbm conviction gates
+        size = 0
+        if not skip_reason:
+            if 0.82 <= current_ask <= 0.88 and lgbm_prob >= 0.70:
+                size = 5.00  # High ask + high conviction
+            elif 0.88 < current_ask <= 0.95 and lgbm_prob >= 0.80:
+                size = 5.00  # Very high ask + very high conviction
+            elif current_ask > max_ask:
+                skip_reason = "fully_priced"  # Above per-asset max, lgbm not high enough
+            elif current_ask >= 0.75 and is_peak:
+                size = 10.00  # Normal high conviction, peak hours
+            else:
+                size = 5.00  # Default
 
         # BTC cross-asset move (for data collection)
         btc_move_pct = 0.0

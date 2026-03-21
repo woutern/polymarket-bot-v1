@@ -391,31 +391,52 @@ class TestRegressionAutoRetrainTarget:
 
 
 class TestFlatSizing:
-    """Flat sizing based on ask price. No scale factor."""
+    """Scenario C sizing: lgbm gates first, ask ceiling relaxed for high conviction."""
 
-    def test_two_tiers_in_code(self):
-        """Two tiers: $5 (default) / $10 (high conviction $0.75+ peak only)."""
+    def test_scenario_c_sizing_tiers(self):
+        """Scenario C: $5 default, $10 peak, $5 high-ask with high lgbm."""
         from polybot.core.loop import TradingLoop
         import inspect
         source = inspect.getsource(TradingLoop._execute_scan_entry)
         assert "10.00" in source
         assert "5.00" in source
         assert "0.75" in source
-        assert "is_peak" in source  # $10 only during peak hours
+        assert "is_peak" in source
 
     def test_no_scale_factor(self):
         from polybot.core.loop import TradingLoop
         assert not hasattr(TradingLoop, '_scaled_size')
         assert not hasattr(TradingLoop, '_size_scale')
 
-    def test_10_only_peak_hours(self):
-        """$10 bets restricted to peak hours (not weak hours, not weekend)."""
+    def test_lgbm_gates_first(self):
+        """LightGBM gate must be checked before ask limits."""
         from polybot.core.loop import TradingLoop
         import inspect
         source = inspect.getsource(TradingLoop._execute_scan_entry)
-        assert "is_peak" in source
-        assert "not weak_hours" in source
-        assert "not is_weekend" in source
+        # lgbm_low must appear before fully_priced in the code
+        lgbm_pos = source.index("lgbm_low")
+        fully_pos = source.index("fully_priced")
+        assert lgbm_pos < fully_pos, "lgbm gate must come before ask ceiling"
+
+    def test_high_ask_high_lgbm_tiers(self):
+        """Ask $0.82-$0.88 + lgbm>=0.70 and ask $0.88-$0.95 + lgbm>=0.80."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._execute_scan_entry)
+        assert "0.82" in source
+        assert "0.88" in source
+        assert "0.70" in source  # lgbm gate for $0.82-$0.88
+        assert "0.80" in source  # lgbm gate for $0.88-$0.95
+
+    def test_absolute_ask_bounds(self):
+        """Absolute floor $0.60 and ceiling $0.95."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._execute_scan_entry)
+        assert "ask_floor" in source
+        assert "ask_ceiling" in source
+        assert "0.60" in source
+        assert "0.95" in source
         assert 0.82 >= 0.75
 
     def test_below_075_gets_5(self):
@@ -648,15 +669,16 @@ class TestScanWindow:
         assert "SCAN_INTERVAL = 3.0" in source
 
     def test_scan_entry_has_guards(self):
-        """_execute_scan_entry must apply all guards: conviction, ceiling, circuit breaker."""
+        """_execute_scan_entry must apply Scenario C guards in order."""
         from polybot.core.loop import TradingLoop
         import inspect
         source = inspect.getsource(TradingLoop._execute_scan_entry)
-        assert "no_conviction" in source
-        assert "fully_priced" in source
-        assert "circuit_breaker" in source
-        assert "0.82" in source  # SOL ceiling
-        assert "0.78" in source  # BTC ceiling
+        assert "lgbm_low" in source       # 1. lgbm gate first
+        assert "ask_floor" in source       # 2. absolute floor
+        assert "ask_ceiling" in source     # 3. absolute ceiling
+        assert "circuit_breaker" in source # 4. standard guards
+        assert "no_conviction" in source   # 5. time-of-day min ask
+        assert "fully_priced" in source    # 6. per-asset max (fallback)
 
     def test_scan_entry_has_sizing(self):
         """_execute_scan_entry must use two-tier sizing."""

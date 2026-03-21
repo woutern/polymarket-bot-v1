@@ -1284,18 +1284,21 @@ HTML = r"""<!DOCTYPE html>
           <tr><td><b>Pairs</b></td><td>BTC_5m, SOL_5m (ETH disabled)</td></tr>
           <tr><td><b>Entry window</b></td><td>T+210s → T+240s scan (every 3s), hard deadline T+255s</td></tr>
           <tr><td><b>Direction</b></td><td>Follow higher ask side (YES if yes_ask ≥ no_ask, else NO)</td></tr>
-          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">PRICE GUARDS</td></tr>
-          <tr><td>Min ask (weekday)</td><td>$0.65</td></tr>
-          <tr><td>Min ask (weekend Sat/Sun)</td><td>$0.70</td></tr>
-          <tr><td>Max ask BTC</td><td>$0.78</td></tr>
-          <tr><td>Max ask SOL</td><td>$0.82</td></tr>
+          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">ENTRY RULES (Scenario C — lgbm gates first)</td></tr>
+          <tr><td>1. LightGBM gate</td><td>lgbm_prob ≥ 0.62 required (skip if below)</td></tr>
+          <tr><td>2. Absolute ask floor</td><td>$0.60 (never trade below)</td></tr>
+          <tr><td>3. Absolute ask ceiling</td><td>$0.95 (never trade above)</td></tr>
+          <tr><td>4. Min ask (weekday)</td><td>$0.65</td></tr>
+          <tr><td>5. Min ask (weekend)</td><td>$0.70</td></tr>
           <tr><td>Early entry (peak)</td><td>≤ $0.58 → enter immediately</td></tr>
           <tr><td>Early entry (weak hours)</td><td>≤ $0.68</td></tr>
           <tr><td>Early entry (weekend)</td><td>≤ $0.72</td></tr>
-          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">SIZING</td></tr>
-          <tr><td>Ask $0.65–$0.75</td><td><b>$5.00</b></td></tr>
+          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">SIZING (conviction-based)</td></tr>
+          <tr><td>Ask $0.60–$0.75</td><td><b>$5.00</b></td></tr>
           <tr><td>Ask $0.75–$0.82 (peak hours)</td><td><b>$10.00</b></td></tr>
           <tr><td>Ask $0.75–$0.82 (weak/weekend)</td><td><b>$5.00</b></td></tr>
+          <tr><td>Ask $0.82–$0.88 + lgbm ≥ 0.70</td><td><b>$5.00</b> (relaxed ceiling)</td></tr>
+          <tr><td>Ask $0.88–$0.95 + lgbm ≥ 0.80</td><td><b>$5.00</b> (high conviction only)</td></tr>
           <tr><td>Hard cap</td><td>$10.00 (HARDCODED_MAX_BET)</td></tr>
           <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIME FILTERS</td></tr>
           <tr><td>Peak hours (CET)</td><td>10:00–13:00, 14:00–22:00 → min_ask $0.65</td></tr>
