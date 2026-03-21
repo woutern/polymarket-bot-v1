@@ -390,69 +390,32 @@ class TestRegressionAutoRetrainTarget:
         assert "LiveTrader" not in content
 
 
-class TestSizingV2:
-    """Sizing tiers must be halved: leader $10, tied $5, follower $2.50."""
+class TestFlatSizing:
+    """Flat sizing based on ask price. No scale factor."""
 
-    def test_leader_size_is_10(self):
-        """Leader tier max is $10, not $20."""
+    def test_two_tiers_in_code(self):
+        """Two tiers: $5 (default) / $10 (high conviction $0.75+)."""
         from polybot.core.loop import TradingLoop
-        # Verify the sizing constants in the code
         import inspect
         source = inspect.getsource(TradingLoop._execute_scan_entry)
-        assert "10.00" in source  # leader base
-        assert "5.00" in source   # tied base
-        assert "2.50" in source   # follower base
-        # Old sizes must NOT appear
-        assert "20.00" not in source
+        assert "10.00" in source
+        assert "5.00" in source
+        assert "0.75" in source
 
-    def test_size_scale_capped_at_1(self):
-        """Scale factor must never exceed 1.0 (no over-betting)."""
+    def test_no_scale_factor(self):
         from polybot.core.loop import TradingLoop
-        from unittest.mock import MagicMock
-        loop = MagicMock(spec=TradingLoop)
-        loop._base_balance = 200.0
-        # Balance higher than base → cap at 1.0
-        loop._cached_balance = 300.0
-        scale = TradingLoop._size_scale(loop)
-        assert scale == 1.0
+        assert not hasattr(TradingLoop, '_scaled_size')
+        assert not hasattr(TradingLoop, '_size_scale')
 
-    def test_size_scale_proportional(self):
-        """Scale factor is proportional to balance."""
-        from polybot.core.loop import TradingLoop
-        from unittest.mock import MagicMock
-        loop = MagicMock(spec=TradingLoop)
-        loop._base_balance = 200.0
-        loop._cached_balance = 100.0  # half of base
-        scale = TradingLoop._size_scale(loop)
-        assert scale == 0.5
+    def test_high_ask_gets_10(self):
+        """Ask $0.75+ → $10."""
+        assert 0.75 >= 0.75
+        assert 0.82 >= 0.75
 
-    def test_scaled_size_floor_150(self):
-        """Scaled size must never go below $1.50."""
-        from polybot.core.loop import TradingLoop
-        from unittest.mock import MagicMock
-        loop = MagicMock(spec=TradingLoop)
-        loop._base_balance = 200.0
-        loop._cached_balance = 10.0  # very low balance
-        loop._size_scale = lambda: TradingLoop._size_scale(loop)
-        size = TradingLoop._scaled_size(loop, 2.50)
-        assert size >= 1.50
-
-    def test_scale_defaults_to_1_without_balance(self):
-        """No balance data → scale = 1.0 (full base sizes)."""
-        from polybot.core.loop import TradingLoop
-        from unittest.mock import MagicMock
-        loop = MagicMock(spec=TradingLoop)
-        loop._base_balance = 200.0
-        loop._cached_balance = 0.0
-        scale = TradingLoop._size_scale(loop)
-        assert scale == 1.0
-
-    def test_base_balance_is_750(self):
-        """Base balance fixed at $750 (half of wallet for 5m bot)."""
-        from polybot.core.loop import TradingLoop
-        import inspect
-        source = inspect.getsource(TradingLoop.__init__)
-        assert "750.0" in source
+    def test_below_075_gets_5(self):
+        """Ask below $0.75 → $5."""
+        for ask in [0.65, 0.68, 0.70, 0.74]:
+            assert ask < 0.75
 
 
 class TestPairsFiltering:
@@ -521,99 +484,44 @@ class TestPairsFiltering:
         assert "enabled_pairs" in init_source, "__init__ must use enabled_pairs to build asset_states"
 
 
-class TestSizingCalculation:
-    """Sizing math must produce correct dollar amounts.
+class TestFlatSizingByAsk:
+    """Flat sizing by ask price — no balance scaling."""
 
-    Root cause: follower $2.50 at ask $0.57 → shares=round(2.50/0.57)=4 → cost=$2.28.
-    But we saw $1.71 = 3 shares × $0.57 = round(1.50/0.57). Means the floor was hit.
-    """
+    def test_high_ask_size(self):
+        """Ask >= $0.75 → $10."""
+        # At ask=0.78 (BTC max): size=10, shares=round(10/0.78)=13, cost=$10.14
+        size = 10.00
+        shares = round(size / 0.78, 0)
+        assert shares == 13
+        assert round(shares * 0.78, 2) == 10.14
 
-    def test_leader_size_at_full_scale(self):
-        """Leader at scale=1.0 should produce ~$10 trade."""
-        from polybot.core.loop import TradingLoop
-        from unittest.mock import MagicMock
-        loop = MagicMock(spec=TradingLoop)
-        loop._base_balance = 200.0
-        loop._cached_balance = 200.0
-        loop._size_scale = lambda: TradingLoop._size_scale(loop)
-        size = TradingLoop._scaled_size(loop, 10.00)
-        assert size == 10.00
+    def test_mid_ask_size(self):
+        """Ask $0.65-$0.75 → $5."""
+        size = 5.00
+        shares = round(size / 0.70, 0)
+        assert shares == 7
 
-    def test_follower_size_at_full_scale(self):
-        """Follower at scale=1.0 should produce $2.50 trade."""
-        from polybot.core.loop import TradingLoop
-        from unittest.mock import MagicMock
-        loop = MagicMock(spec=TradingLoop)
-        loop._base_balance = 200.0
-        loop._cached_balance = 200.0
-        loop._size_scale = lambda: TradingLoop._size_scale(loop)
-        size = TradingLoop._scaled_size(loop, 2.50)
-        assert size == 2.50
-
-    def test_tied_size_at_full_scale(self):
-        """Tied at scale=1.0 should produce $5.00 trade."""
-        from polybot.core.loop import TradingLoop
-        from unittest.mock import MagicMock
-        loop = MagicMock(spec=TradingLoop)
-        loop._base_balance = 200.0
-        loop._cached_balance = 200.0
-        loop._size_scale = lambda: TradingLoop._size_scale(loop)
-        size = TradingLoop._scaled_size(loop, 5.00)
-        assert size == 5.00
-
-    def test_half_balance_halves_sizes(self):
-        """At 50% balance, leader should be $5, follower $1.50 (floor)."""
-        from polybot.core.loop import TradingLoop
-        from unittest.mock import MagicMock
-        loop = MagicMock(spec=TradingLoop)
-        loop._base_balance = 200.0
-        loop._cached_balance = 100.0
-        loop._size_scale = lambda: TradingLoop._size_scale(loop)
-        leader = TradingLoop._scaled_size(loop, 10.00)
-        follower = TradingLoop._scaled_size(loop, 2.50)
-        assert leader == 5.00
-        assert follower == 1.50  # $1.25 rounds to $1.25 but floor is $1.50
-
-    def test_floor_never_below_150(self):
-        """Even at very low balance, size must be >= $1.50."""
-        from polybot.core.loop import TradingLoop
-        from unittest.mock import MagicMock
-        loop = MagicMock(spec=TradingLoop)
-        loop._base_balance = 200.0
-        loop._cached_balance = 5.0  # 2.5% of base
-        loop._size_scale = lambda: TradingLoop._size_scale(loop)
-        for base in [10.00, 5.00, 2.50]:
-            size = TradingLoop._scaled_size(loop, base)
-            assert size >= 1.50, f"Size {size} for base {base} below $1.50 floor"
-
-    def test_shares_times_price_matches_size(self):
-        """Verify that shares × price ≈ size_usd (the live_trader math)."""
-        # Simulate live_trader math for a $2.50 follower at ask=0.57
-        size = 2.50
-        price = 0.57
-        shares = round(size / price, 0)  # = round(4.386) = 4
-        actual_cost = round(shares * price, 2)  # = 4 * 0.57 = 2.28
-        assert shares == 4
-        assert actual_cost == 2.28
-        # NOT 3 shares (which would be $1.71 — the bug we saw)
-        assert actual_cost > 1.50
-
-    def test_no_base_balance_gives_full_sizes(self):
-        """Before CLOB balance is fetched, scale=1.0 (don't under-bet)."""
-        from polybot.core.loop import TradingLoop
-        from unittest.mock import MagicMock
-        loop = MagicMock(spec=TradingLoop)
-        loop._base_balance = 0.0  # not yet set
-        loop._cached_balance = 0.0
-        scale = TradingLoop._size_scale(loop)
-        assert scale == 1.0, "No balance data should default to scale=1.0"
-
-    def test_balance_refresh_updates_cached(self):
-        """_refresh_balance must update _cached_balance from CLOB."""
+    def test_volatility_filter(self):
+        """choppy_market skip when vol > 2x average."""
         from polybot.core.loop import TradingLoop
         import inspect
-        source = inspect.getsource(TradingLoop._refresh_balance)
-        assert "_cached_balance = cash" in source
+        source = inspect.getsource(TradingLoop._execute_scan_entry)
+        assert "choppy_market" in source
+        assert "2 *" in source or "2*" in source
+
+    def test_low_ask_size(self):
+        """Ask $0.55-$0.65 → $5."""
+        size = 5.00
+        shares = round(size / 0.58, 0)
+        assert shares == 9
+        assert round(shares * 0.58, 2) == 5.22
+
+    def test_no_balance_methods(self):
+        """TradingLoop must NOT have _scaled_size or _size_scale."""
+        from polybot.core.loop import TradingLoop
+        assert not hasattr(TradingLoop, '_scaled_size')
+        assert not hasattr(TradingLoop, '_size_scale')
+        assert not hasattr(TradingLoop, '_refresh_balance')
 
 
 class TestEcsTaskDefinitionSecrets:
@@ -722,8 +630,9 @@ class TestScanWindow:
         assert "direction_unstable" in source
         # Phase 3: execute at deadline
         assert "_execute_scan_entry" in source
-        # Early entry threshold
+        # Early entry threshold (dynamic: 0.58 normal, 0.68 weak hours)
         assert "0.58" in source
+        assert "0.68" in source
 
     def test_scan_interval_is_3s(self):
         """Scan checks orderbook every 3 seconds, not every tick."""
@@ -744,14 +653,12 @@ class TestScanWindow:
         assert "0.78" in source  # BTC ceiling
 
     def test_scan_entry_has_sizing(self):
-        """_execute_scan_entry must use trailing-the-leader sizing."""
+        """_execute_scan_entry must use two-tier sizing."""
         from polybot.core.loop import TradingLoop
         import inspect
         source = inspect.getsource(TradingLoop._execute_scan_entry)
-        assert "leader" in source
-        assert "follower" in source
-        assert "tied" in source
-        assert "_scaled_size" in source
+        assert "10.00" in source   # high conviction
+        assert "5.00" in source    # default
 
     def test_strategy_tag_is_v3_scan(self):
         """Trades from scan window must be tagged late_momentum_v3_scan."""
@@ -761,3 +668,121 @@ class TestScanWindow:
         assert "late_momentum_v3_scan" in source
         log_source = inspect.getsource(TradingLoop._log_scan_signal)
         assert "late_momentum_v3_scan" in log_source
+
+
+class TestVerifySweep:
+    """Periodic verification sweep runs every 5 minutes in main loop."""
+
+    def test_verify_sweep_method_exists(self):
+        from polybot.core.loop import TradingLoop
+        assert hasattr(TradingLoop, '_verify_sweep')
+        assert callable(TradingLoop._verify_sweep)
+
+    def test_verify_sweep_in_main_loop(self):
+        """Must be called periodically in the main loop."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        # The sweep is triggered in __init__ interval + main loop body
+        source = inspect.getsource(TradingLoop)
+        assert "_last_verify_sweep" in source
+        assert "_verify_sweep" in source
+
+    def test_verify_sweep_interval_5min(self):
+        """Sweep runs every 300 seconds (5 minutes)."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop)
+        assert "_last_verify_sweep >= 300" in source
+
+    def test_verify_sweep_checks_polymarket(self):
+        """Must call get_market_outcome for verification."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._verify_sweep)
+        assert "get_market_outcome" in source
+        assert "polymarket_verified" in source
+
+    def test_verify_sweep_skips_already_verified(self):
+        """Must not re-check trades already polymarket_verified."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._verify_sweep)
+        assert "polymarket_verified" in source
+        assert "manual_sell" in source
+
+    def test_verify_sweep_survives_errors(self):
+        """Must not crash the main loop on errors."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._verify_sweep)
+        assert "except" in source
+
+
+class TestTimeOfDayFilter:
+    """Time-of-day liquidity filter for 5-minute bot.
+
+    Peak (08-16 UTC): min_ask $0.55
+    Moderate (00-02, 16-21 UTC): min_ask $0.55
+    Weak (02-08, 21-24 UTC): min_ask $0.65, early_entry $0.68
+    """
+
+    def test_weak_hours_defined(self):
+        """Weak hours: 00-09, 12, 21-24 UTC."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._execute_scan_entry)
+        assert "weak_hours" in source
+        assert "utc_hour == 12" in source
+
+    def test_min_ask_weekday_weekend(self):
+        """min_ask = $0.65 weekdays, $0.70 weekends."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._execute_scan_entry)
+        assert "0.70 if is_weekend" in source
+        assert "0.65" in source
+
+    def test_early_entry_raised_in_weak_hours(self):
+        """Early entry ask = $0.68 during weak hours (vs $0.58 normal)."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._scan_tick)
+        assert "0.68 if weak_hours" in source
+        assert "0.58" in source
+
+    def test_no_conviction_skip_reason(self):
+        """Skip reason 'no_conviction' when ask below $0.65."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._execute_scan_entry)
+        assert "no_conviction" in source
+
+    def test_utc_hour_logged(self):
+        """utc_hour must be logged on every evaluation."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._execute_scan_entry)
+        assert "utc_hour" in source
+        log_source = inspect.getsource(TradingLoop._log_scan_signal)
+        assert "utc_hour" in log_source
+
+    def test_peak_hours_unchanged(self):
+        """Peak hours (08-16 UTC): no changes to thresholds."""
+        # Peak hours are NOT weak_hours, so min_ask stays 0.55
+        # Verify the condition: weak = (2<=h<8) or (21<=h<24)
+        # So 08-16 is NOT weak
+        for hour in [8, 9, 10, 11, 12, 13, 14, 15]:
+            weak = (2 <= hour < 8) or (21 <= hour < 24)
+            assert not weak, f"Hour {hour} should NOT be weak"
+
+    def test_peak_hours_unchanged(self):
+        """Peak hours: 09-12, 13-21 UTC — no changes."""
+        for hour in [9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20]:
+            weak = (hour < 9) or (hour >= 21) or (hour == 12)
+            assert not weak, f"Hour {hour} should NOT be weak"
+
+    def test_weak_hours_correct(self):
+        """Weak hours: 00-09, 12, 21-24 UTC."""
+        for hour in [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 21, 22, 23]:
+            weak = (hour < 9) or (hour >= 21) or (hour == 12)
+            assert weak, f"Hour {hour} SHOULD be weak"

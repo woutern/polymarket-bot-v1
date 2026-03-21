@@ -12,7 +12,7 @@
 set -euo pipefail
 
 PROFILE="playground"
-REGION="us-east-1"  # Same region as DynamoDB
+REGION="eu-west-1"  # Same region as DynamoDB
 FUNCTION_NAME="polymarket-dashboard"
 ROLE_NAME="polymarket-dashboard-lambda-role"
 API_NAME="polymarket-dashboard-api"
@@ -76,7 +76,7 @@ if [[ -z "$ROLE_ARN" || "$ROLE_ARN" == "None" ]]; then
       {
         "Effect": "Allow",
         "Action": ["dynamodb:Scan", "dynamodb:Query", "dynamodb:GetItem", "dynamodb:BatchGetItem"],
-        "Resource": "arn:aws:dynamodb:us-east-1:*:table/polymarket-bot-*"
+        "Resource": "arn:aws:dynamodb:eu-west-1:*:table/polymarket-bot-*"
       },
       {
         "Effect": "Allow",

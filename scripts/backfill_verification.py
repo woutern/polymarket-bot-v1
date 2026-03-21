@@ -20,7 +20,7 @@ from boto3.dynamodb.conditions import Attr
 
 
 async def main():
-    session = boto3.Session(profile_name="playground", region_name="us-east-1")
+    session = boto3.Session(profile_name="playground", region_name="eu-west-1")
     table = session.resource("dynamodb").Table("polymarket-bot-trades")
 
     # Get all coinbase_inferred trades

@@ -29,7 +29,7 @@ from decimal import Decimal
 
 def load_data(days=7):
     """Pull training data + signals from DynamoDB."""
-    session = boto3.Session(profile_name="playground", region_name="us-east-1")
+    session = boto3.Session(profile_name="playground", region_name="eu-west-1")
     cutoff = time.time() - days * 86400
 
     # Training data (outcomes)

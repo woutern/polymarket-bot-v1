@@ -8,7 +8,7 @@
 set -euo pipefail
 
 PROFILE="playground"
-REGION="us-east-1"
+REGION="eu-west-1"
 CLUSTER="polymarket-bot"
 SECRET_ID="polymarket-bot-env"
 SUBNET="subnet-0ad6ae3ee1277d9f2"

@@ -83,7 +83,7 @@ class KPITracker:
                 import os
                 import boto3
                 profile = "playground" if not os.getenv("AWS_EXECUTION_ENV") else None
-                session = boto3.Session(profile_name=profile, region_name="us-east-1")
+                session = boto3.Session(profile_name=profile, region_name="eu-west-1")
                 self._dynamo_table = session.resource("dynamodb").Table("polymarket-bot-kpi-snapshots")
             except Exception:
                 pass

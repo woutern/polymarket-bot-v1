@@ -33,11 +33,12 @@ logger = structlog.get_logger()
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 
+TIER0_SIZE = 10.00  # High-conviction: ask>=0.93, <=6h, vol>=5K
 TIER1_SIZE = 5.00
 TIER2_SIZE = 2.50
 MIN_SHARES = 5
 MIN_VOLUME = 1_000
-MAX_BUDGET = 1_000.00  # Total max deployed across all opportunity trades
+MAX_BUDGET = 1_250.00  # Total max deployed across all opportunity trades
 SKIP_SLUGS = {"5m", "15m", "updown"}
 
 # Tag IDs from Gamma /tags endpoint (cached at startup)
@@ -46,18 +47,26 @@ WORKER_TAGS: dict[str, list[str]] = {}
 # Worker definitions: name → tag slugs to resolve to IDs at startup
 WORKER_TAG_SLUGS = {
     "crypto": ["crypto", "crypto-prices", "bitcoin", "ethereum", "solana", "xrp", "bitcoin-prices",
-               "ethereum-prices", "solana-prices", "xrp-prices", "cryptocurrency"],
-    "finance": ["finance", "economics", "economy", "stocks", "earnings", "fed", "fed-rates",
-                "finance-updown", "daily-close"],
+               "ethereum-prices", "solana-prices", "xrp-prices", "cryptocurrency", "hit-price"],
+    "finance": ["finance", "economics", "economy", "stocks", "earnings", "daily-close",
+                "finance-updown", "tsla", "nvda", "nflx", "aapl", "meta"],
+    "fed": ["fed", "fed-rates", "fomc", "federal-reserve", "jerome-powell", "fed-chair",
+            "economic-policy"],
     "politics": ["politics", "us-politics", "trump", "elections", "government", "trump-approval",
-                 "world-elections", "global-elections"],
+                 "world-elections", "global-elections", "presidential-election"],
+    # tweets worker removed — too noisy, low edge
     "geopolitics": ["geopolitics", "iran", "world", "middle-east", "war", "ukraine", "russia",
-                    "us-iran", "ukraine-peace-deal"],
-    "tech": ["tech", "ai", "technology", "ai-development", "openai", "open-ai", "big-tech"],
-    "basketball": ["nba", "basketball", "ncaa", "ncaa-basketball", "march-madness",
-                   "march-madness-games-2026", "college-basketball"],
-    "news": ["world", "temperature", "weather", "daily", "pop-culture",
-             "recurring", "tweets-markets"],
+                    "us-iran", "ukraine-peace-deal", "israel", "strait-of-hormuz",
+                    "north-korea", "lebanon", "khamenei"],
+    "elections": ["elections", "world-elections", "global-elections", "french-elections",
+                  "german-elections", "slovenia-elections", "denmark-elections",
+                  "peru-elections", "mayoral-elections", "special-elections"],
+    "tech": ["tech", "ai", "technology", "ai-development", "openai", "open-ai", "big-tech",
+             "gta-vi"],
+    # basketball worker removed — needs live games, rarely matches 48h window
+    "weather": ["temperature", "weather", "daily", "precipitation"],
+    "culture": ["culture", "entertainment", "awards", "mrbeast", "youtube",
+                "prediction-markets", "recurring"],
 }
 
 ESPN_NBA = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
@@ -196,10 +205,10 @@ async def get_live_basketball() -> list[dict]:
 # ── SCAN ──────────────────────────────────────────────────────────────────────
 
 
-async def fetch_worker_markets(tag_ids: list[str]) -> list[dict]:
+async def fetch_worker_markets(tag_ids: list[str], max_hours: int = 48) -> list[dict]:
     now = datetime.now(timezone.utc)
     end_min = (now + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_max = (now + timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_max = (now + timedelta(hours=max_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     all_events = []
     async with httpx.AsyncClient(timeout=30) as c:
@@ -271,8 +280,10 @@ def parse_opps(events: list[dict], worker: str) -> list[Opp]:
             if hrs < 0.5:
                 continue
 
-            # Tier
-            if 0.85 <= price <= 0.95 and hrs <= 24:
+            # Tier (0 = $10 high-conviction, 1 = $5 auto, 2 = $2.50 AI-checked)
+            if price >= 0.93 and hrs <= 6 and vol >= 5_000:
+                tier = 0
+            elif 0.85 <= price <= 0.95 and hrs <= 24:
                 tier = 1
             elif (0.65 <= price < 0.85 and hrs <= 24) or (0.85 <= price <= 0.95 and 24 < hrs <= 48):
                 tier = 2
@@ -300,7 +311,7 @@ def parse_opps(events: list[dict], worker: str) -> list[Opp]:
 async def ai_assess(opp: Opp, bedrock, context: str) -> Opp:
     pct = round(opp.price * 100, 1)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    model = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    model = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
     opp.ai_model = "haiku"
 
     prompt = (
@@ -349,13 +360,110 @@ async def ai_assess(opp: Opp, bedrock, context: str) -> Opp:
 # ── TRADE ─────────────────────────────────────────────────────────────────────
 
 
+async def ai_sanity_check(opp: Opp, bedrock, context: str) -> Opp:
+    """Quick Haiku check: is this Tier 1 outcome near-certain?"""
+    try:
+        pct = round(opp.price * 100, 1)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        prompt = (
+            f"Market: {opp.question}\n"
+            f"Price: {opp.side} at ${opp.price:.2f} ({pct}% implied)\n"
+            f"Resolves in: {opp.hours_left:.1f}h\n"
+            f"Live context: {context}\n"
+            f"Today: {today}\n\n"
+            f"Is this outcome near-certain?\n"
+            f'JSON only: {{"trade":true|false,"confidence":0.0-1.0,"reasoning":"1 sentence"}}'
+        )
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31", "max_tokens": 100,
+            "system": "You are a prediction market trader. Be concise.",
+            "messages": [{"role": "user", "content": prompt}],
+        })
+        r = bedrock.invoke_model(modelId=HAIKU_MODEL, body=body)
+        text = json.loads(r["body"].read()).get("content", [{}])[0].get("text", "").strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        d = json.loads(text)
+        opp.ai_trade = bool(d.get("trade", False))
+        opp.ai_confidence = float(d.get("confidence", 0))
+        opp.ai_reasoning = d.get("reasoning", "")[:200]
+        opp.ai_model = "haiku_sanity"
+    except Exception as e:
+        # On error, allow trade (fail-open for Tier 1)
+        opp.ai_trade = True
+        opp.ai_confidence = 0.80
+        opp.ai_reasoning = f"Sanity check error: {str(e)[:40]}"
+        logger.warning("sanity_check_err", q=opp.question[:30], error=str(e)[:60])
+    return opp
+
+
+SONNET_MODEL = "eu.anthropic.claude-sonnet-4-20250514-v1:0"
+HAIKU_MODEL = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+async def ai_sonnet_confirm(opp: Opp, bedrock, context: str) -> Opp:
+    """Sonnet devil's advocate for Tier 0 ($10) trades. Must approve after Haiku passes."""
+    try:
+        pct = round(opp.price * 100, 1)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        end_utc = opp.end_date.replace("Z", " UTC") if opp.end_date else "unknown"
+        prompt = (
+            f"You are a prediction market risk analyst. Your job is to find reasons this trade could LOSE.\n\n"
+            f"Market: {opp.question}\n"
+            f"Side: {opp.side} at ${opp.price:.2f} ({pct}% implied probability)\n"
+            f"Resolves in: {opp.hours_left:.1f}h (at {end_utc})\n"
+            f"Volume: ${opp.volume:,.0f}\n"
+            f"Live context: {context}\n"
+            f"Today: {today}\n\n"
+            f"Haiku assessment: confidence={opp.ai_confidence:.2f}, reasoning=\"{opp.ai_reasoning}\"\n\n"
+            f"This is a $10 high-conviction bet. Before we place it:\n"
+            f"1. What could go wrong? (late-breaking news, data delays, oracle quirks)\n"
+            f"2. Is the market pricing this correctly at {pct}%?\n"
+            f"3. Is there any reason the remaining {opp.hours_left:.1f}h could change the outcome?\n\n"
+            f'JSON only, no markdown:\n'
+            f'{{"approve":true|false,"confidence":0.0-1.0,"risk":"1 sentence on biggest risk","reasoning":"1 sentence"}}'
+        )
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31", "max_tokens": 200,
+            "system": "You are a cautious prediction market risk analyst. Only approve if you cannot find a plausible way this trade loses. Be concise.",
+            "messages": [{"role": "user", "content": prompt}],
+        })
+        r = bedrock.invoke_model(modelId=SONNET_MODEL, body=body)
+        text = json.loads(r["body"].read()).get("content", [{}])[0].get("text", "").strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        d = json.loads(text)
+        sonnet_approve = bool(d.get("approve", False))
+        sonnet_conf = float(d.get("confidence", 0))
+        sonnet_risk = d.get("risk", "")[:200]
+        sonnet_reasoning = d.get("reasoning", "")[:200]
+
+        if not sonnet_approve or sonnet_conf < 0.85:
+            opp.ai_trade = False
+            opp.ai_reasoning = f"Sonnet veto: {sonnet_risk}"
+            opp.ai_model = "haiku+sonnet_veto"
+            logger.info("tier0_sonnet_veto", q=opp.question[:35], conf=sonnet_conf,
+                        risk=sonnet_risk[:60], reasoning=sonnet_reasoning[:60])
+        else:
+            opp.ai_confidence = min(opp.ai_confidence, sonnet_conf)
+            opp.ai_reasoning = f"Haiku+Sonnet confirmed. Risk: {sonnet_risk}"
+            opp.ai_model = "haiku+sonnet"
+            logger.info("tier0_sonnet_ok", q=opp.question[:35], conf=sonnet_conf,
+                        risk=sonnet_risk[:60])
+    except Exception as e:
+        # On Sonnet error, fall back to Haiku-only (don't block the trade)
+        opp.ai_model = "haiku_only_sonnet_err"
+        logger.warning("sonnet_err", q=opp.question[:30], error=str(e)[:60])
+    return opp
+
+
 async def place_fok(client: ClobClient, opp: Opp) -> dict:
     """FOK taker at best ask. Never limit/GTC."""
     token = opp.yes_token if opp.side == "YES" else opp.no_token
     if not token:
         return {"success": False, "error": "No token"}
 
-    size = TIER1_SIZE if opp.tier == 1 else TIER2_SIZE
+    size = TIER0_SIZE if opp.tier == 0 else TIER1_SIZE if opp.tier == 1 else TIER2_SIZE
     try:
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.get(f"{CLOB}/book", params={"token_id": token})
@@ -399,7 +507,7 @@ def _dynamo():
     try:
         import boto3
         p = "playground" if not os.getenv("AWS_EXECUTION_ENV") else None
-        return boto3.Session(profile_name=p, region_name="us-east-1").resource("dynamodb").Table(
+        return boto3.Session(profile_name=p, region_name="eu-west-1").resource("dynamodb").Table(
             "polymarket-bot-opportunity-trades")
     except:
         return None
@@ -501,29 +609,83 @@ async def resolve(opp: Opp, result: dict, table):
             logger.warning("resolve_err", error=str(e)[:60])
 
 
-async def resolve_pending(table):
+async def resolve_all_pending(table):
+    """Immediately check and resolve ALL unresolved trades past end_date.
+
+    Does NOT use asyncio.create_task — resolves directly and synchronously.
+    Called on startup AND after every scan cycle.
+    """
     if not table:
         return
     try:
         resp = table.scan(FilterExpression="resolved = :r", ExpressionAttributeValues={":r": 0})
+        items = resp.get("Items", [])
+        while "LastEvaluatedKey" in resp:
+            resp = table.scan(FilterExpression="resolved = :r",
+                              ExpressionAttributeValues={":r": 0},
+                              ExclusiveStartKey=resp["LastEvaluatedKey"])
+            items.extend(resp.get("Items", []))
+
         now = datetime.now(timezone.utc)
-        for item in resp.get("Items", []):
-            end_str = item.get("end_date", "")
-            if not end_str:
-                continue
-            try:
-                if datetime.fromisoformat(end_str.replace("Z", "+00:00")) < now:
-                    opp = Opp(question=str(item.get("question", "")), slug=str(item.get("slug", "")),
-                              condition_id=str(item.get("condition_id", "")),
-                              side=str(item.get("side", "")), price=float(item.get("ask_price", 0)),
-                              yes_price=0, no_price=0, yes_token="", no_token="",
-                              volume=0, hours_left=0, category="", end_date=end_str, neg_risk=False)
-                    result = {"shares": float(item.get("shares", 0)),
-                              "cost": float(item.get("size_usd", 0)),
-                              "price": float(item.get("ask_price", 0))}
-                    asyncio.create_task(resolve(opp, result, table))
-            except:
-                pass
+        resolved_count = 0
+
+        async with httpx.AsyncClient(timeout=10) as c:
+            for item in items:
+                end_str = item.get("end_date", "")
+                if not end_str:
+                    continue
+                try:
+                    end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+                    if end_dt > now:
+                        continue  # Not past end_date yet
+                except:
+                    continue
+
+                slug = str(item.get("slug", ""))
+                if not slug:
+                    continue
+
+                try:
+                    r = await c.get(f"{GAMMA}/markets", params={"slug": slug})
+                    if r.status_code != 200:
+                        continue
+                    ms = r.json()
+                    if not ms or not ms[0].get("closed"):
+                        continue
+                    ps = ms[0].get("outcomePrices", [])
+                    if isinstance(ps, str):
+                        ps = json.loads(ps)
+                    if len(ps) < 2:
+                        continue
+                    yf = float(ps[0])
+                    if yf >= 0.99:
+                        winner = "YES"
+                    elif yf <= 0.01:
+                        winner = "NO"
+                    else:
+                        continue
+
+                    side = str(item.get("side", ""))
+                    won = side == winner
+                    ask = float(item.get("ask_price", 0))
+                    shares = float(item.get("shares", 0))
+                    pnl = round(shares * (1.0 - ask), 2) if won else -float(item.get("size_usd", 0))
+
+                    from decimal import Decimal
+                    table.update_item(
+                        Key={"slug": slug},
+                        UpdateExpression="SET resolved=:r, outcome=:o, pnl=:p",
+                        ExpressionAttributeValues={
+                            ":r": 1, ":o": "won" if won else "lost",
+                            ":p": Decimal(str(round(pnl, 4))),
+                        },
+                    )
+                    resolved_count += 1
+                except Exception:
+                    pass
+
+        if resolved_count:
+            logger.info("resolve_sweep", resolved=resolved_count)
     except Exception as e:
         logger.warning("resolve_pending_err", error=str(e)[:60])
 
@@ -539,17 +701,6 @@ async def fetch_worker(name: str) -> list[Opp]:
 
     events = await fetch_worker_markets(tag_ids)
     opps = parse_opps(events, name)
-
-    # Basketball: only in-progress games
-    if name == "basketball":
-        live_games = await get_live_basketball()
-        if not live_games:
-            logger.info("basketball_no_live_games")
-            return []
-        live_names = " ".join(g["summary"] for g in live_games).lower()
-        opps = [o for o in opps if any(
-            w in live_names for w in o.question.lower().split() if len(w) > 3
-        )]
 
     return opps
 
@@ -609,7 +760,7 @@ async def run_scan():
     try:
         import boto3
         p = "playground" if not os.getenv("AWS_EXECUTION_ENV") else None
-        bedrock = boto3.Session(profile_name=p, region_name="us-east-1").client("bedrock-runtime")
+        bedrock = boto3.Session(profile_name=p, region_name="eu-west-1").client("bedrock-runtime")
     except Exception as e:
         logger.warning("bedrock_err", error=str(e)[:60])
 
@@ -644,6 +795,7 @@ async def run_scan():
 
     # Step 4: Iterate in order — trade until budget hit
     traded = 0
+    t0_count = 0
     t1_count = 0
     t2_count = 0
 
@@ -652,10 +804,27 @@ async def run_scan():
             logger.info("budget_maxed", deployed=round(_total_deployed, 2))
             break
 
-        if opp.tier == 1:
-            t1_count += 1
+        if opp.tier in (0, 1):
+            if opp.tier == 0:
+                t0_count += 1
+            else:
+                t1_count += 1
             if not client:
                 continue
+            # Haiku sanity check before auto-trading
+            if bedrock:
+                context = await get_context(opp, crypto_prices)
+                opp = await ai_sanity_check(opp, bedrock, context)
+                haiku_gate = 0.90 if opp.tier == 0 else 0.75
+                if not opp.ai_trade or opp.ai_confidence < haiku_gate:
+                    logger.info("haiku_veto", tier=opp.tier, q=opp.question[:35],
+                                conf=opp.ai_confidence, reasoning=opp.ai_reasoning[:60])
+                    continue
+                # Tier 0: Sonnet devil's advocate confirmation
+                if opp.tier == 0:
+                    opp = await ai_sonnet_confirm(opp, bedrock, context)
+                    if not opp.ai_trade:
+                        continue
             if not dedup_put(table, opp, {"price": opp.price, "cost": 0, "shares": 0, "order_id": ""}):
                 continue
             result = await place_fok(client, opp)
@@ -726,10 +895,13 @@ async def run_scan():
     for name in WORKER_TAG_SLUGS:
         print(f"  {name:<13} fetched={worker_counts.get(name, 0):>3}")
     print(f"  {'─' * 70}")
-    print(f"  Combined: {len(all_opps)} unique | T1={t1_count} T2={t2_count} | Traded={traded} | Deployed=${_total_deployed:.2f}")
+    print(f"  Combined: {len(all_opps)} unique | T0={t0_count} T1={t1_count} T2={t2_count} | Traded={traded} | Deployed=${_total_deployed:.2f}")
 
-    logger.info("scan_done", scanned=len(all_opps), t1=t1_count, t2=t2_count, traded=traded,
+    logger.info("scan_done", scanned=len(all_opps), t0=t0_count, t1=t1_count, t2=t2_count, traded=traded,
                 deployed=round(_total_deployed, 2))
+
+    # Resolve any pending trades after every scan
+    await resolve_all_pending(table)
 
 
 async def main():
@@ -739,7 +911,7 @@ async def main():
     await init_tag_ids()
 
     table = _dynamo()
-    await resolve_pending(table)
+    await resolve_all_pending(table)
 
     # Load existing condition_ids for dedup + total deployed
     global _total_deployed

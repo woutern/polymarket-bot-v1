@@ -41,11 +41,11 @@ try:
     import boto3 as _boto3
     # Try playground profile (local dev), fall back to instance/task role (AWS)
     try:
-        _session = _boto3.Session(profile_name="playground", region_name="us-east-1")
+        _session = _boto3.Session(profile_name="playground", region_name="eu-west-1")
         _session.client("sts").get_caller_identity()  # validate credentials
     except Exception:
-        _session = _boto3.Session(region_name="us-east-1")
-    _ddb = _session.resource("dynamodb", region_name="us-east-1")
+        _session = _boto3.Session(region_name="eu-west-1")
+    _ddb = _session.resource("dynamodb", region_name="eu-west-1")
     _logs_client = _session.client("logs", region_name="eu-west-1")  # Bot runs in eu-west-1
     _trades_table = _ddb.Table("polymarket-bot-trades")
     _windows_table = _ddb.Table("polymarket-bot-windows")
@@ -64,7 +64,7 @@ _BANKROLL = float(_os.getenv("BANKROLL", "1000.0"))
 _WALLET_ADDRESS = _os.getenv(
     "POLYMARKET_FUNDER", "0x5ca439d661c9b44337E91fC681ec4b006C473610"
 )
-_TOTAL_DEPOSITED = float(_os.getenv("TOTAL_DEPOSITED", "263.64"))  # Calibrated to match Polymarket portfolio
+_TOTAL_DEPOSITED = float(_os.getenv("TOTAL_DEPOSITED", "1850.00"))  # Updated 2026-03-21
 
 
 # ── Helper: DynamoDB Decimal → float ──────────────────────────────────────────
@@ -717,11 +717,9 @@ async def api_balance():
                     break
                 offset += 500
 
-            # Bot P&L excludes opportunity trades
-            bot_spent = total_spent - opp_spent
-            bot_redeemed = total_redeemed - opp_redeemed
-            pnl = round(bot_redeemed - bot_spent, 2)
             portfolio = round(cash + positions, 2)
+            # P&L = portfolio value - total deposited (simplest, most accurate)
+            pnl = round(portfolio - _TOTAL_DEPOSITED, 2)
 
             result = {
                 "cash": round(cash, 2),
@@ -757,7 +755,8 @@ async def api_opportunities():
         resolved = []
         today_pnl = 0.0
         today_wins = 0
-        today_total = 0
+        today_resolved_count = 0
+        today_trades_count = 0
         today_deployed = 0.0
 
         for i in items:
@@ -770,16 +769,16 @@ async def api_opportunities():
                 if is_today:
                     pnl = float(i.get("pnl", 0))
                     today_pnl += pnl
-                    today_total += 1
+                    today_resolved_count += 1
+                    today_trades_count += 1
                     if pnl > 0:
                         today_wins += 1
                     today_deployed += float(i.get("size_usd", 0))
             else:
-                # Calculate hours_left from end_date
                 active.append(i)
                 if is_today:
                     today_deployed += float(i.get("size_usd", 0))
-                    today_total += 1
+                    today_trades_count += 1
 
         resolved.sort(key=lambda x: float(x.get("timestamp", 0)), reverse=True)
         active.sort(key=lambda x: float(x.get("timestamp", 0)), reverse=True)
@@ -802,14 +801,91 @@ async def api_opportunities():
             "active": active,
             "resolved": resolved[:50],
             "deployed_today": round(today_deployed, 2),
-            "win_rate": round(today_wins / today_total * 100, 1) if today_total else 0,
+            "win_rate": round(today_wins / today_resolved_count * 100, 1) if today_resolved_count else 0,
             "total_pnl": round(today_pnl, 2),
-            "trades_today": today_total,
-            "by_category": {k: {kk: round(vv, 2) if isinstance(vv, float) else vv for kk, vv in v.items()} for k, v in by_cat.items()},
+            "trades_today": today_trades_count,
         }
     except Exception as e:
         result["error"] = str(e)[:100]
     return result
+
+
+@app.post("/api/opportunities/resolve")
+async def api_opportunities_resolve():
+    """Force-resolve any opportunity trades past their end_date."""
+    import httpx as _hx
+    import json as _j
+    from decimal import Decimal
+
+    resolved_count = 0
+    try:
+        _opp_table = _ddb.Table("polymarket-bot-opportunity-trades")
+        resp = _opp_table.scan(
+            FilterExpression="resolved = :r",
+            ExpressionAttributeValues={":r": 0},
+        )
+        items = resp.get("Items", [])
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        async with _hx.AsyncClient(timeout=10) as client:
+            for item in items:
+                end_str = item.get("end_date", "")
+                if not end_str or end_str > now_iso:
+                    continue  # Not past end_date yet
+
+                slug = item.get("slug", "")
+                if not slug:
+                    continue
+
+                try:
+                    r = await client.get(
+                        "https://gamma-api.polymarket.com/markets",
+                        params={"slug": slug},
+                    )
+                    if r.status_code != 200:
+                        continue
+                    markets = r.json()
+                    if not markets or not markets[0].get("closed"):
+                        continue
+
+                    prices = markets[0].get("outcomePrices", [])
+                    if isinstance(prices, str):
+                        prices = _j.loads(prices)
+                    if len(prices) < 2:
+                        continue
+
+                    yf = float(prices[0])
+                    if yf >= 0.99:
+                        winner = "YES"
+                    elif yf <= 0.01:
+                        winner = "NO"
+                    else:
+                        continue
+
+                    side = str(item.get("side", ""))
+                    won = side == winner
+                    ask = float(item.get("ask_price", 0))
+                    size = float(item.get("size_usd", 0))
+                    shares = float(item.get("shares", 0))
+                    pnl = round(shares * (1.0 - ask), 2) if won else -size
+
+                    _opp_table.update_item(
+                        Key={"slug": slug},
+                        UpdateExpression="SET resolved=:r, outcome=:o, pnl=:p",
+                        ExpressionAttributeValues={
+                            ":r": 1,
+                            ":o": "won" if won else "lost",
+                            ":p": Decimal(str(round(pnl, 4))),
+                        },
+                    )
+                    resolved_count += 1
+                except Exception:
+                    pass
+
+    except Exception as e:
+        return {"resolved": resolved_count, "error": str(e)[:100]}
+
+    return {"resolved": resolved_count}
 
 
 @app.get("/api/opportunities/skipped")
@@ -1034,10 +1110,14 @@ HTML = r"""<!DOCTYPE html>
   .sortable th.sort-asc::after{content:'↑';opacity:0.8}
   .sortable th.sort-desc::after{content:'↓';opacity:0.8}
   .btn-trade{background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
+  .q-cell{cursor:help;position:relative}
+  .q-cell:hover .q-tip{display:block}
+  .q-tip{display:none;position:absolute;left:0;top:100%;z-index:100;background:#1e293b;color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;line-height:1.4;max-width:400px;min-width:250px;white-space:normal;box-shadow:0 4px 12px rgba(0,0,0,.15)}
   .btn-trade:hover{background:#2563eb}
   .btn-trade:disabled{background:#94a3b8;cursor:not-allowed}
   .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
   .badge-pending{background:#fef3c7;color:#92400e}
+  .badge-verifying{background:#dbeafe;color:#1e40af}
   .badge-win{background:#d1fae5;color:#065f46}
   .badge-loss{background:#fee2e2;color:#991b1b}
 </style>
@@ -1051,6 +1131,7 @@ HTML = r"""<!DOCTYPE html>
     <button class="nav-tab" onclick="showPage('trades',this)">Trades</button>
     <button class="nav-tab" onclick="showPage('analytics',this)">Analytics</button>
     <button class="nav-tab" onclick="showPage('opportunities',this)">Opportunities</button>
+    <button class="nav-tab" onclick="showPage('rules',this)">Rules</button>
   </div>
   <div class="nav-mode" id="mode-badge">LIVE</div>
   <button class="hamburger" onclick="document.getElementById('mobile-menu').classList.toggle('open')" aria-label="Menu">
@@ -1064,6 +1145,7 @@ HTML = r"""<!DOCTYPE html>
   <button onclick="showPage('trades',this);document.getElementById('mobile-menu').classList.remove('open')">Trades</button>
   <button onclick="showPage('analytics',this);document.getElementById('mobile-menu').classList.remove('open')">Analytics</button>
   <button onclick="showPage('opportunities',this);document.getElementById('mobile-menu').classList.remove('open')">Opportunities</button>
+  <button onclick="showPage('rules',this);document.getElementById('mobile-menu').classList.remove('open')">Rules</button>
 </div>
 
 <!-- ═══ OVERVIEW ═══ -->
@@ -1158,7 +1240,7 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
   <div class="section">
-    <div class="section-title">P&L by Hour (UTC)</div>
+    <div class="section-title">P&L by Hour (CET)</div>
     <div class="panel">
       <div class="chart-wrap"><canvas id="hour-chart"></canvas></div>
     </div>
@@ -1173,19 +1255,124 @@ HTML = r"""<!DOCTYPE html>
     <div class="card"><div class="card-label">Deployed Today</div><div class="card-value" id="opp-deployed">—</div></div>
     <div class="card"><div class="card-label">Win Rate</div><div class="card-value" id="opp-wr">—</div></div>
     <div class="card"><div class="card-label">P&L</div><div class="card-value" id="opp-pnl">—</div></div>
-    <div class="card"><div class="card-label">Trades Today</div><div class="card-value" id="opp-count">—</div></div>
+    <div class="card"><div class="card-label">Active Trades (24h)</div><div class="card-value" id="opp-count">—</div></div>
   </div>
   <div class="section">
     <div class="section-title">Active Trades</div>
     <div class="panel"><table class="t sortable" id="tbl-opp-active"><thead><tr>
-      <th data-sort="str">Market</th><th data-sort="str">Side</th><th data-sort="num">Entry</th><th data-sort="num">Invested</th><th data-sort="num">To Win</th><th data-sort="str">AI Reasoning</th><th data-sort="num">Resolves</th><th data-sort="str">Status</th>
+      <th data-sort="str">Market</th><th data-sort="str">Side</th><th data-sort="num">Entry</th><th data-sort="num">Invested</th><th data-sort="num">To Win</th><th data-sort="str">AI</th><th data-sort="num">Resolves</th><th data-sort="str">Status</th>
     </tr></thead><tbody id="opp-active"></tbody></table></div>
   </div>
   <div class="section">
     <div class="section-title">Resolved Trades (7 days)</div>
     <div class="panel"><table class="t sortable" id="tbl-opp-resolved"><thead><tr>
-      <th data-sort="str">Market</th><th data-sort="str">Side</th><th data-sort="num">Entry</th><th data-sort="str">Result</th><th data-sort="num">P&L</th><th data-sort="str">AI Verdict</th><th data-sort="num">Confidence</th>
+      <th data-sort="str">Market</th><th data-sort="str">Side</th><th data-sort="num">Entry</th><th data-sort="num">Invested</th><th data-sort="str">Result</th><th data-sort="num">P&L</th><th data-sort="str">Resolved</th>
     </tr></thead><tbody id="opp-resolved"></tbody></table></div>
+  </div>
+</div>
+</div>
+
+<!-- ═══ RULES ═══ -->
+<div id="page-rules" class="page-content">
+<div class="page">
+  <div class="section">
+    <div class="section-title">5-Minute Crypto Bot</div>
+    <div class="panel">
+      <table class="t">
+        <thead><tr><th>Rule</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td><b>Pairs</b></td><td>BTC_5m, SOL_5m (ETH disabled)</td></tr>
+          <tr><td><b>Entry window</b></td><td>T+210s → T+240s scan (every 3s), hard deadline T+255s</td></tr>
+          <tr><td><b>Direction</b></td><td>Follow higher ask side (YES if yes_ask ≥ no_ask, else NO)</td></tr>
+          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">PRICE GUARDS</td></tr>
+          <tr><td>Min ask (weekday)</td><td>$0.65</td></tr>
+          <tr><td>Min ask (weekend Sat/Sun)</td><td>$0.70</td></tr>
+          <tr><td>Max ask BTC</td><td>$0.78</td></tr>
+          <tr><td>Max ask SOL</td><td>$0.82</td></tr>
+          <tr><td>Early entry (peak)</td><td>≤ $0.58 → enter immediately</td></tr>
+          <tr><td>Early entry (weak hours)</td><td>≤ $0.68</td></tr>
+          <tr><td>Early entry (weekend)</td><td>≤ $0.72</td></tr>
+          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">SIZING</td></tr>
+          <tr><td>Ask $0.65–$0.75</td><td><b>$5.00</b></td></tr>
+          <tr><td>Ask $0.75–$0.82</td><td><b>$10.00</b></td></tr>
+          <tr><td>Hard cap</td><td>$10.00 (HARDCODED_MAX_BET)</td></tr>
+          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIME FILTERS</td></tr>
+          <tr><td>Peak hours (CET)</td><td>10:00–13:00, 14:00–22:00 → min_ask $0.65</td></tr>
+          <tr><td>Weak hours (CET)</td><td>22:00–10:00 + 13:00–14:00 → min_ask $0.65, early $0.68</td></tr>
+          <tr><td>Weekend (Sat/Sun)</td><td>min_ask $0.70, early $0.72</td></tr>
+          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">OTHER GUARDS</td></tr>
+          <tr><td>Volatility filter</td><td>Skip if realized_vol > 2× rolling avg ("choppy_market")</td></tr>
+          <tr><td>Direction flip</td><td>Skip if direction reverses during scan</td></tr>
+          <tr><td>Circuit breaker</td><td>3 consecutive losses → 15min pause</td></tr>
+          <tr><td>Dedup</td><td>3-layer: memory + DynamoDB query + atomic claim</td></tr>
+          <tr><td>Resolution</td><td>Polymarket Chainlink oracle only (verify sweep every 5min)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Opportunity Bot</div>
+    <div class="panel">
+      <table class="t">
+        <thead><tr><th>Rule</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td><b>Scan interval</b></td><td>Every 30 minutes</td></tr>
+          <tr><td><b>Workers</b></td><td>7 parallel: crypto, finance, politics, geopolitics, tech, basketball, news</td></tr>
+          <tr><td><b>Scan window</b></td><td>Markets resolving in 30min – 48h</td></tr>
+          <tr><td><b>Min volume</b></td><td>$1,000</td></tr>
+          <tr><td><b>Skip</b></td><td>Slugs with 5m, 15m, updown (main bot handles)</td></tr>
+          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIER 1 — AUTO TRADE</td></tr>
+          <tr><td>Ask range</td><td>$0.85–$0.95</td></tr>
+          <tr><td>Resolves within</td><td>24 hours</td></tr>
+          <tr><td>Size</td><td><b>$5.00</b> FOK at best ask</td></tr>
+          <tr><td>AI check</td><td>Haiku sanity check (conf ≥ 0.75 to proceed)</td></tr>
+          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIER 2 — AI ASSESSED</td></tr>
+          <tr><td>Ask range</td><td>$0.65–$0.85 (<24h) OR $0.85–$0.95 (24-48h)</td></tr>
+          <tr><td>AI model</td><td>Claude Haiku via Bedrock</td></tr>
+          <tr><td>Trade gate</td><td>confidence ≥ 0.80 AND edge ≥ 0.15</td></tr>
+          <tr><td>Size</td><td><b>$2.50</b> FOK at best ask</td></tr>
+          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">LIMITS</td></tr>
+          <tr><td>Max total deployed</td><td>$1,250</td></tr>
+          <tr><td>Max ask on orderbook</td><td>$0.95 (reject if best ask > $0.95)</td></tr>
+          <tr><td>Basketball</td><td>Only in-progress games (ESPN live check)</td></tr>
+          <tr><td>Dedup</td><td>Atomic conditional put by condition_id</td></tr>
+          <tr><td>Resolution</td><td>Gamma API, 5 retries at 60s, checked every scan + on dashboard load</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Auto-Claim</div>
+    <div class="panel">
+      <table class="t">
+        <thead><tr><th>Rule</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td><b>Interval</b></td><td>Every 30 minutes</td></tr>
+          <tr><td><b>Method</b></td><td>Builder Relayer API (gasless, Polymarket pays gas)</td></tr>
+          <tr><td><b>Contracts</b></td><td>CTF (regular) + NegRisk CTF Exchange (neg-risk markets)</td></tr>
+          <tr><td><b>Auth</b></td><td>Builder API credentials via Gnosis Safe</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Infrastructure</div>
+    <div class="panel">
+      <table class="t">
+        <thead><tr><th>Component</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr><td>Bot</td><td>ECS Fargate, eu-west-1 (single task, task-def rev 17)</td></tr>
+          <tr><td>Dashboard</td><td>Lambda + API Gateway + CloudFront, eu-west-1</td></tr>
+          <tr><td>Storage</td><td>DynamoDB, eu-west-1</td></tr>
+          <tr><td>AI</td><td>Bedrock Claude Haiku, eu-west-1</td></tr>
+          <tr><td>Processes</td><td>4: 5min bot, opportunity bot, dashboard, auto-claim</td></tr>
+          <tr><td>Tests</td><td id="rules-test-count">502 passing</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 </div>
@@ -1202,6 +1389,7 @@ function showPage(name, btn) {
   else if (name === 'trades') loadTrades();
   else if (name === 'analytics') loadAnalytics();
   else if (name === 'opportunities') loadOpportunities();
+  // 'rules' page is static — no data to load
 }
 
 function fmtTs(ts) {
@@ -1368,11 +1556,14 @@ async function loadAnalytics() {
     }
     document.getElementById('pnl-bucket').innerHTML = bh || '<div class="empty">No data</div>';
 
-    // Hourly P&L chart
+    // Hourly P&L chart (Amsterdam/CET time)
+    function getCETHour(ts) {
+      return parseInt(new Date(parseFloat(ts)*1000).toLocaleString('en-GB',{timeZone:'Europe/Amsterdam',hour:'numeric',hour12:false}));
+    }
     const hours = {};
     for (const t of trades) {
       if (!t.resolved) continue;
-      const h = new Date(parseFloat(t.timestamp)*1000).getUTCHours();
+      const h = getCETHour(t.timestamp);
       if (!hours[h]) hours[h] = 0;
       hours[h] += parseFloat(t.pnl||0);
     }
@@ -1391,6 +1582,20 @@ async function loadAnalytics() {
 
 async function loadOpportunities() {
   try {
+    // Force-resolve any trades past end_date before loading
+    try {
+      const resolveResp = await fetch('/api/opportunities/resolve', {method:'POST'});
+      const resolveData = await resolveResp.json().catch(() => ({}));
+      if (resolveData.resolved > 0) console.log('Resolved '+resolveData.resolved+' trades');
+    } catch(e) {
+      // Try direct API Gateway if CloudFront blocks POST
+      try {
+        const r2 = await fetch('https://mwdbfw44q0.execute-api.eu-west-1.amazonaws.com/api/opportunities/resolve', {method:'POST'});
+        const d2 = await r2.json().catch(() => ({}));
+        if (d2.resolved > 0) console.log('Resolved '+d2.resolved+' trades (direct)');
+      } catch(e2) {}
+    }
+
     const resp = await fetch('/api/opportunities');
     const data = await resp.json();
     // KPIs
@@ -1399,38 +1604,45 @@ async function loadOpportunities() {
     document.getElementById('opp-pnl').textContent = (data.total_pnl>=0?'+':'')+'\$'+(data.total_pnl||0).toFixed(2);
     document.getElementById('opp-pnl').className = 'card-value '+(data.total_pnl>=0?'green':'red');
     document.getElementById('opp-count').textContent = data.trades_today||0;
-    // Active
+    // Active trades — with 3 status states
     let ah = '';
+    const now = Date.now();
     for (const t of (data.active||[])) {
       const aSlug = t.slug||'';
       const aLink = aSlug ? ' <a href="https://polymarket.com/market/'+aSlug+'" target="_blank" style="opacity:0.4">&#x1F517;</a>' : '';
-      // Compute live countdown from end_date if available
       let aTimeStr = '—';
+      let pastEnd = false;
       if (t.end_date) {
-        const aHrs = Math.max(0,(new Date(t.end_date).getTime()-Date.now())/3600000);
+        const endMs = new Date(t.end_date).getTime();
+        pastEnd = endMs < now;
+        const aHrs = Math.max(0,(endMs-now)/3600000);
         const aH = Math.floor(aHrs); const aM = Math.round((aHrs-aH)*60);
-        aTimeStr = aHrs <= 0 ? 'Ended' : aH > 0 ? aH+'h '+aM+'m' : aM+'m';
-      } else {
-        const hrs = parseFloat(t.hours_left||0);
-        aTimeStr = hrs > 0 ? hrs.toFixed(1)+'h' : '—';
+        aTimeStr = pastEnd ? 'Ended' : aH > 0 ? aH+'h '+aM+'m' : aM+'m';
       }
       const invested = parseFloat(t.size_usd||0);
       const shares = parseFloat(t.shares||0);
       const toWin = shares > 0 ? (shares - invested).toFixed(2) : '—';
-      ah += '<tr><td>'+t.question.slice(0,50)+aLink+'</td><td>'+t.side+'</td><td>$'+parseFloat(t.ask_price).toFixed(2)+'</td><td>$'+invested.toFixed(2)+'</td><td class="green">$'+toWin+'</td><td style="font-size:12px;color:#64748b">'+(t.ai_reasoning||'').slice(0,120)+'</td><td>'+aTimeStr+'</td><td><span class="badge badge-pending">Pending</span></td></tr>';
+      const statusBadge = pastEnd
+        ? '<span class="badge badge-verifying">Verifying</span>'
+        : '<span class="badge badge-pending">Pending</span>';
+      const reasoning = (t.ai_reasoning||'');
+      const aiShort = reasoning.slice(0,30) + (reasoning.length > 30 ? '...' : '');
+      const aiCell = reasoning ? '<span class="q-cell" style="font-size:12px;color:#64748b">' + aiShort + '<span class="q-tip">' + reasoning + '</span></span>' : '—';
+      ah += '<tr><td>'+'<span class="q-cell">'+t.question.slice(0,45)+'<span class="q-tip">'+t.question+'</span></span>'+aLink+'</td><td>'+t.side+'</td><td>$'+parseFloat(t.ask_price).toFixed(2)+'</td><td>$'+invested.toFixed(2)+'</td><td class="green">$'+toWin+'</td><td>'+aiCell+'</td><td>'+aTimeStr+'</td><td>'+statusBadge+'</td></tr>';
     }
     document.getElementById('opp-active').innerHTML = ah || '<tr><td colspan="8" class="empty">No active trades</td></tr>';
-    // Resolved
+    // Resolved trades
     let rh = '';
     for (const t of (data.resolved||[])) {
       const pnl = parseFloat(t.pnl||0);
       const won = pnl > 0;
       const rSlug = t.slug||'';
       const rLink = rSlug ? ' <a href="https://polymarket.com/market/'+rSlug+'" target="_blank" style="opacity:0.4">&#x1F517;</a>' : '';
-      rh += '<tr><td>'+t.question.slice(0,50)+rLink+'</td><td>'+t.side+'</td><td>$'+parseFloat(t.ask_price).toFixed(2)+'</td><td><span class="badge badge-'+(won?'win':'loss')+'">'+(won?'WIN':'LOSS')+'</span></td><td class="'+(won?'green':'red')+'">'+(pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2)+'</td><td>'+t.ai_verdict+'</td><td>'+parseFloat(t.ai_confidence||0).toFixed(2)+'</td></tr>';
+      const invested = parseFloat(t.size_usd||0);
+      const rTs = t.timestamp ? new Date(parseFloat(t.timestamp)*1000).toLocaleString('en-GB',{timeZone:'Europe/Amsterdam',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:false}) : '—';
+      rh += '<tr style="background:'+(won?'#f0fdf4':'#fef2f2')+'"><td>'+'<span class="q-cell">'+t.question.slice(0,45)+'<span class="q-tip">'+t.question+'</span></span>'+rLink+'</td><td>'+t.side+'</td><td>$'+parseFloat(t.ask_price).toFixed(2)+'</td><td>$'+invested.toFixed(2)+'</td><td><span class="badge badge-'+(won?'win':'loss')+'">'+(won?'WON':'LOST')+'</span></td><td class="'+(won?'green':'red')+'" style="font-weight:700">'+(pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2)+'</td><td style="font-size:12px;color:#64748b">'+rTs+'</td></tr>';
     }
     document.getElementById('opp-resolved').innerHTML = rh || '<tr><td colspan="7" class="empty">No resolved trades yet</td></tr>';
-
   } catch(e) { console.error('opportunities error', e); }
 }
 
@@ -1445,13 +1657,13 @@ async function manualTrade(slug, side, price) {
       resp = await fetch('/api/opportunities/trade?slug='+encodeURIComponent(slug)+'&side='+side+'&price='+price, {method:'POST'});
     } catch(fetchErr) {
       // CloudFront may block POST — try direct API Gateway
-      resp = await fetch('https://r1a61boamb.execute-api.us-east-1.amazonaws.com/api/opportunities/trade?slug='+encodeURIComponent(slug)+'&side='+side+'&price='+price, {method:'POST'});
+      resp = await fetch('https://mwdbfw44q0.execute-api.eu-west-1.amazonaws.com/api/opportunities/trade?slug='+encodeURIComponent(slug)+'&side='+side+'&price='+price, {method:'POST'});
     }
     const txt = await resp.text();
     let data;
     try { data = JSON.parse(txt); } catch(e) {
       // CloudFront returned HTML — retry via direct API Gateway
-      const resp2 = await fetch('https://r1a61boamb.execute-api.us-east-1.amazonaws.com/api/opportunities/trade?slug='+encodeURIComponent(slug)+'&side='+side+'&price='+price, {method:'POST'});
+      const resp2 = await fetch('https://mwdbfw44q0.execute-api.eu-west-1.amazonaws.com/api/opportunities/trade?slug='+encodeURIComponent(slug)+'&side='+side+'&price='+price, {method:'POST'});
       data = await resp2.json();
     }
     if (data.success) {

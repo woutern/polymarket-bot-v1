@@ -1,0 +1,31 @@
+{
+  "name": "polymarket-bot",
+  "version": "1.0.0",
+  "description": "Algorithmic trading system for Polymarket prediction markets.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/woutern/polymarket-bot-v1.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/woutern/polymarket-bot-v1/issues"
+  },
+  "homepage": "https://github.com/woutern/polymarket-bot-v1#readme",
+  "dependencies": {
+    "@polymarket/builder-relayer-client": "^0.0.8",
+    "@polymarket/builder-signing-sdk": "^1.0.0",
+    "axios": "^1.13.6",
+    "viem": "^2.47.6"
+  }
+}

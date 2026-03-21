@@ -27,7 +27,7 @@ _MIN_HISTORY = 20  # predictions needed before adapting
 
 
 class ModelServer:
-    def __init__(self, region: str = "us-east-1"):
+    def __init__(self, region: str = "eu-west-1"):
         self._models: dict[str, dict] = {}  # pair → pipeline dict
         self._model_ages: dict[str, float] = {}
         self._region = region

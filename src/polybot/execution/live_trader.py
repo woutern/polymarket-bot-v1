@@ -131,7 +131,7 @@ class LiveTrader:
 
             self._traded_slugs.add(signal.window_slug)
 
-            # Use size from scan entry (leader $10 / tied $5 / follower $2.50)
+            # Use size from scan entry (flat: $5 / $7.50 / $10 by ask price)
             size = getattr(signal, '_late_entry_size', 10.00)
             # Hard cap — never bet more than $10 regardless of what signal says
             from polybot.config import HARDCODED_MAX_BET

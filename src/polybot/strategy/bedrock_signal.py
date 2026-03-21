@@ -35,7 +35,7 @@ def _get_client():
             import boto3
             import os
             profile = "playground" if not os.getenv("AWS_EXECUTION_ENV") else None
-            session = boto3.Session(profile_name=profile, region_name="us-east-1")
+            session = boto3.Session(profile_name=profile, region_name="eu-west-1")
             _client = session.client("bedrock-runtime")
         except Exception as e:
             logger.debug("bedrock_client_init_failed", extra={"error": str(e)})

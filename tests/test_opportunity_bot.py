@@ -9,13 +9,17 @@ import pytest
 
 
 class TestWorkerConfig:
-    def test_7_workers(self):
+    def test_9_workers(self):
         from opportunity_bot import WORKER_TAG_SLUGS
-        assert len(WORKER_TAG_SLUGS) == 7
+        assert len(WORKER_TAG_SLUGS) == 9
 
     def test_worker_names(self):
         from opportunity_bot import WORKER_TAG_SLUGS
-        assert set(WORKER_TAG_SLUGS.keys()) == {"crypto", "finance", "politics", "geopolitics", "tech", "basketball", "news"}
+        expected = {"crypto", "finance", "fed", "politics", "geopolitics",
+                    "elections", "tech", "weather", "culture"}
+        assert set(WORKER_TAG_SLUGS.keys()) == expected
+        assert "tweets" not in WORKER_TAG_SLUGS
+        assert "basketball" not in WORKER_TAG_SLUGS
 
     def test_no_other_sports(self):
         """Only basketball — no soccer, NFL, NHL, golf, esports."""
@@ -33,7 +37,8 @@ class TestWorkerConfig:
 
 class TestTiers:
     def test_tier_sizes(self):
-        from opportunity_bot import TIER1_SIZE, TIER2_SIZE
+        from opportunity_bot import TIER0_SIZE, TIER1_SIZE, TIER2_SIZE
+        assert TIER0_SIZE == 10.00
         assert TIER1_SIZE == 5.00
         assert TIER2_SIZE == 2.50
 
@@ -89,6 +94,30 @@ class TestParseOpps:
                 "negRisk": neg_risk,
             }],
         }
+
+    def test_tier0_classification(self):
+        """Tier 0: ask>=0.93, <=6h, vol>=5K → $10 bet."""
+        from opportunity_bot import parse_opps
+        events = [self._make_event(yes_price=0.94, hours_from_now=3, volume=10000)]
+        opps = parse_opps(events, "crypto")
+        assert len(opps) == 1
+        assert opps[0].tier == 0
+
+    def test_tier0_needs_high_volume(self):
+        """Tier 0 requires vol>=5K — falls back to Tier 1 with low volume."""
+        from opportunity_bot import parse_opps
+        events = [self._make_event(yes_price=0.94, hours_from_now=3, volume=3000)]
+        opps = parse_opps(events, "crypto")
+        assert len(opps) == 1
+        assert opps[0].tier == 1  # Not tier 0 — low volume
+
+    def test_tier0_needs_short_window(self):
+        """Tier 0 requires <=6h — falls back to Tier 1 if >6h."""
+        from opportunity_bot import parse_opps
+        events = [self._make_event(yes_price=0.94, hours_from_now=10, volume=10000)]
+        opps = parse_opps(events, "crypto")
+        assert len(opps) == 1
+        assert opps[0].tier == 1  # Not tier 0 — too far out
 
     def test_tier1_classification(self):
         from opportunity_bot import parse_opps
@@ -213,6 +242,67 @@ class TestAIModelSelection:
         assert model == "sonnet"
 
 
+class TestTier0DualAI:
+    """Tier 0 ($10) requires Haiku sanity + Sonnet devil's advocate."""
+
+    def test_sonnet_confirm_callable(self):
+        from opportunity_bot import ai_sonnet_confirm
+        assert callable(ai_sonnet_confirm)
+
+    def test_sonnet_model_constant(self):
+        from opportunity_bot import SONNET_MODEL, HAIKU_MODEL
+        assert "sonnet" in SONNET_MODEL
+        assert "haiku" in HAIKU_MODEL
+        assert "eu." in SONNET_MODEL  # eu-west-1
+        assert "eu." in HAIKU_MODEL
+
+    def test_tier0_haiku_gate_is_090(self):
+        """Tier 0 requires Haiku confidence >= 0.90 (stricter than Tier 1's 0.75)."""
+        from opportunity_bot import run_scan
+        import inspect
+        src = inspect.getsource(run_scan)
+        assert "0.90 if opp.tier == 0" in src
+
+    def test_tier0_calls_sonnet_after_haiku(self):
+        """Tier 0 must call ai_sonnet_confirm after Haiku passes."""
+        from opportunity_bot import run_scan
+        import inspect
+        src = inspect.getsource(run_scan)
+        assert "ai_sonnet_confirm" in src
+
+    def test_sonnet_prompt_has_risk_framing(self):
+        """Sonnet prompt must ask for reasons the trade could lose."""
+        from opportunity_bot import ai_sonnet_confirm
+        import inspect
+        src = inspect.getsource(ai_sonnet_confirm)
+        assert "LOSE" in src or "lose" in src.lower()
+        assert "risk" in src.lower()
+        assert "devil" in src.lower() or "find reasons" in src.lower()
+
+    def test_sonnet_veto_blocks_trade(self):
+        """If Sonnet vetoes, ai_trade must be False."""
+        from opportunity_bot import ai_sonnet_confirm
+        import inspect
+        src = inspect.getsource(ai_sonnet_confirm)
+        assert "opp.ai_trade = False" in src
+        assert "sonnet_veto" in src
+
+    def test_tier0_size_is_10(self):
+        from opportunity_bot import TIER0_SIZE, place_fok
+        import inspect
+        assert TIER0_SIZE == 10.00
+        src = inspect.getsource(place_fok)
+        assert "TIER0_SIZE" in src
+
+    def test_tier1_does_not_call_sonnet(self):
+        """Only tier 0 calls Sonnet — tier 1 skips it."""
+        from opportunity_bot import run_scan
+        import inspect
+        src = inspect.getsource(run_scan)
+        # Sonnet only called when tier == 0
+        assert "if opp.tier == 0:" in src
+
+
 class TestLimits:
     def test_min_volume(self):
         from opportunity_bot import MIN_VOLUME
@@ -247,19 +337,16 @@ class TestSmoke:
         assert callable(dedup_put)
 
     def test_resolve_pending_callable(self):
-        from opportunity_bot import resolve_pending
-        assert callable(resolve_pending)
+        from opportunity_bot import resolve_all_pending
+        assert callable(resolve_all_pending)
 
     def test_tag_init_callable(self):
         from opportunity_bot import init_tag_ids
         assert callable(init_tag_ids)
 
-    def test_basketball_only_live(self):
-        from opportunity_bot import fetch_worker
-        import inspect
-        src = inspect.getsource(fetch_worker)
-        assert "get_live_basketball" in src
-        assert "no_live_games" in src
+    def test_no_basketball_worker(self):
+        from opportunity_bot import WORKER_TAG_SLUGS
+        assert "basketball" not in WORKER_TAG_SLUGS
 
     def test_sorted_by_end_date(self):
         """Combined list must be sorted by end_date (soonest first)."""

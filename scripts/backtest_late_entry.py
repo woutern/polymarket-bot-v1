@@ -23,7 +23,7 @@ random.seed(42)
 
 
 def main():
-    session = boto3.Session(profile_name="playground", region_name="us-east-1")
+    session = boto3.Session(profile_name="playground", region_name="eu-west-1")
 
     # Load training data (has outcome per window)
     table = session.resource("dynamodb").Table("polymarket-bot-training-data")

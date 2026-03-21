@@ -251,7 +251,7 @@ def train_pair(pair: str, items: list[dict], s3_client=None, ssm_client=None, s3
                        val_auc=val_auc, baseline_brier=baseline_brier, deployed=True, s3_path=s3_path)
 
 
-def train_all(region: str = "us-east-1", s3_bucket: str = "polymarket-bot-data-688567279867-use1") -> list[TrainResult]:
+def train_all(region: str = "eu-west-1", s3_bucket: str = "polymarket-bot-data-688567279867-euw1") -> list[TrainResult]:
     """Train models for all 3 pairs."""
     import os
     import boto3

@@ -97,7 +97,7 @@ async def run_smoke_tests(settings) -> SmokeTestResult:
         import boto3
         assets = settings.asset_list
         profile = "playground" if not os.getenv("AWS_EXECUTION_ENV") else None
-        session = boto3.Session(profile_name=profile, region_name="us-east-1")
+        session = boto3.Session(profile_name=profile, region_name="eu-west-1")
         s3 = session.client("s3")
         bucket = "polymarket-bot-data-688567279867-use1"
 
@@ -165,7 +165,7 @@ async def run_smoke_tests(settings) -> SmokeTestResult:
     try:
         profile = "playground" if not os.getenv("AWS_EXECUTION_ENV") else None
         import boto3 as _b3
-        _ssm = _b3.Session(profile_name=profile, region_name="us-east-1").client("ssm")
+        _ssm = _b3.Session(profile_name=profile, region_name="eu-west-1").client("ssm")
         import time as _t
         for _pair in ["BTC_5m", "ETH_5m", "SOL_5m"]:
             try:

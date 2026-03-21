@@ -46,7 +46,7 @@ def _import_claim_all():
     spec.loader.exec_module(mod)
     return mod.claim_all
 
-S3_BUCKET = "polymarket-bot-data-688567279867-use1"
+S3_BUCKET = "polymarket-bot-data-688567279867-euw1"
 
 # Per-asset parquet config: asset symbol -> (local path, S3 key, /tmp fallback)
 _ASSET_PARQUET: dict[str, tuple[str, str, str]] = {
@@ -160,7 +160,7 @@ class TradingLoop:
 
         try:
             import boto3
-            s3 = boto3.client("s3", region_name="us-east-1")
+            s3 = boto3.client("s3", region_name="eu-west-1")
             s3.download_file(S3_BUCKET, s3_key, tmp_path)
             table.load_from_parquet(tmp_path)
             logger.info("base_rates_loaded", asset=asset, source="s3", bins=len(table.bins))
@@ -244,12 +244,8 @@ class TradingLoop:
         self._running = False
         self._start_time = time.time()
         self._last_heartbeat = 0.0
+        self._last_verify_sweep = 0.0
 
-        # Balance-proportional sizing — base_balance set at startup from CLOB cashBalance
-        self._base_balance: float = 750.0  # reference for sizing scale (half of ~$1,452 wallet)
-        self._cached_balance: float = 0.0
-        self._balance_fetched_at: float = 0.0
-        self._BALANCE_REFRESH_INTERVAL = 1800  # 30 minutes
 
     async def start(self):
         logger.info(
@@ -267,11 +263,9 @@ class TradingLoop:
         if smoke.failed:
             raise RuntimeError(f"Smoke test failed: {smoke.failed}")
 
-        # Balance check at startup — seeds sizing scale from CLOB cashBalance
+        # Balance check at startup for bankroll sync
         if self._wallet_address:
             try:
-                await self._refresh_balance()
-                # Also check on-chain balance for bankroll sync
                 from polybot.market.balance_checker import BalanceChecker
                 checker = BalanceChecker()
                 balances = await checker.check(self._wallet_address)
@@ -370,6 +364,11 @@ class TradingLoop:
                 except Exception:
                     pass
 
+            # Verify unresolved trades every 5 minutes
+            if time.time() - self._last_verify_sweep >= 300:
+                self._last_verify_sweep = time.time()
+                asyncio.create_task(self._verify_sweep(), name="verify_sweep")
+
             # Refresh models every 4 hours (non-blocking)
             try:
                 self.model_server.refresh_if_needed()
@@ -426,50 +425,6 @@ class TradingLoop:
 
     # 223 lines removed (dead method)
 
-    async def _refresh_balance(self):
-        """Fetch liquid USDC from Polymarket CLOB balance_allowance, cache for 30 minutes.
-
-        Uses get_balance_allowance(COLLATERAL) which returns the raw USDC balance
-        (6 decimals) — liquid cash available to trade, excluding open positions.
-        On first successful fetch, sets _base_balance as the reference point
-        for proportional sizing.
-        """
-        if time.time() - self._balance_fetched_at < self._BALANCE_REFRESH_INTERVAL:
-            return
-        try:
-            # Use the live trader's authenticated CLOB client
-            if not hasattr(self.trader, 'client'):
-                return
-            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
-            params = BalanceAllowanceParams(
-                asset_type=AssetType.COLLATERAL,
-                signature_type=self.trader.client.builder.sig_type,
-            )
-            result = self.trader.client.get_balance_allowance(params)
-            raw = int(result.get("balance", 0) or 0)
-            cash = raw / 1_000_000  # USDC has 6 decimals
-            if cash > 0:
-                self._cached_balance = cash
-                self._balance_fetched_at = time.time()
-                logger.info("balance_refreshed", cash=round(cash, 2), base=round(self._base_balance, 2), scale=round(self._size_scale(), 3))
-        except Exception as e:
-            logger.warning("balance_refresh_failed", error=str(e)[:60])
-
-    def _size_scale(self) -> float:
-        """Compute sizing scale factor from cached balance.
-
-        scale = min(current_balance / base_balance, 1.0)
-        Caps at 1.0 so we never exceed base tier sizes.
-        Returns 1.0 if no balance data available yet.
-        """
-        if self._cached_balance <= 0 or self._base_balance <= 0:
-            return 1.0
-        return min(self._cached_balance / self._base_balance, 1.0)
-
-    def _scaled_size(self, base_size: float) -> float:
-        """Apply balance scale to a base size, enforcing $1.50 floor."""
-        return max(round(base_size * self._size_scale(), 2), 1.50)
-
     async def _scan_tick(self, state: AssetState, price: float, seconds_since_open: float):
         """Scan window logic: T+210s–T+255s, find best entry price.
 
@@ -483,7 +438,14 @@ class TradingLoop:
         SCAN_END = SCAN_START + 30  # 240
         SCAN_DEADLINE = SCAN_START + 45  # 255 hard cutoff
         SCAN_INTERVAL = 3.0  # seconds between orderbook checks
-        EARLY_ENTRY_ASK = 0.58  # enter immediately if ask this low
+
+        # Time-of-day + weekend liquidity filter
+        from datetime import datetime, timezone
+        _now_filter = datetime.now(timezone.utc)
+        utc_hour = _now_filter.hour
+        is_weekend = _now_filter.weekday() >= 5  # Sat=5, Sun=6
+        weak_hours = (utc_hour < 9) or (utc_hour >= 21) or (utc_hour == 12)
+        EARLY_ENTRY_ASK = 0.72 if is_weekend else (0.68 if weak_hours else 0.58)
 
         # Phase 1: Start scan at T+210s
         if seconds_since_open >= SCAN_START and not state.scan_active and not state.scan_direction_flipped:
@@ -568,14 +530,15 @@ class TradingLoop:
         if seconds_since_open >= SCAN_DEADLINE and not state.late_entry_evaluated:
             state.late_entry_evaluated = True
 
-    def _log_scan_signal(self, state: AssetState, price: float, skip_reason: str = ""):
-        """Log a scan evaluation to DynamoDB signals table."""
+    def _log_scan_signal(self, state: AssetState, price: float, skip_reason: str = "", extra: dict | None = None):
+        """Log a scan evaluation to DynamoDB signals table with full backtest data."""
+        from datetime import datetime, timezone
         window = state.tracker.current
         if not window:
             return
         scan_duration = (time.time() - (state.scan_best_ask_ts or time.time()))
         try:
-            self.dynamo.put_signal({
+            record = {
                 "window_slug": window.slug,
                 "timestamp": time.time(),
                 "asset": state.asset,
@@ -589,10 +552,14 @@ class TradingLoop:
                 "rejection_reason": skip_reason,
                 "strategy": "late_momentum_v3_scan",
                 "seconds_remaining": round(window.seconds_remaining(), 1),
+                "utc_hour": datetime.now(timezone.utc).hour,
                 "scan_best_ask": round(state.scan_best_ask or 0, 4),
                 "scan_duration_s": round(scan_duration, 1),
                 "direction_flipped": state.scan_direction_flipped,
-            })
+            }
+            if extra:
+                record.update(extra)
+            self.dynamo.put_signal(record)
         except Exception:
             pass
 
@@ -605,9 +572,6 @@ class TradingLoop:
         if not window:
             return
 
-        # Refresh balance for proportional sizing (every 30 min)
-        await self._refresh_balance()
-
         # Use scan results
         direction_up = state.scan_direction == "up"
         current_ask = state.scan_best_ask or 0
@@ -617,43 +581,85 @@ class TradingLoop:
         # Per-asset adaptive ceilings
         max_ask = 0.82 if state.asset == "SOL" else 0.78
 
+        # Time-of-day + weekend liquidity filter
+        from datetime import datetime, timezone
+        _now_exec = datetime.now(timezone.utc)
+        utc_hour = _now_exec.hour
+        is_weekend = _now_exec.weekday() >= 5  # Sat=5, Sun=6
+        weak_hours = (utc_hour < 9) or (utc_hour >= 21) or (utc_hour == 12)
+        min_ask = 0.70 if is_weekend else 0.65
+
+        # Volatility filter — skip choppy markets
+        vol_now = compute_realized_vol(list(state.price_history))
+        vol_avg = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol_now
+        choppy = vol_now > 2 * vol_avg if vol_avg > 0 else False
+
         # Guards
         skip_reason = ""
-        if current_ask < 0.55:
+        if current_ask < min_ask:
             skip_reason = "no_conviction"
         elif current_ask > max_ask:
             skip_reason = "fully_priced"
         elif not self.risk.can_trade():
             skip_reason = "circuit_breaker"
+        elif choppy:
+            skip_reason = "choppy_market"
 
-        # Store this asset's ask for trailing-the-leader comparison
-        if not hasattr(self, '_window_asks'):
-            self._window_asks = {}
-        window_key = window.open_ts
-        if window_key not in self._window_asks:
-            self._window_asks = {window_key: {}}  # reset on new window
-        self._window_asks[window_key][state.asset] = current_ask if not skip_reason else 0
-
-        # Trailing-the-leader sizing
-        asks = self._window_asks.get(window_key, {})
-        my_ask = current_ask if not skip_reason else 0
-        other_asks = [v for k, v in asks.items() if k != state.asset and v > 0]
-        best_other = max(other_asks) if other_asks else 0
-
+        # Flat sizing: $5 default, $10 high conviction ($0.75+)
         if skip_reason:
             size = 0
-            role = ""
-        elif best_other > 0 and abs(my_ask - best_other) <= 0.03:
-            size = self._scaled_size(5.00)   # tied — base $5
-            role = "tied"
-        elif my_ask >= best_other:
-            size = self._scaled_size(10.00)  # leader — base $10
-            role = "leader"
+        elif current_ask >= 0.75:
+            size = 10.00
         else:
-            size = self._scaled_size(2.50)   # follower — base $2.50
-            role = "follower"
+            size = 5.00
 
         scan_duration = time.time() - (state.scan_best_ask_ts or time.time())
+
+        # LightGBM prediction (read-only, for data collection — not used for entry)
+        lgbm_prob = 0.0
+        try:
+            import math as _math
+            from datetime import datetime as _dt2
+            _now_utc = _dt2.now(timezone.utc)
+            vol = compute_realized_vol(list(state.price_history))
+            vol_ma = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol
+            vol_ratio = vol / vol_ma if vol_ma > 0 else 1.0
+            hl_range = state.window_high - state.window_low
+            body = abs(price - (window.open_price or price))
+            body_ratio = body / hl_range if hl_range > 0 else 0.5
+            features = {
+                "move_pct_15s": pct_move,
+                "realized_vol_5m": vol,
+                "vol_ratio": vol_ratio,
+                "body_ratio": body_ratio,
+                "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price
+                    and state.prev_window.open_price and state.prev_window.close_price >= state.prev_window.open_price else -1)
+                    if state.prev_window else 0,
+                "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price)
+                    / state.prev_window.open_price * 100) if state.prev_window and state.prev_window.open_price
+                    and state.prev_window.close_price else 0,
+                "hour_sin": _math.sin(2 * _math.pi * _now_utc.hour / 24),
+                "hour_cos": _math.cos(2 * _math.pi * _now_utc.hour / 24),
+                "dow_sin": _math.sin(2 * _math.pi * _now_utc.weekday() / 7),
+                "dow_cos": _math.cos(2 * _math.pi * _now_utc.weekday() / 7),
+                "signal_move_pct": abs(pct_move),
+                "signal_ask_price": current_ask,
+                "signal_seconds": 300 - remaining,
+                "signal_ev": 0,
+            }
+            lgbm_prob = self.model_server.predict(f"{state.asset}_5m", features)
+        except Exception:
+            pass
+
+        # BTC cross-asset move (for data collection)
+        btc_move_pct = 0.0
+        if state.asset != "BTC":
+            btc_state = self.asset_states.get("BTC_5m")
+            if btc_state and btc_state.tracker.current and btc_state.tracker.current.open_price:
+                btc_price = self.coinbase.get_price("BTC")
+                btc_open = btc_state.tracker.current.open_price
+                if btc_open > 0:
+                    btc_move_pct = (btc_price - btc_open) / btc_open * 100
 
         # Log evaluation
         logger.info(
@@ -661,18 +667,33 @@ class TradingLoop:
             asset=state.asset, slug=window.slug,
             direction="UP" if direction_up else "DOWN",
             current_ask=round(current_ask, 3),
-            max_ask=max_ask,
+            max_ask=max_ask, min_ask=min_ask,
             size=size,
-            size_scale=round(self._size_scale(), 3),
             pct_move=round(pct_move, 4),
             seconds_remaining=round(remaining, 1),
             scan_duration_s=round(scan_duration, 1),
             direction_flipped=state.scan_direction_flipped,
+            utc_hour=utc_hour, weak_hours=weak_hours,
+            lgbm_prob=round(lgbm_prob, 4),
+            btc_move_pct=round(btc_move_pct, 4),
             skip_reason=skip_reason or "TRADE",
         )
 
-        # Log to DynamoDB
-        self._log_scan_signal(state, price, skip_reason=skip_reason)
+        # Log to DynamoDB with all backtest fields
+        self._log_scan_signal(state, price, skip_reason=skip_reason,
+                              extra={
+                                  "utc_hour": utc_hour, "weak_hours": weak_hours,
+                                  "open_price": round(window.open_price or 0, 4),
+                                  "current_price": round(price, 4),
+                                  "window_high": round(state.window_high, 4),
+                                  "window_low": round(state.window_low, 4),
+                                  "realized_vol": round(compute_realized_vol(list(state.price_history)), 6),
+                                  "lgbm_prob": round(lgbm_prob, 4),
+                                  "p_bayesian": round(state.bayesian.probability, 4),
+                                  "btc_move_pct": round(btc_move_pct, 4),
+                                  "size": size,
+                                  "tier": "high" if current_ask >= 0.75 else "mid" if current_ask >= 0.65 else "low",
+                              })
 
         if skip_reason:
             return
@@ -1174,6 +1195,60 @@ class TradingLoop:
                 logger.warning("verify_failed", slug=window_slug, attempt=attempt, error=str(e))
                 if attempt < 3:
                     await asyncio.sleep(60)
+
+    async def _verify_sweep(self):
+        """Periodic sweep: verify ALL unverified trades via Polymarket Gamma API.
+
+        Scans the full trades table — not just 50 recent. Catches any trade
+        that was resolved by Coinbase but not yet confirmed by Polymarket oracle.
+        Also resolves trades still marked as unresolved (OPEN).
+        """
+        try:
+            # Full table scan to find ALL unverified/unresolved
+            _table = self.dynamo._trades
+            if not _table:
+                return
+            all_trades = []
+            resp = _table.scan()
+            all_trades.extend(resp.get("Items", []))
+            while "LastEvaluatedKey" in resp:
+                resp = _table.scan(ExclusiveStartKey=resp["LastEvaluatedKey"])
+                all_trades.extend(resp.get("Items", []))
+
+            to_verify = [t for t in all_trades if (
+                # Coinbase-inferred but not Polymarket-verified
+                (int(t.get("resolved", 0)) == 1
+                 and t.get("outcome_source") != "polymarket_verified"
+                 and t.get("outcome_source") != "manual_sell")
+                # OR still unresolved (OPEN)
+                or not int(t.get("resolved", 0))
+            )]
+
+            if not to_verify:
+                return
+
+            logger.info("verify_sweep_start", count=len(to_verify))
+            from polybot.feeds.polymarket_rest import get_market_outcome
+            fixed = 0
+            for t in to_verify:
+                slug = t.get("window_slug", "")
+                if not slug:
+                    continue
+                winner, source = await get_market_outcome(slug)
+                if not winner:
+                    continue
+                side = t.get("side", "")
+                correct = (side == winner)
+                fill = float(t.get("fill_price", 0) or 0)
+                size = float(t.get("size_usd", 0) or 0)
+                pnl = round((size / fill) * (1 - fill), 2) if correct and fill > 0 else round(-size, 2)
+                self.dynamo.update_trade_resolved(t["id"], pnl, winner, correct, source)
+                fixed += 1
+
+            if fixed:
+                logger.info("verify_sweep_done", fixed=fixed)
+        except Exception as e:
+            logger.debug("verify_sweep_err", error=str(e)[:60])
 
     async def _resolve_orphan_trades(self):
         """On startup, resolve any trades left unresolved from previous sessions."""

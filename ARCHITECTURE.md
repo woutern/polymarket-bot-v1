@@ -36,13 +36,11 @@ T+240s    EXECUTE at best ask found during scan
 - Circuit breaker (3 consecutive losses → 15min pause)
 - PAIRS must be set in live mode (smoke test)
 
-### Sizing (trailing-the-leader)
-- Compare BTC vs SOL ask in same window
-- Leader (highest ask): $10 × scale
-- Tied (within $0.03): $5 × scale
-- Follower: $2.50 × scale
-- Scale = min(CLOB_cashBalance / $750, 1.0)
-- Floor: $1.50 minimum
+### Sizing (flat, by ask price)
+- ask $0.55–$0.65 → $5.00
+- ask $0.65–$0.75 → $7.50
+- ask $0.75–$0.82 → $10.00
+- No balance scaling
 - Hard cap: $10 (HARDCODED_MAX_BET)
 
 ### Execution

@@ -7,7 +7,7 @@ HARDCODED_MAX_BET = 10.00
 
 
 class Settings(BaseSettings):
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     # Polymarket
     polymarket_private_key: str = ""
