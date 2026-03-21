@@ -85,14 +85,20 @@ class ModelServer:
 
         try:
             model = pipeline["model"]
-            platt = pipeline["platt"]
-            isotonic = pipeline["isotonic"]
             feature_cols = pipeline["features"]
-
             X = np.array([[float(features.get(col, 0)) for col in feature_cols]])
             raw = model.predict(X)[0]
-            platt_prob = platt.predict_proba(np.array([[raw]]))[0, 1]
-            final = isotonic.predict([platt_prob])[0]
+
+            # Apply calibration if available (older pipeline format)
+            platt = pipeline.get("platt")
+            isotonic = pipeline.get("isotonic")
+            if platt and isotonic:
+                platt_prob = platt.predict_proba(np.array([[raw]]))[0, 1]
+                final = isotonic.predict([platt_prob])[0]
+            else:
+                # Raw LightGBM output is already a probability
+                final = raw
+
             result = float(max(0.01, min(0.99, final)))
             # Track prediction for adaptive threshold
             if pair not in self._pred_history:

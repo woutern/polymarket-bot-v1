@@ -616,7 +616,7 @@ class TradingLoop:
 
         scan_duration = time.time() - (state.scan_best_ask_ts or time.time())
 
-        # LightGBM prediction (read-only, for data collection — not used for entry)
+        # LightGBM prediction — used as entry filter (lgbm >= 0.62)
         lgbm_prob = 0.0
         try:
             import math as _math
@@ -651,6 +651,11 @@ class TradingLoop:
             lgbm_prob = self.model_server.predict(f"{state.asset}_5m", features)
         except Exception:
             pass
+
+        # LightGBM entry gate: skip if model says < 0.62
+        if not skip_reason and lgbm_prob > 0 and lgbm_prob < 0.62:
+            skip_reason = "lgbm_low"
+            size = 0
 
         # BTC cross-asset move (for data collection)
         btc_move_pct = 0.0

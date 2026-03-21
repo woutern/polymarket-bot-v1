@@ -11,7 +11,8 @@ Algorithmic trading system for Polymarket prediction markets.
 ### 1. 5-Minute Crypto Bot
 - Trades BTC/SOL 5-minute Up/Down windows
 - Scan window T+210s–T+240s: finds best entry price
-- Flat sizing by ask price ($5 / $7.50 / $10)
+- LightGBM entry filter: lgbm_prob >= 0.62 required (trained on 22K Jon-Becker windows)
+- Flat sizing: $5 default, $10 at ask >= $0.75 during peak hours only
 - Resolution via Polymarket Chainlink oracle (not Coinbase)
 
 ### 2. Opportunity Bot
@@ -38,7 +39,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete system diagram.
 
 | Guard | Value |
 |-------|-------|
-| Max bet (5min bot) | $10 hard cap |
+| Max bet (5min bot) | $10 peak / $5 weak+weekend |
+| LightGBM gate (5min) | lgbm_prob >= 0.62 |
 | Max ask (5min bot) | $0.82 SOL / $0.78 BTC |
 | Max deployed (opp bot) | $1,250 |
 | Max ask (opp bot) | $0.95 |
@@ -67,5 +69,6 @@ PYTHONPATH=src uv run python scripts/opportunity_scanner.py
 - Python 3.12, asyncio, uv
 - py-clob-client (Polymarket CLOB SDK)
 - Coinbase WebSocket (250ms price ticks)
+- LightGBM (per-pair classifiers, trained on 22K Jon-Becker windows)
 - AWS: ECS, DynamoDB, Bedrock (Haiku + Sonnet 4), Lambda, CloudFront, Secrets Manager
 - structlog (JSON logging → CloudWatch)
