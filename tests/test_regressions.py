@@ -394,22 +394,28 @@ class TestFlatSizing:
     """Flat sizing based on ask price. No scale factor."""
 
     def test_two_tiers_in_code(self):
-        """Two tiers: $5 (default) / $10 (high conviction $0.75+)."""
+        """Two tiers: $5 (default) / $10 (high conviction $0.75+ peak only)."""
         from polybot.core.loop import TradingLoop
         import inspect
         source = inspect.getsource(TradingLoop._execute_scan_entry)
         assert "10.00" in source
         assert "5.00" in source
         assert "0.75" in source
+        assert "is_peak" in source  # $10 only during peak hours
 
     def test_no_scale_factor(self):
         from polybot.core.loop import TradingLoop
         assert not hasattr(TradingLoop, '_scaled_size')
         assert not hasattr(TradingLoop, '_size_scale')
 
-    def test_high_ask_gets_10(self):
-        """Ask $0.75+ → $10."""
-        assert 0.75 >= 0.75
+    def test_10_only_peak_hours(self):
+        """$10 bets restricted to peak hours (not weak hours, not weekend)."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._execute_scan_entry)
+        assert "is_peak" in source
+        assert "not weak_hours" in source
+        assert "not is_weekend" in source
         assert 0.82 >= 0.75
 
     def test_below_075_gets_5(self):

@@ -605,10 +605,11 @@ class TradingLoop:
         elif choppy:
             skip_reason = "choppy_market"
 
-        # Flat sizing: $5 default, $10 high conviction ($0.75+)
+        # Flat sizing: $5 default, $10 high conviction ($0.75+ peak hours only)
+        is_peak = not weak_hours and not is_weekend
         if skip_reason:
             size = 0
-        elif current_ask >= 0.75:
+        elif current_ask >= 0.75 and is_peak:
             size = 10.00
         else:
             size = 5.00

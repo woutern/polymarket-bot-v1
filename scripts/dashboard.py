@@ -1294,7 +1294,8 @@ HTML = r"""<!DOCTYPE html>
           <tr><td>Early entry (weekend)</td><td>≤ $0.72</td></tr>
           <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">SIZING</td></tr>
           <tr><td>Ask $0.65–$0.75</td><td><b>$5.00</b></td></tr>
-          <tr><td>Ask $0.75–$0.82</td><td><b>$10.00</b></td></tr>
+          <tr><td>Ask $0.75–$0.82 (peak hours)</td><td><b>$10.00</b></td></tr>
+          <tr><td>Ask $0.75–$0.82 (weak/weekend)</td><td><b>$5.00</b></td></tr>
           <tr><td>Hard cap</td><td>$10.00 (HARDCODED_MAX_BET)</td></tr>
           <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIME FILTERS</td></tr>
           <tr><td>Peak hours (CET)</td><td>10:00–13:00, 14:00–22:00 → min_ask $0.65</td></tr>
