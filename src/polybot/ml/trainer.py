@@ -226,6 +226,21 @@ def train_pair(pair: str, items: list[dict], s3_client=None, ssm_client=None, s3
                            val_auc=val_auc, baseline_brier=baseline_brier, deployed=False,
                            error="Model not better than baseline")
 
+    # Quality gate: only deploy if new AUC >= current AUC - 0.02
+    # Prevents overwriting good Jon-Becker models with weaker live-only models
+    if ssm_client:
+        try:
+            current_auc_resp = ssm_client.get_parameter(Name=f"/polymarket/models/{pair}/val_auc")
+            current_auc = float(current_auc_resp["Parameter"]["Value"])
+            min_auc = current_auc - 0.02
+            if val_auc < min_auc:
+                logger.info(f"{pair}: new AUC {val_auc:.4f} < current {current_auc:.4f} - 0.02 = {min_auc:.4f}, keeping existing model")
+                return TrainResult(pair=pair, n_train=n_train, n_val=n_val, val_brier=val_brier,
+                                   val_auc=val_auc, baseline_brier=baseline_brier, deployed=False,
+                                   error=f"AUC regression: new={val_auc:.4f} < current={current_auc:.4f}-0.02")
+        except Exception:
+            pass  # No current AUC on record — allow deploy
+
     # Save pipeline
     pipeline = {"model": model, "platt": platt, "isotonic": isotonic, "features": FEATURE_COLUMNS}
     s3_path = ""
@@ -251,8 +266,27 @@ def train_pair(pair: str, items: list[dict], s3_client=None, ssm_client=None, s3
                        val_auc=val_auc, baseline_brier=baseline_brier, deployed=True, s3_path=s3_path)
 
 
+JBECKER_BUCKET = "polymarket-bot-training-data-688567279867"
+
+
+def _load_jbecker_base(s3_client, asset: str) -> list[dict]:
+    """Load Jon-Becker enriched data from S3 as base training set."""
+    import io
+    try:
+        import pandas as pd
+        key = f"jon-becker/enriched_5m_{asset.lower()}.parquet"
+        obj = s3_client.get_object(Bucket=JBECKER_BUCKET, Key=key)
+        df = pd.read_parquet(io.BytesIO(obj["Body"].read()))
+        items = df.to_dict("records")
+        logger.info(f"  Jon-Becker base: {len(items)} {asset} windows loaded from S3")
+        return items
+    except Exception as e:
+        logger.warning(f"  Jon-Becker base not available: {e}")
+        return []
+
+
 def train_all(region: str = "eu-west-1", s3_bucket: str = "polymarket-bot-data-688567279867-euw1") -> list[TrainResult]:
-    """Train models for all 3 pairs."""
+    """Train models for all pairs using Jon-Becker base + live DynamoDB windows."""
     import os
     import boto3
 
@@ -263,14 +297,43 @@ def train_all(region: str = "eu-west-1", s3_bucket: str = "polymarket-bot-data-6
     s3 = session.client("s3")
     ssm = session.client("ssm")
 
+    # S3 is global — eu-west-1 client can read any bucket
+
     results = []
     for pair in PAIRS:
         asset, tf = pair.split("_")
         logger.info(f"Training {pair}...")
-        items = load_training_data(table, asset, tf)
-        logger.info(f"  Loaded {len(items)} rows")
-        result = train_pair(pair, items, s3_client=s3, ssm_client=ssm, s3_bucket=s3_bucket)
+
+        # Load Jon-Becker base data (22K windows)
+        base_items = _load_jbecker_base(s3, asset)
+
+        # Load live DynamoDB windows (recent data)
+        live_items = load_training_data(table, asset, tf)
+        logger.info(f"  Live DynamoDB: {len(live_items)} rows")
+
+        # Combine: Jon-Becker base + live windows, sorted by timestamp
+        # Dedup by slug (live data takes precedence for overlapping windows)
+        seen_slugs = set()
+        combined = []
+        # Live items first (higher priority)
+        for item in live_items:
+            slug = item.get("slug", item.get("window_slug", ""))
+            if slug and slug not in seen_slugs:
+                seen_slugs.add(slug)
+                combined.append(item)
+        # Then Jon-Becker base
+        for item in base_items:
+            slug = item.get("slug", "")
+            if slug and slug not in seen_slugs:
+                seen_slugs.add(slug)
+                combined.append(item)
+
+        # Sort by timestamp
+        combined.sort(key=lambda x: float(x.get("timestamp", 0)))
+        logger.info(f"  Combined: {len(combined)} rows (base={len(base_items)}, live={len(live_items)}, deduped={len(combined)})")
+
+        result = train_pair(pair, combined, s3_client=s3, ssm_client=ssm, s3_bucket=s3_bucket)
         results.append(result)
-        logger.info(f"  Result: brier={result.val_brier:.4f} auc={result.val_auc:.4f} deployed={result.deployed}")
+        logger.info(f"  Result: brier={result.val_brier:.4f} auc={result.val_auc:.4f} deployed={result.deployed} {result.error}")
 
     return results
