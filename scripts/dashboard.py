@@ -1318,16 +1318,24 @@ HTML = r"""<!DOCTYPE html>
         <thead><tr><th>Rule</th><th>Value</th></tr></thead>
         <tbody>
           <tr><td><b>Scan interval</b></td><td>Every 30 minutes</td></tr>
-          <tr><td><b>Workers</b></td><td>7 parallel: crypto, finance, politics, geopolitics, tech, basketball, news</td></tr>
+          <tr><td><b>Workers</b></td><td>9 parallel: crypto, finance, fed, politics, geopolitics, elections, tech, weather, culture</td></tr>
+          <tr><td><b>Processing</b></td><td>All workers fetch → combine → dedup by condition_id → sort by resolve time (soonest first) → trade top-to-bottom</td></tr>
           <tr><td><b>Scan window</b></td><td>Markets resolving in 30min – 48h</td></tr>
           <tr><td><b>Min volume</b></td><td>$1,000</td></tr>
           <tr><td><b>Skip</b></td><td>Slugs with 5m, 15m, updown (main bot handles)</td></tr>
-          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIER 1 — AUTO TRADE</td></tr>
+          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIER 0 — HIGH CONVICTION ($10)</td></tr>
+          <tr><td>Ask range</td><td>≥ $0.93</td></tr>
+          <tr><td>Resolves within</td><td>6 hours</td></tr>
+          <tr><td>Volume</td><td>≥ $5,000</td></tr>
+          <tr><td>Size</td><td><b>$10.00</b> FOK at best ask</td></tr>
+          <tr><td>AI gate</td><td>Dual AI: Haiku sanity (conf ≥ 0.90) → Sonnet 4 devil's advocate (conf ≥ 0.85)</td></tr>
+          <tr><td>Sonnet prompt</td><td>Risk analyst: finds reasons trade could LOSE before approving</td></tr>
+          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIER 1 — AUTO TRADE ($5)</td></tr>
           <tr><td>Ask range</td><td>$0.85–$0.95</td></tr>
           <tr><td>Resolves within</td><td>24 hours</td></tr>
           <tr><td>Size</td><td><b>$5.00</b> FOK at best ask</td></tr>
           <tr><td>AI check</td><td>Haiku sanity check (conf ≥ 0.75 to proceed)</td></tr>
-          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIER 2 — AI ASSESSED</td></tr>
+          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIER 2 — AI ASSESSED ($2.50)</td></tr>
           <tr><td>Ask range</td><td>$0.65–$0.85 (<24h) OR $0.85–$0.95 (24-48h)</td></tr>
           <tr><td>AI model</td><td>Claude Haiku via Bedrock</td></tr>
           <tr><td>Trade gate</td><td>confidence ≥ 0.80 AND edge ≥ 0.15</td></tr>
@@ -1335,9 +1343,28 @@ HTML = r"""<!DOCTYPE html>
           <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">LIMITS</td></tr>
           <tr><td>Max total deployed</td><td>$1,250</td></tr>
           <tr><td>Max ask on orderbook</td><td>$0.95 (reject if best ask > $0.95)</td></tr>
-          <tr><td>Basketball</td><td>Only in-progress games (ESPN live check)</td></tr>
-          <tr><td>Dedup</td><td>Atomic conditional put by condition_id</td></tr>
+          <tr><td>Dedup</td><td>3-layer: memory + DynamoDB query + atomic conditional put</td></tr>
           <tr><td>Resolution</td><td>Gamma API, 5 retries at 60s, checked every scan + on dashboard load</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Worker Categories &amp; Tags</div>
+    <div class="panel">
+      <table class="t">
+        <thead><tr><th>Worker</th><th>Tag slugs scanned</th></tr></thead>
+        <tbody>
+          <tr><td><b>crypto</b></td><td>crypto, crypto-prices, bitcoin, ethereum, solana, xrp, bitcoin-prices, ethereum-prices, solana-prices, xrp-prices, cryptocurrency, hit-price</td></tr>
+          <tr><td><b>finance</b></td><td>finance, economics, economy, stocks, earnings, daily-close, finance-updown, tsla, nvda, nflx, aapl, meta</td></tr>
+          <tr><td><b>fed</b></td><td>fed, fed-rates, fomc, federal-reserve, jerome-powell, fed-chair, economic-policy</td></tr>
+          <tr><td><b>politics</b></td><td>politics, us-politics, trump, elections, government, trump-approval, world-elections, global-elections, presidential-election</td></tr>
+          <tr><td><b>geopolitics</b></td><td>geopolitics, iran, world, middle-east, war, ukraine, russia, us-iran, ukraine-peace-deal, israel, strait-of-hormuz, north-korea, lebanon, khamenei</td></tr>
+          <tr><td><b>elections</b></td><td>elections, world-elections, global-elections, french-elections, german-elections, slovenia-elections, denmark-elections, peru-elections, mayoral-elections, special-elections</td></tr>
+          <tr><td><b>tech</b></td><td>tech, ai, technology, ai-development, openai, open-ai, big-tech, gta-vi</td></tr>
+          <tr><td><b>weather</b></td><td>temperature, weather, daily, precipitation</td></tr>
+          <tr><td><b>culture</b></td><td>culture, entertainment, awards, mrbeast, youtube, prediction-markets, recurring</td></tr>
         </tbody>
       </table>
     </div>
@@ -1367,9 +1394,9 @@ HTML = r"""<!DOCTYPE html>
           <tr><td>Bot</td><td>ECS Fargate, eu-west-1 (single task, task-def rev 17)</td></tr>
           <tr><td>Dashboard</td><td>Lambda + API Gateway + CloudFront, eu-west-1</td></tr>
           <tr><td>Storage</td><td>DynamoDB, eu-west-1</td></tr>
-          <tr><td>AI</td><td>Bedrock Claude Haiku, eu-west-1</td></tr>
+          <tr><td>AI</td><td>Bedrock: Haiku (Tier 1/2) + Sonnet 4 (Tier 0), eu-west-1</td></tr>
           <tr><td>Processes</td><td>4: 5min bot, opportunity bot, dashboard, auto-claim</td></tr>
-          <tr><td>Tests</td><td id="rules-test-count">502 passing</td></tr>
+          <tr><td>Tests</td><td id="rules-test-count">511 passing</td></tr>
         </tbody>
       </table>
     </div>
