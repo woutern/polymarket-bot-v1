@@ -1639,8 +1639,12 @@ class TradingLoop:
         # Decision: sell the LOSING side while it has value
         action = "HOLD"
         sell_target = None  # "main" or "hedge"
-        if dir_prob < 0.40:
-            # Model flipped against main → sell main immediately
+        if position_value_pct < -20:
+            # HARD STOP: down 20% → sell main regardless of model
+            action = "SELL_MAIN_STOP"
+            sell_target = "main"
+        elif dir_prob < 0.45:
+            # Model turning against us → sell main
             action = "SELL_MAIN"
             sell_target = "main"
         elif position_value_pct >= 30:
@@ -1651,7 +1655,7 @@ class TradingLoop:
             # Main winning → sell hedge (it's losing, recover remaining value)
             action = "SELL_HEDGE"
             sell_target = "hedge"
-        elif position_value_pct < -20 and hedge_value > main_value:
+        elif position_value_pct < -15 and hedge_value > main_value:
             # Main losing AND hedge worth more → swap: sell main, keep hedge
             action = "SELL_MAIN_SWAP"
             sell_target = "main"
@@ -1754,33 +1758,39 @@ class TradingLoop:
                 logger.warning("early_sell_fok_exception", slug=pos["slug"], error=str(sell_err))
 
             if not order_id:
-                # FOK failed — try GTC at bid-1¢ for 3s
-                gtc_price = max(round(current_bid - 0.01, 2), 0.01)
-                try:
-                    gtc_args = OrderArgs(price=gtc_price, size=shares, side=SELL, token_id=token_id)
-                    gtc_signed = self.trader.client.create_order(gtc_args, options)
-                    gtc_resp = self.trader.client.post_order(gtc_signed, OrderType.GTC)
-                    gtc_id = gtc_resp.get("orderID", "")
-                    if gtc_id:
-                        import asyncio as _aio2
-                        for _ in range(3):
-                            await _aio2.sleep(1.0)
-                            try:
-                                st = self.trader.client.get_order(gtc_id).get("status", "")
-                                if st in ("MATCHED", "FILLED"):
-                                    order_id = gtc_id
-                                    current_bid = gtc_price
+                # FOK failed — try GTC at bid-1¢ then bid-2¢
+                import asyncio as _aio2
+                for offset in (0.01, 0.02):
+                    gtc_price = max(round(current_bid - offset, 2), 0.01)
+                    try:
+                        gtc_args = OrderArgs(price=gtc_price, size=shares, side=SELL, token_id=token_id)
+                        gtc_signed = self.trader.client.create_order(gtc_args, options)
+                        gtc_resp = self.trader.client.post_order(gtc_signed, OrderType.GTC)
+                        gtc_id = gtc_resp.get("orderID", "")
+                        logger.info("early_sell_gtc_attempt", slug=pos["slug"],
+                                    price=gtc_price, offset=offset, order_id=gtc_id or "failed")
+                        if gtc_id:
+                            for _ in range(5):  # 5s wait
+                                await _aio2.sleep(1.0)
+                                try:
+                                    st = self.trader.client.get_order(gtc_id).get("status", "")
+                                    if st in ("MATCHED", "FILLED"):
+                                        order_id = gtc_id
+                                        current_bid = gtc_price
+                                        break
+                                except Exception:
                                     break
-                            except Exception:
+                            if order_id:
                                 break
-                        if not order_id:
                             try:
                                 self.trader.client.cancel(gtc_id)
                             except Exception:
                                 pass
-                            logger.info("early_sell_gtc_timeout", slug=pos["slug"])
-                except Exception as gtc_err:
-                    logger.warning("early_sell_gtc_error", error=str(gtc_err)[:80])
+                    except Exception as gtc_err:
+                        logger.warning("early_sell_gtc_error", offset=offset, error=str(gtc_err))
+                if not order_id:
+                    logger.warning("early_sell_all_failed", slug=pos["slug"], bid=current_bid,
+                                   reason=reason, shares=shares)
 
             if order_id:
                 sell_proceeds = shares * current_bid
