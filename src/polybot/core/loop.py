@@ -1360,7 +1360,7 @@ class TradingLoop:
                 hedge_bid = state.orderbook.no_best_bid if direction_up else state.orderbook.yes_best_bid
                 hedge_price = round(hedge_bid + 0.01, 2) if hedge_bid else 0
                 # Only hedge if cheap (< 30¢) — above that it's too expensive
-                if hedge_token and hedge_bid and hedge_price <= 0.30 and hedge_budget >= 0.50 and self.settings.mode == "live":
+                if hedge_token and hedge_bid and hedge_price <= 0.45 and hedge_budget >= 0.50 and self.settings.mode == "live":
                     from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
                     from py_clob_client.order_builder.constants import BUY
                     options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
