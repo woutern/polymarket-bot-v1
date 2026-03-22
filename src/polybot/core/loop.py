@@ -1243,8 +1243,13 @@ class TradingLoop:
                     token_id=token_id,
                 )
                 signed = self.trader.client.create_order(order_args, options)
-                resp = self.trader.client.post_order(signed, OrderType.FOK)
-                order_id = resp.get("orderID", "")
+                try:
+                    resp = self.trader.client.post_order(signed, OrderType.FOK)
+                    order_id = resp.get("orderID", "")
+                except Exception as fok_err:
+                    order_id = ""
+                    resp = {}
+                    logger.warning("early_entry_fok_exception", asset=state.asset, error=str(fok_err))
 
                 if order_id:
                     logger.info("early_entry_fok_filled", asset=state.asset, slug=early_slug,
