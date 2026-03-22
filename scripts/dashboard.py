@@ -262,8 +262,11 @@ def api_data():
     log_lines = get_logs()
     signals = get_signals(limit=20)
 
-    # Filter trades to current mode only
-    mode_trades = [t for t in trades if _extract_field(t, "mode", "live") == _TRADE_MODE]
+    # Filter trades to current mode only, exclude early entry (shown separately)
+    mode_trades = [t for t in trades
+                   if _extract_field(t, "mode", "live") == _TRADE_MODE
+                   and _extract_field(t, "source") != "early_entry"
+                   and not _extract_field(t, "window_slug", "").startswith("early_")]
 
     resolved_trades = [t for t in mode_trades if t.get("resolved") or _bool_field(t, "resolved")]
     open_trade_list = [t for t in mode_trades if not (t.get("resolved") or _bool_field(t, "resolved"))]
@@ -1249,11 +1252,11 @@ HTML = r"""<!DOCTYPE html>
 <nav>
   <div class="nav-logo">Poly<span>Bot</span></div>
   <div class="nav-tabs">
-    <button class="nav-tab active" onclick="showPage('overview',this)">Overview</button>
+    <button class="nav-tab active" onclick="showPage('early',this)">Early Entry</button>
+    <button class="nav-tab" onclick="showPage('overview',this)">Overview</button>
     <button class="nav-tab" onclick="showPage('trades',this)">Trades</button>
     <button class="nav-tab" onclick="showPage('analytics',this)">Analytics</button>
     <button class="nav-tab" onclick="showPage('opportunities',this)">Opportunities</button>
-    <button class="nav-tab" onclick="showPage('early',this)">Early Entry</button>
     <button class="nav-tab" onclick="showPage('rules',this)">Rules</button>
   </div>
   <div class="nav-mode" id="mode-badge">LIVE</div>
@@ -1264,7 +1267,8 @@ HTML = r"""<!DOCTYPE html>
   </button>
 </nav>
 <div class="mobile-menu" id="mobile-menu">
-  <button class="active" onclick="showPage('overview',this);document.getElementById('mobile-menu').classList.remove('open')">Overview</button>
+  <button class="active" onclick="showPage('early',this);document.getElementById('mobile-menu').classList.remove('open')">Early Entry</button>
+  <button onclick="showPage('overview',this);document.getElementById('mobile-menu').classList.remove('open')">Overview</button>
   <button onclick="showPage('trades',this);document.getElementById('mobile-menu').classList.remove('open')">Trades</button>
   <button onclick="showPage('analytics',this);document.getElementById('mobile-menu').classList.remove('open')">Analytics</button>
   <button onclick="showPage('opportunities',this);document.getElementById('mobile-menu').classList.remove('open')">Opportunities</button>
@@ -1273,7 +1277,7 @@ HTML = r"""<!DOCTYPE html>
 </div>
 
 <!-- ═══ OVERVIEW ═══ -->
-<div id="page-overview" class="page-content active">
+<div id="page-overview" class="page-content">
 <div class="page">
 
   <div class="grid grid-4">
@@ -1424,7 +1428,7 @@ HTML = r"""<!DOCTYPE html>
 
 <!-- ═══ RULES ═══ -->
 <!-- ═══ EARLY ENTRY ═══ -->
-<div id="page-early" class="page-content">
+<div id="page-early" class="page-content active">
 <div class="page">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
     <span style="font-size:12px;color:var(--text3)" id="ee-updated">—</span>
@@ -1449,8 +1453,8 @@ HTML = r"""<!DOCTYPE html>
     <div class="section-title">Trades</div>
     <div class="panel" style="max-height:500px;overflow-y:auto">
       <table class="t"><thead><tr>
-        <th>Time</th><th>Asset</th><th>Side</th><th>Ask</th><th>Size</th><th>Type</th><th>Prob</th><th>EV</th><th>P&L</th><th>Status</th>
-      </tr></thead><tbody id="ee-tbody"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody></table>
+        <th>Time</th><th>Asset</th><th>Side</th><th>Ask</th><th>Size</th><th>Prob</th><th>EV</th><th>P&L</th><th>Status</th>
+      </tr></thead><tbody id="ee-tbody"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody></table>
     </div>
   </div>
 </div>
@@ -1676,11 +1680,12 @@ async function refresh() {
     }
     document.getElementById('wr-price').innerHTML = bkHtml || '<div class="empty">No data yet</div>';
 
-    // Recent trades
+    // Recent trades (Scenario C only — exclude early entry)
+    const scenarioCTrades = trades.filter(t => !(t.source === 'early_entry' || (t.window_slug||'').startsWith('early_')));
     const tbody = document.getElementById('trades-body');
     tbody.innerHTML = '';
-    if (!trades.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">No trades yet</td></tr>'; }
-    for (const t of trades.slice(0, 20)) {
+    if (!scenarioCTrades.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">No trades yet</td></tr>'; }
+    for (const t of scenarioCTrades.slice(0, 20)) {
       const pnl = parseFloat(t.pnl||0);
       const resolved = t.resolved && parseFloat(t.resolved) === 1;
       const won = pnl > 0;
@@ -1971,7 +1976,9 @@ async function loadEarlyEntry() {
         status = '<span class="badge badge-pending">OPEN</span>';
       }
       const pnlStr = t.resolved ? '<span class="' + (pnl >= 0 ? 'green' : 'red') + '" style="font-weight:700">' + (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2) + '</span>' : '—';
-      html += '<tr style="background:' + bg + '"><td style="font-size:11px"><b>' + agoStr + '</b><br><span style="color:#94a3b8">' + tsStr + '</span></td><td>' + t.asset + '</td><td>' + t.side + '</td><td>$' + t.fill_price.toFixed(2) + '</td><td>$' + t.size_usd.toFixed(2) + '</td><td style="font-size:11px">' + (t.entry_type || '—') + '</td><td>' + t.model_prob.toFixed(3) + '</td><td>' + t.ev.toFixed(3) + '</td><td>' + pnlStr + '</td><td>' + status + '</td></tr>';
+      const rawSlug = (t.slug || '').replace('early_', '');
+      const link = rawSlug ? ' <a href="https://polymarket.com/market/' + rawSlug + '" target="_blank" style="opacity:0.4;font-size:11px">&#x1F517;</a>' : '';
+      html += '<tr style="background:' + bg + '"><td style="font-size:11px"><b>' + agoStr + '</b><br><span style="color:#94a3b8">' + tsStr + '</span></td><td>' + t.asset + '</td><td>' + t.side + '</td><td>$' + t.fill_price.toFixed(2) + '</td><td>$' + t.size_usd.toFixed(2) + '</td><td>' + t.model_prob.toFixed(3) + '</td><td>' + t.ev.toFixed(3) + '</td><td>' + pnlStr + '</td><td>' + status + link + '</td></tr>';
     }
     document.getElementById('ee-tbody').innerHTML = html || '<tr><td colspan="10" class="empty">No early entry trades yet</td></tr>';
 
@@ -2045,9 +2052,8 @@ document.addEventListener('click', function(e) {
   rows.forEach(r => tbody.appendChild(r));
 });
 
-// Auto-refresh overview every 30s
-refresh();
-setInterval(refresh, 30000);
+// Load Early Entry as default page
+loadEarlyEntry();
 </script>
 </body>
 </html>"""
