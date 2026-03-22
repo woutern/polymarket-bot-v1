@@ -1135,15 +1135,10 @@ class TradingLoop:
         # Budget: EARLY_ENTRY_MAX_BET / number of active 5m assets
         num_5m_assets = len([k for k in self.asset_states if "_1h" not in k])
         per_asset = self.settings.early_entry_max_bet / max(num_5m_assets, 1)
-        # K9 LGBM confidence split: high confidence → heavier main side
-        if lgbm_raw >= 0.60:
-            main_pct, hedge_pct = 0.70, 0.30   # $3.50 / $1.50
-        elif lgbm_raw >= 0.52:
-            main_pct, hedge_pct = 0.60, 0.40   # $3.00 / $2.00
-        else:
-            main_pct, hedge_pct = 0.50, 0.50   # $2.50 / $2.50
-        main_size = round(per_asset * main_pct, 2)
-        hedge_size = round(per_asset * hedge_pct, 2)
+        # Flat 50/50 split: LGBM determines direction only, not allocation
+        # (directional lean deferred until budget >= $100/asset)
+        main_size = round(per_asset * 0.50, 2)
+        hedge_size = round(per_asset * 0.50, 2)
 
         logger.info("v2_open_orderbook", asset=state.asset,
                     direction="UP" if direction_up else "DOWN",

@@ -1003,54 +1003,23 @@ class TestLGBMConfidenceSplit:
             await bot._v2_open_position(state, 50_000.0)
         return state
 
-    async def test_high_confidence_gives_70_30(self):
-        """lgbm >= 0.60 → main 70%, hedge 30%."""
-        bot = _make_bot(max_bet=20.0)
-        bot.model_server.predict = MagicMock(return_value=0.72)
-        window = _make_window()
-        state = _make_state(window=window)
-        bot._refresh_orderbook = _noop_refresh
-        with patch.object(bot, "_log_activity"):
-            await bot._v2_open_position(state, 50_000.0)
-        orders = state.early_dca_orders
-        main_sz = next((o["size"] for o in orders if o.get("side") == "main"), None)
-        hedge_sz = next((o["size"] for o in orders if o.get("side") == "hedge"), None)
-        assert main_sz is not None and hedge_sz is not None
-        per_asset = 20.0 / 4  # $5
-        assert abs(main_sz - per_asset * 0.70) < 0.01, f"main={main_sz}, expected {per_asset*0.70}"
-        assert abs(hedge_sz - per_asset * 0.30) < 0.01, f"hedge={hedge_sz}, expected {per_asset*0.30}"
-
-    async def test_medium_confidence_gives_60_40(self):
-        """lgbm 0.52-0.60 → main 60%, hedge 40%."""
-        bot = _make_bot(max_bet=20.0)
-        bot.model_server.predict = MagicMock(return_value=0.56)
-        window = _make_window()
-        state = _make_state(window=window)
-        bot._refresh_orderbook = _noop_refresh
-        with patch.object(bot, "_log_activity"):
-            await bot._v2_open_position(state, 50_000.0)
-        orders = state.early_dca_orders
-        main_sz = next((o["size"] for o in orders if o.get("side") == "main"), None)
-        hedge_sz = next((o["size"] for o in orders if o.get("side") == "hedge"), None)
-        per_asset = 20.0 / 4
-        assert abs(main_sz - per_asset * 0.60) < 0.01, f"main={main_sz}, expected {per_asset*0.60}"
-        assert abs(hedge_sz - per_asset * 0.40) < 0.01, f"hedge={hedge_sz}, expected {per_asset*0.40}"
-
-    async def test_low_confidence_gives_50_50(self):
-        """lgbm < 0.52 → main 50%, hedge 50%."""
-        bot = _make_bot(max_bet=20.0)
-        bot.model_server.predict = MagicMock(return_value=0.48)
-        window = _make_window()
-        state = _make_state(window=window)
-        bot._refresh_orderbook = _noop_refresh
-        with patch.object(bot, "_log_activity"):
-            await bot._v2_open_position(state, 50_000.0)
-        orders = state.early_dca_orders
-        main_sz = next((o["size"] for o in orders if o.get("side") == "main"), None)
-        hedge_sz = next((o["size"] for o in orders if o.get("side") == "hedge"), None)
-        per_asset = 20.0 / 4
-        assert abs(main_sz - per_asset * 0.50) < 0.01, f"main={main_sz}, expected {per_asset*0.50}"
-        assert abs(hedge_sz - per_asset * 0.50) < 0.01, f"hedge={hedge_sz}, expected {per_asset*0.50}"
+    async def test_flat_50_50_split_regardless_of_lgbm(self):
+        """Always 50/50 regardless of lgbm — direction only, not allocation."""
+        for lgbm_val in [0.72, 0.56, 0.48, 0.30]:
+            bot = _make_bot(max_bet=20.0)
+            bot.model_server.predict = MagicMock(return_value=lgbm_val)
+            window = _make_window(slug=f"btc-updown-5m-{lgbm_val}")
+            state = _make_state(window=window)
+            bot._refresh_orderbook = _noop_refresh
+            with patch.object(bot, "_log_activity"):
+                await bot._v2_open_position(state, 50_000.0)
+            orders = state.early_dca_orders
+            main_sz = next((o["size"] for o in orders if o.get("side") == "main"), None)
+            hedge_sz = next((o["size"] for o in orders if o.get("side") == "hedge"), None)
+            per_asset = 20.0 / 4  # $5
+            assert main_sz is not None and hedge_sz is not None, f"lgbm={lgbm_val}: orders missing"
+            assert abs(main_sz - per_asset * 0.50) < 0.01, f"lgbm={lgbm_val}: main={main_sz}, expected {per_asset*0.50}"
+            assert abs(hedge_sz - per_asset * 0.50) < 0.01, f"lgbm={lgbm_val}: hedge={hedge_sz}, expected {per_asset*0.50}"
 
 
 # ── 11b. OpenTimingT5s ────────────────────────────────────────────────────────
