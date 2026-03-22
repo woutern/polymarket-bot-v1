@@ -265,7 +265,7 @@ def api_data():
     # Filter trades to current mode only, exclude early entry (shown separately)
     mode_trades = [t for t in trades
                    if _extract_field(t, "mode", "live") == _TRADE_MODE
-                   and _extract_field(t, "source") != "early_entry"
+                   and _extract_field(t, "source") not in ("early_entry", "early_exit", "early_hedge_exit")
                    and not _extract_field(t, "window_slug", "").startswith("early_")]
 
     resolved_trades = [t for t in mode_trades if t.get("resolved") or _bool_field(t, "resolved")]
@@ -334,7 +334,7 @@ def api_data():
     current_bankroll = _BANKROLL + total_pnl
 
     # Early entry stats (source="early_entry" in trades table)
-    early_trades = [t for t in trades if _extract_field(t, "source") == "early_entry"]
+    early_trades = [t for t in trades if _extract_field(t, "source") in ("early_entry", "early_exit", "early_hedge_exit")]
     early_resolved = [t for t in early_trades if t.get("resolved") or _bool_field(t, "resolved")]
     early_wins = sum(1 for t in early_resolved if _float_field(t, "pnl") > 0)
     early_losses = sum(1 for t in early_resolved if _float_field(t, "pnl") <= 0)
@@ -403,7 +403,7 @@ def api_early_entry():
     import time as _t
     from decimal import Decimal
     trades = get_trades(limit=500)
-    early = [t for t in trades if _extract_field(t, "source") == "early_entry"]
+    early = [t for t in trades if _extract_field(t, "source") in ("early_entry", "early_exit", "early_hedge_exit")]
 
     # Stats
     resolved = [t for t in early if t.get("resolved") or _bool_field(t, "resolved")]
@@ -1681,7 +1681,7 @@ async function refresh() {
     document.getElementById('wr-price').innerHTML = bkHtml || '<div class="empty">No data yet</div>';
 
     // Recent trades (Scenario C only — exclude early entry)
-    const scenarioCTrades = trades.filter(t => !(t.source === 'early_entry' || (t.window_slug||'').startsWith('early_')));
+    const scenarioCTrades = trades.filter(t => !(['early_entry','early_exit','early_hedge_exit'].includes(t.source) || (t.window_slug||'').startsWith('early_')));
     const tbody = document.getElementById('trades-body');
     tbody.innerHTML = '';
     if (!scenarioCTrades.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">No trades yet</td></tr>'; }
