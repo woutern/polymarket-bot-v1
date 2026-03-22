@@ -1475,12 +1475,13 @@ async function refresh() {
     document.getElementById('wr-asset').innerHTML = assetHtml || '<div class="empty">No data yet</div>';
 
     // WR by ask price bucket
-    const buckets = {'$0.50-0.60':{w:0,n:0},'$0.60-0.70':{w:0,n:0},'$0.70-0.78':{w:0,n:0}};
+    const buckets = {'$0.60-0.70':{w:0,n:0},'$0.70-0.80':{w:0,n:0},'$0.80-0.95':{w:0,n:0}};
     for (const t of trades) {
       if (!t.resolved) continue;
       const p = parseFloat(t.fill_price||t.price||0);
+      if (p < 0.60) continue;  // Below ask floor — historical, skip
       const won = parseFloat(t.pnl||0) > 0;
-      let bk = p < 0.60 ? '$0.50-0.60' : p < 0.70 ? '$0.60-0.70' : '$0.70-0.78';
+      let bk = p < 0.70 ? '$0.60-0.70' : p < 0.80 ? '$0.70-0.80' : '$0.80-0.95';
       if (buckets[bk]) { buckets[bk].n++; if (won) buckets[bk].w++; }
     }
     let bkHtml = '';
@@ -1572,12 +1573,13 @@ async function loadAnalytics() {
     document.getElementById('pnl-asset').innerHTML = ah || '<div class="empty">No data</div>';
 
     // PnL by bucket
-    const bk = {'$0.50-0.60':{pnl:0,n:0},'$0.60-0.70':{pnl:0,n:0},'$0.70-0.78':{pnl:0,n:0}};
+    const bk = {'$0.60-0.70':{pnl:0,n:0},'$0.70-0.80':{pnl:0,n:0},'$0.80-0.95':{pnl:0,n:0}};
     for (const t of trades) {
       if (!t.resolved) continue;
       const p = parseFloat(t.fill_price||0);
+      if (p < 0.60) continue;
       const tpnl = parseFloat(t.pnl||0);
-      let b = p < 0.60 ? '$0.50-0.60' : p < 0.70 ? '$0.60-0.70' : '$0.70-0.78';
+      let b = p < 0.70 ? '$0.60-0.70' : p < 0.80 ? '$0.70-0.80' : '$0.80-0.95';
       if (bk[b]) { bk[b].pnl += tpnl; bk[b].n++; }
     }
     let bh = '';
