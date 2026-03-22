@@ -1094,9 +1094,20 @@ class TradingLoop:
             direction_up = lgbm_raw >= 0.50
             dir_prob = lgbm_raw if direction_up else (1 - lgbm_raw)
 
-            if dir_prob < self.settings.early_entry_lgbm_threshold:
-                logger.info("v2_preposition_skip_lgbm", asset=state.asset, lgbm=round(lgbm_raw, 3))
-                return
+            # Determine split based on lgbm confidence (never skip a window)
+            # lgbm >= 0.60: $6 main / $2 hedge (confident)
+            # lgbm 0.52-0.60: $5 main / $3 hedge (mild lean)
+            # lgbm < 0.52: $4 main / $4 hedge (coin flip, equal split)
+            total_budget = self.settings.early_entry_max_bet
+            if dir_prob >= 0.60:
+                main_size = round(total_budget * 0.75, 2)
+                hedge_size = round(total_budget * 0.25, 2)
+            elif dir_prob >= 0.52:
+                main_size = round(total_budget * 0.625, 2)
+                hedge_size = round(total_budget * 0.375, 2)
+            else:
+                main_size = round(total_budget * 0.50, 2)
+                hedge_size = round(total_budget * 0.50, 2)
 
             # Post GTC limits on both sides
             from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
@@ -1108,10 +1119,6 @@ class TradingLoop:
             hedge_token = no_token if direction_up else yes_token
             main_bid = state.orderbook.yes_best_bid if direction_up else state.orderbook.no_best_bid
             hedge_bid = state.orderbook.no_best_bid if direction_up else state.orderbook.yes_best_bid
-
-            total_budget = self.settings.early_entry_max_bet
-            main_size = round(total_budget * 0.30, 2)  # $6 pre-position on main
-            hedge_size = round(total_budget * 0.10, 2)  # $2 pre-position on hedge
 
             for token, bid, sz, label in [
                 (main_token, main_bid, main_size, "main"),
