@@ -851,7 +851,6 @@ class TestEarlyEntry:
         import inspect
         source = inspect.getsource(TradingLoop._tick_asset)
         assert "early_entry_enabled" in source
-        assert "_v2_preposition" in source
         assert "_v2_accumulate_cheap" in source
         assert "early_accum_ticks" in source
 
