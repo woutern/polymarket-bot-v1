@@ -1264,8 +1264,8 @@ HTML = r"""<!DOCTYPE html>
     </tr></thead><tbody id="opp-active"></tbody></table></div>
   </div>
   <div class="section">
-    <div class="section-title">Resolved Trades (7 days)</div>
-    <div class="panel"><table class="t sortable" id="tbl-opp-resolved"><thead><tr>
+    <div class="section-title">Resolved Trades (all time)</div>
+    <div class="panel" style="max-height:600px;overflow-y:auto"><table class="t sortable" id="tbl-opp-resolved"><thead><tr>
       <th data-sort="str">Market</th><th data-sort="str">Side</th><th data-sort="num">Entry</th><th data-sort="num">Invested</th><th data-sort="str">Result</th><th data-sort="num">P&L</th><th data-sort="str">Resolved</th>
     </tr></thead><tbody id="opp-resolved"></tbody></table></div>
   </div>

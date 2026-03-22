@@ -83,3 +83,9 @@ class TestAllInEuWest1:
         source = inspect.getsource(trainer.train_all)
         # S3 is global — no need for us-east-1 client
         assert "us-east-1" not in source
+
+    def test_model_bucket_is_euw1(self):
+        """Model S3 bucket must be the euw1 variant."""
+        from polybot.core.loop import S3_BUCKET
+        # Models are stored in same bucket as bot data
+        assert "euw1" in S3_BUCKET
