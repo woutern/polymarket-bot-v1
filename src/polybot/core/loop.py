@@ -449,9 +449,8 @@ class TradingLoop:
             if 30 <= cp <= 180 and cp not in state.early_checkpoints_done:
                 state.early_checkpoints_done.add(cp)
                 await self._early_checkpoint(state, price, seconds_since_open, cp)
-                # Post cheap limits on losing side at T+30
-                if cp == 30:
-                    await self._early_post_cheap_limits(state, price)
+                # Cheap limits disabled — fills don't update early_position state
+                # TODO: re-enable after adding fill tracking
                 # Cancel unfilled at T+180
                 if cp >= 180:
                     await self._early_cancel_unfilled(state)
