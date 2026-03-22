@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     early_entry_dca_t1_pct: float = 0.70    # T+15s initial buy: 70% of main ($8.71)
     early_entry_dca_t2_pct: float = 0.18    # T+45s dip buy: 18% of main ($2.24)
     early_entry_dca_t3_pct: float = 0.12    # T+90s remainder: 12% of main ($1.49)
+    early_entry_rotate_enabled: bool = False  # Stop-and-rotate: sell → buy back cheap on same side
+    early_entry_rotate_max_ask: float = 0.25  # Only rotate/accumulate if ask < 25¢
+    early_entry_cheap_buy_size: float = 2.00  # Size per cheap-side limit order
 
     # Per-asset move thresholds (T+2s-T+15s early entry with quality filters)
     min_move_btc_5m: float = 0.02   # BTC 5m: lowered to see more signals
