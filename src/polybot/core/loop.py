@@ -1118,15 +1118,27 @@ class TradingLoop:
             main_bid = state.orderbook.yes_best_bid if direction_up else state.orderbook.no_best_bid
             hedge_bid = state.orderbook.no_best_bid if direction_up else state.orderbook.yes_best_bid
 
+            logger.info("v2_open_orderbook", asset=state.asset,
+                        direction="UP" if direction_up else "DOWN",
+                        main_bid=round(main_bid, 3) if main_bid else 0,
+                        hedge_bid=round(hedge_bid, 3) if hedge_bid else 0,
+                        yes_bid=round(state.orderbook.yes_best_bid, 3),
+                        no_bid=round(state.orderbook.no_best_bid, 3),
+                        yes_ask=round(state.orderbook.yes_best_ask, 3),
+                        no_ask=round(state.orderbook.no_best_ask, 3))
+
             for token, bid, sz, label in [
                 (main_token, main_bid, main_size, "main"),
                 (hedge_token, hedge_bid, hedge_size, "hedge"),
             ]:
                 if sz < 0.50:
+                    logger.warning("v2_open_skip_size", asset=state.asset, side=label, sz=sz)
                     continue
                 # Zero-bid fallback: orderbook not yet live → post at $0.49
                 if not bid or bid <= 0:
                     post_price = 0.49
+                    logger.info("v2_open_zerobid_fallback", asset=state.asset, side=label,
+                                bid=bid, post_price=post_price)
                 else:
                     post_price = round(bid + 0.01, 2)
                 shares = max(round(sz / post_price), 5)
@@ -1172,6 +1184,11 @@ class TradingLoop:
     # ── V2 ACCUMULATE CHEAP + POLL FILLS ─────────────────────────────────
     async def _v2_accumulate_cheap(self, state: AssetState, price: float):
         """Every 3s: post order ladder on both sides. $12 budget per window."""
+        window = state.tracker.current
+        seconds_since_open = time.time() - window.open_ts if window else 0
+        logger.info("v2_accumulate_tick", asset=state.asset, seconds=int(seconds_since_open),
+                    has_position=state.early_position is not None,
+                    cheap_posted=round(state.early_cheap_posted, 2))
         pos = state.early_position
         if not pos or self.settings.mode != "live":
             return
