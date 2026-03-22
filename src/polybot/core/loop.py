@@ -442,17 +442,19 @@ class TradingLoop:
                     await self._early_dca_round(state, price, seconds_since_open, dca_t)
                     break
 
-        # Cancel unfilled DCA/hedge at T+180s
-        if state.early_position and abs(seconds_since_open - 180) < 1.5 and 180 not in state.early_checkpoints_done:
-            await self._early_cancel_unfilled(state)
-
-        # Early entry checkpoints: T+60, T+120, T+180
-        if state.early_position:
-            for cp in (60, 120, 180):
-                if cp not in state.early_checkpoints_done and abs(seconds_since_open - cp) < 1.5:
-                    state.early_checkpoints_done.add(cp)
-                    await self._early_checkpoint(state, price, seconds_since_open, cp)
-                    break
+        # Early entry checkpoints every 15s from T+30 to T+180
+        if state.early_position and seconds_since_open >= 30:
+            # Find which 15s checkpoint we're at
+            cp = int(seconds_since_open // 15) * 15
+            if 30 <= cp <= 180 and cp not in state.early_checkpoints_done:
+                state.early_checkpoints_done.add(cp)
+                await self._early_checkpoint(state, price, seconds_since_open, cp)
+                # Post cheap limits on losing side at T+30
+                if cp == 30:
+                    await self._early_post_cheap_limits(state, price)
+                # Cancel unfilled at T+180
+                if cp >= 180:
+                    await self._early_cancel_unfilled(state)
 
         if not state.late_entry_evaluated and not state.traded_this_window:
             await self._scan_tick(state, price, seconds_since_open)
@@ -1510,6 +1512,50 @@ class TradingLoop:
         except Exception as e:
             logger.warning("early_dca_error", dca_t=dca_t, error=str(e)[:80])
 
+    async def _early_post_cheap_limits(self, state: AssetState, price: float):
+        """At T+30s, post cheap limit orders on the losing side at 10¢/15¢/20¢."""
+        pos = state.early_position
+        if not pos or self.settings.mode != "live":
+            return
+        window = state.tracker.current
+        if not window:
+            return
+
+        total_budget = self.settings.early_entry_max_bet
+        spent = state.early_main_filled + state.early_hedge_filled
+        remaining = total_budget - spent
+        if remaining < 1.00:
+            return
+
+        # Losing side token (opposite of main direction)
+        losing_token = (window.no_token_id if pos["direction_up"] else window.yes_token_id) if window else ""
+        if not losing_token:
+            return
+
+        try:
+            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
+            from py_clob_client.order_builder.constants import BUY
+            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
+
+            # Split remaining across 3 price levels
+            per_level = round(remaining / 3, 2)
+            for limit_price in (0.10, 0.15, 0.20):
+                order_size = min(per_level, remaining)
+                if order_size < 0.50:
+                    break
+                shares = max(round(order_size / limit_price), 5)
+                args = OrderArgs(price=limit_price, size=shares, side=BUY, token_id=losing_token)
+                signed = self.trader.client.create_order(args, options)
+                resp = self.trader.client.post_order(signed, OrderType.GTC)
+                oid = resp.get("orderID", "")
+                if oid:
+                    state.early_dca_orders.append({"order_id": oid, "price": limit_price, "size": order_size, "side": "hedge_cheap"})
+                    remaining -= order_size
+                    logger.info("early_cheap_limit", asset=state.asset, slug=pos["slug"],
+                                price=limit_price, size=order_size, order_id=oid[:16])
+        except Exception as e:
+            logger.warning("early_cheap_limit_error", error=str(e)[:80])
+
     async def _early_cancel_unfilled(self, state: AssetState):
         """Cancel all unfilled DCA and hedge orders at T+180s."""
         cancelled = 0
@@ -1585,16 +1631,28 @@ class TradingLoop:
         hedge_bid = state.orderbook.no_best_bid if pos["direction_up"] else state.orderbook.yes_best_bid
         position_value_pct = ((main_bid - pos["entry_price"]) / pos["entry_price"] * 100) if pos["entry_price"] > 0 else 0
 
+        # Estimate hedge value
+        hedge_value = state.early_hedge_filled * (hedge_bid / 0.25) if hedge_bid and state.early_hedge_filled > 0 else 0
+        main_value = pos["shares"] * main_bid if main_bid else 0
+
         # Decision: sell the LOSING side while it has value
         action = "HOLD"
         sell_target = None  # "main" or "hedge"
-        if position_value_pct > 20:
+        if dir_prob < 0.40:
+            # Model flipped against main → sell main immediately
+            action = "SELL_MAIN"
+            sell_target = "main"
+        elif position_value_pct >= 30:
+            # Main up 30%+ → lock profit by selling hedge
+            action = "SELL_HEDGE"
+            sell_target = "hedge"
+        elif position_value_pct > 20:
             # Main winning → sell hedge (it's losing, recover remaining value)
             action = "SELL_HEDGE"
             sell_target = "hedge"
-        elif position_value_pct < -20 and dir_prob < 0.40:
-            # Main losing + model flipped → sell main (hedge is now the winner)
-            action = "SELL_MAIN"
+        elif position_value_pct < -20 and hedge_value > main_value:
+            # Main losing AND hedge worth more → swap: sell main, keep hedge
+            action = "SELL_MAIN_SWAP"
             sell_target = "main"
 
         logger.info(
@@ -1687,14 +1745,47 @@ class TradingLoop:
             # Try FOK at current bid
             order_args = OrderArgs(price=current_bid, size=shares, side=SELL, token_id=token_id)
             signed = self.trader.client.create_order(order_args, options)
-            resp = self.trader.client.post_order(signed, OrderType.FOK)
-            order_id = resp.get("orderID", "")
+            try:
+                resp = self.trader.client.post_order(signed, OrderType.FOK)
+                order_id = resp.get("orderID", "")
+            except Exception as sell_err:
+                order_id = ""
+                logger.warning("early_sell_fok_exception", slug=pos["slug"], error=str(sell_err))
+
+            if not order_id:
+                # FOK failed — try GTC at bid-1¢ for 3s
+                gtc_price = max(round(current_bid - 0.01, 2), 0.01)
+                try:
+                    gtc_args = OrderArgs(price=gtc_price, size=shares, side=SELL, token_id=token_id)
+                    gtc_signed = self.trader.client.create_order(gtc_args, options)
+                    gtc_resp = self.trader.client.post_order(gtc_signed, OrderType.GTC)
+                    gtc_id = gtc_resp.get("orderID", "")
+                    if gtc_id:
+                        import asyncio as _aio2
+                        for _ in range(3):
+                            await _aio2.sleep(1.0)
+                            try:
+                                st = self.trader.client.get_order(gtc_id).get("status", "")
+                                if st in ("MATCHED", "FILLED"):
+                                    order_id = gtc_id
+                                    current_bid = gtc_price
+                                    break
+                            except Exception:
+                                break
+                        if not order_id:
+                            try:
+                                self.trader.client.cancel(gtc_id)
+                            except Exception:
+                                pass
+                            logger.info("early_sell_gtc_timeout", slug=pos["slug"])
+                except Exception as gtc_err:
+                    logger.warning("early_sell_gtc_error", error=str(gtc_err)[:80])
 
             if order_id:
                 sell_proceeds = shares * current_bid
                 pnl = sell_proceeds - pos["size"]
                 logger.info("early_sell_filled", slug=pos["slug"], reason=reason,
-                            bid=current_bid, pnl=round(pnl, 2))
+                            bid=current_bid, pnl=round(pnl, 2), order_id=order_id[:16])
                 # Log to DynamoDB
                 try:
                     from decimal import Decimal
