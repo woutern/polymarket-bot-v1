@@ -1239,6 +1239,16 @@ HTML = r"""<!DOCTYPE html>
       <div id="pnl-bucket"></div>
     </div>
   </div>
+  <div class="grid grid-2">
+    <div class="card">
+      <div class="card-label">LightGBM Gate (Scenario C)</div>
+      <div id="lgbm-stats"></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Skip Reasons (last 24h)</div>
+      <div id="skip-reasons"></div>
+    </div>
+  </div>
   <div class="section">
     <div class="section-title">P&L by Hour (CET)</div>
     <div class="panel">
@@ -1588,6 +1598,41 @@ async function loadAnalytics() {
       bh += '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f3f4f6"><span>'+lbl+'</span><span class="'+(d.pnl>=0?'green':'red')+'" style="font-weight:700">'+(d.pnl>=0?'+':'')+'\$'+Math.abs(d.pnl).toFixed(2)+' ('+d.n+')</span></div>';
     }
     document.getElementById('pnl-bucket').innerHTML = bh || '<div class="empty">No data</div>';
+
+    // LightGBM stats
+    const lgbmTrades = trades.filter(t => t.resolved && parseFloat(t.model_prob||t.lgbm_prob||0) > 0);
+    const lgbmTraded = lgbmTrades.filter(t => parseFloat(t.model_prob||t.lgbm_prob||0) >= 0.62);
+    const lgbmBlocked = lgbmTrades.filter(t => parseFloat(t.model_prob||t.lgbm_prob||0) < 0.62);
+    let lh = '';
+    if (lgbmTrades.length > 0) {
+      const avgLgbm = lgbmTrades.reduce((s,t) => s + parseFloat(t.model_prob||t.lgbm_prob||0), 0) / lgbmTrades.length;
+      lh += '<div style="padding:6px 0;border-bottom:1px solid #f3f4f6"><span style="font-weight:600">Avg lgbm_prob:</span> ' + avgLgbm.toFixed(3) + '</div>';
+      lh += '<div style="padding:6px 0;border-bottom:1px solid #f3f4f6"><span style="font-weight:600">Gate (>= 0.62):</span> ' + lgbmTraded.length + ' passed</div>';
+      const gateWins = lgbmTraded.filter(t => parseFloat(t.pnl||0) > 0).length;
+      const gateLosses = lgbmTraded.filter(t => parseFloat(t.pnl||0) < 0).length;
+      if (gateWins + gateLosses > 0) {
+        const gateWR = Math.round(gateWins / (gateWins + gateLosses) * 100);
+        lh += '<div style="padding:6px 0;border-bottom:1px solid #f3f4f6"><span style="font-weight:600">Gate WR:</span> <span class="'+(gateWR>=60?'green':'red')+'">'+gateWR+'%</span> ('+gateWins+'W/'+gateLosses+'L)</div>';
+      }
+    } else {
+      lh = '<div class="empty">No lgbm data yet</div>';
+    }
+    document.getElementById('lgbm-stats').innerHTML = lh;
+
+    // Skip reasons (from signals — approximate from trade data)
+    const skipCounts = {};
+    for (const t of (data.trades||[])) {
+      const skip = t.skip_reason || t.rejection_reason || '';
+      if (skip && skip !== 'TRADE') {
+        skipCounts[skip] = (skipCounts[skip]||0) + 1;
+      }
+    }
+    let sh = '';
+    const sortedSkips = Object.entries(skipCounts).sort((a,b) => b[1]-a[1]);
+    for (const [reason, count] of sortedSkips.slice(0, 8)) {
+      sh += '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f3f4f6;font-size:13px"><span>'+reason+'</span><span style="font-weight:600">'+count+'</span></div>';
+    }
+    document.getElementById('skip-reasons').innerHTML = sh || '<div class="empty">No skip data</div>';
 
     // Hourly P&L chart (Amsterdam/CET time)
     function getCETHour(ts) {
