@@ -4,7 +4,7 @@ Algorithmic trading system for Polymarket prediction markets.
 
 **Status:** LIVE on AWS ECS (eu-west-1)
 **Dashboard:** https://d2rj5lnnfnptd.cloudfront.net/
-**Tests:** 538 passing
+**Tests:** 593 passing
 **V2 both-sides:** paused (enable via `EARLY_ENTRY_ENABLED=true`)
 
 ## Three Trading Strategies
@@ -79,7 +79,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete system diagram.
 
 ```bash
 # Local development
-uv run pytest tests/          # 538 tests
+uv run pytest tests/          # 593 tests
 uv run python scripts/run.py  # Start 5min bot
 
 # Deploy to AWS
