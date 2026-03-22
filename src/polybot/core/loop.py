@@ -1185,13 +1185,17 @@ class TradingLoop:
 
     # ── V2 ACCUMULATE CHEAP + POLL FILLS ─────────────────────────────────
     async def _v2_accumulate_cheap(self, state: AssetState, price: float):
-        """Every 3s: post order ladder on BOTH sides. No total cap — runs full 270s."""
+        """Every 3s: post GTC ladders on BOTH sides below current bid.
+        Orders below market sit unfilled (cost $0). Cap is on actual fills
+        tracked by _v2_poll_fills. Budget = early_entry_max_bet per window."""
         pos = state.early_position
         if not pos or self.settings.mode != "live":
             return
         window = state.tracker.current
         if not window:
             return
+
+        max_bet = self.settings.early_entry_max_bet
 
         await self._refresh_orderbook(state)
 
@@ -1202,34 +1206,26 @@ class TradingLoop:
         for side_up, token_id in [(True, window.yes_token_id), (False, window.no_token_id)]:
             if not token_id:
                 continue
-            ask = state.orderbook.yes_best_ask if side_up else state.orderbook.no_best_ask
             bid = state.orderbook.yes_best_bid if side_up else state.orderbook.no_best_bid
-            if not ask or ask <= 0:
+            if not bid or bid <= 0:
                 continue
 
-            # Price ladder: 3-5 levels on cheap side, 1 level on expensive side
-            if ask <= 0.10:
-                levels = [(0.04, 1.0), (0.05, 1.0), (0.06, 1.0), (0.07, 1.0), (0.08, 1.0)]
-            elif ask <= 0.15:
-                levels = [(0.08, 1.0), (0.10, 1.0), (0.12, 1.0)]
-            elif ask <= 0.20:
-                levels = [(0.12, 1.0), (0.15, 1.0), (0.18, 1.0)]
-            elif ask <= 0.25:
-                levels = [(0.18, 1.0), (0.20, 1.0), (0.23, 1.0)]
-            elif ask <= 0.40:
-                if not bid or bid <= 0:
-                    continue
-                levels = [(round(bid + 0.01, 2), 1.0), (round(bid + 0.02, 2), 1.0), (round(bid + 0.03, 2), 1.0)]
+            # Post limit orders AT and BELOW current bid — sit unfilled until market moves to us.
+            # Cheap side (bid ≤ 0.35): deep 5-level ladder spaced 3¢ apart.
+            # Expensive side (bid > 0.35): 3 levels spaced 5¢ apart.
+            if bid <= 0.35:
+                offsets = [0.00, 0.03, 0.05, 0.08, 0.10]
             else:
-                # Expensive side (ask > 0.40): post 1 level at bid+1¢ to maintain exposure
-                if not bid or bid <= 0:
-                    continue
-                post_price = round(bid + 0.01, 2)
-                if post_price <= 0 or post_price >= 1.0:
-                    continue
-                levels = [(post_price, 1.0)]
+                offsets = [0.00, 0.05, 0.10]
 
-            for post_price, size in levels:
+            for offset in offsets:
+                post_price = round(bid - offset, 2)
+                if post_price < 0.01 or post_price > 0.98:
+                    continue
+                size = 1.0
+                # Skip if actual fills have hit the per-window budget
+                if state.early_cheap_filled + size > max_bet:
+                    continue
                 shares = max(round(size / post_price), 5)
                 order_tasks.append(
                     self._post_cheap_order(state, token_id, post_price, shares, size, side_up, options)
@@ -1238,7 +1234,8 @@ class TradingLoop:
         if order_tasks:
             await asyncio.gather(*order_tasks, return_exceptions=True)
             logger.info("v2_accumulate_tick", asset=state.asset,
-                        orders=len(order_tasks), cheap_posted=round(state.early_cheap_posted, 2))
+                        orders=len(order_tasks), filled=round(state.early_cheap_filled, 2),
+                        max_bet=max_bet)
 
     async def _post_cheap_order(self, state: AssetState, token_id: str, post_price: float,
                                 shares: int, size: float, side_up: bool, options) -> None:
@@ -2341,6 +2338,7 @@ class TradingLoop:
         state.early_accum_ticks = set()
         state.early_status_logged = set()
         state.early_cheap_posted = 0.0
+        state.early_cheap_filled = 0.0
         logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
         state.bayesian.reset(price, 0.5)
         try:
@@ -2746,7 +2744,7 @@ class TradingLoop:
         margin = round((1 - combined) * 100, 1) if 0 < combined < 1 else 0
         open_orders = len([o for o in state.early_dca_orders if not o.get("filled")])
         filled_orders = len([o for o in state.early_dca_orders if o.get("filled")])
-        cheap_remaining = round(max(12.0 - state.early_cheap_posted, 0), 2)
+        fill_budget_remaining = round(max(self.settings.early_entry_max_bet - state.early_cheap_filled, 0), 2)
         logger.info(
             "v2_status",
             asset=state.asset,
@@ -2761,7 +2759,7 @@ class TradingLoop:
             margin_pct=margin,
             orders_posted=len(state.early_dca_orders),
             orders_filled=filled_orders,
-            cheap_budget_remaining=cheap_remaining,
+            fill_budget_remaining=fill_budget_remaining,
         )
 
     async def _shadow_tracker_loop(self):
