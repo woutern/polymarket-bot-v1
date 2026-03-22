@@ -1047,17 +1047,20 @@ class TradingLoop:
         }
         lgbm_prob = self.model_server.predict(f"{state.asset}_5m", features)
 
-        # Gates
+        # lgbm_prob = P(UP) always. For DOWN trades, our win prob is (1 - lgbm_prob).
+        directional_prob = lgbm_prob if direction_up else (1 - lgbm_prob)
+
+        # Gates — use directional_prob (our actual win probability)
         skip_reason = ""
-        if lgbm_prob < self.settings.early_entry_lgbm_threshold:
+        if directional_prob < self.settings.early_entry_lgbm_threshold:
             skip_reason = "early_lgbm_low"
         elif current_ask < self.settings.early_entry_min_ask:
             skip_reason = "early_ask_floor"
         elif current_ask > self.settings.early_entry_max_ask:
             skip_reason = "early_ask_ceiling"
 
-        # EV check
-        ev = lgbm_prob * (1 - current_ask) - (1 - lgbm_prob) * current_ask if current_ask > 0 else 0
+        # EV check — use directional_prob (not raw lgbm_prob)
+        ev = directional_prob * (1 - current_ask) - (1 - directional_prob) * current_ask if current_ask > 0 else 0
         if not skip_reason and ev <= 0:
             skip_reason = "early_negative_ev"
 
@@ -1065,7 +1068,9 @@ class TradingLoop:
             "early_entry_eval",
             asset=state.asset, slug=window.slug,
             direction="UP" if direction_up else "DOWN",
-            ask=round(current_ask, 3), lgbm=round(lgbm_prob, 4),
+            ask=round(current_ask, 3),
+            lgbm_raw=round(lgbm_prob, 4),
+            directional_prob=round(directional_prob, 4),
             ev=round(ev, 4), skip=skip_reason or "TRADE",
             seconds=round(seconds_since_open, 1),
         )
@@ -1076,7 +1081,7 @@ class TradingLoop:
             return
 
         # Execute early entry
-        await self._execute_early_entry(state, price, window, direction_up, current_ask, lgbm_prob, ev)
+        await self._execute_early_entry(state, price, window, direction_up, current_ask, directional_prob, ev)
 
     async def _execute_early_entry(self, state, price, window, direction_up, current_ask, lgbm_prob, ev):
         """Place early entry trade (GTC limit with FOK fallback)."""
