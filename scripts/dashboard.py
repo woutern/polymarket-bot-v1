@@ -1939,13 +1939,39 @@ async function loadEarlyEntry() {
 
     // Trade table
     let html = '';
+    const nowMs = Date.now();
     for (const t of (data.trades || [])) {
-      const ts = t.timestamp ? new Date(t.timestamp * 1000).toLocaleString('en-GB', {timeZone: 'Europe/Amsterdam', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false}) : '—';
+      // Time column: "2m ago" + actual timestamp
+      const tradeMs = t.timestamp ? t.timestamp * 1000 : 0;
+      const agoSec = tradeMs ? Math.floor((nowMs - tradeMs) / 1000) : 0;
+      let agoStr = '—';
+      if (agoSec > 0) {
+        if (agoSec < 60) agoStr = agoSec + 's ago';
+        else if (agoSec < 3600) agoStr = Math.floor(agoSec / 60) + 'm ago';
+        else agoStr = Math.floor(agoSec / 3600) + 'h ago';
+      }
+      const tsStr = tradeMs ? new Date(tradeMs).toLocaleString('en-GB', {timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false}) : '';
+
+      // Window liveness: extract open_ts from slug (e.g. early_sol-updown-5m-1774172700)
+      const slugParts = (t.slug || '').split('-');
+      const openTs = parseInt(slugParts[slugParts.length - 1]) || 0;
+      const windowEndMs = openTs ? (openTs + 300) * 1000 : 0;
+      const isLive = !t.resolved && windowEndMs > nowMs;
+
       const pnl = t.pnl || 0;
-      const bg = t.resolved ? (t.won ? '#f0fdf4' : '#fef2f2') : '#fffbeb';
-      const status = t.resolved ? (t.won ? '<span class="badge badge-win">WON</span>' : '<span class="badge badge-loss">LOST</span>') : '<span class="badge badge-pending">OPEN</span>';
+      let bg, status;
+      if (t.resolved) {
+        bg = t.won ? '#f0fdf4' : '#fef2f2';
+        status = t.won ? '<span class="badge badge-win">WON</span>' : '<span class="badge badge-loss">LOST</span>';
+      } else if (isLive) {
+        bg = '#eff6ff';
+        status = '<span class="badge" style="background:#3b82f6;color:#fff">LIVE</span>';
+      } else {
+        bg = '#fffbeb';
+        status = '<span class="badge badge-pending">OPEN</span>';
+      }
       const pnlStr = t.resolved ? '<span class="' + (pnl >= 0 ? 'green' : 'red') + '" style="font-weight:700">' + (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2) + '</span>' : '—';
-      html += '<tr style="background:' + bg + '"><td style="font-size:12px">' + ts + '</td><td>' + t.asset + '</td><td>' + t.side + '</td><td>$' + t.fill_price.toFixed(2) + '</td><td>$' + t.size_usd.toFixed(2) + '</td><td style="font-size:11px">' + (t.entry_type || '—') + '</td><td>' + t.model_prob.toFixed(3) + '</td><td>' + t.ev.toFixed(3) + '</td><td>' + pnlStr + '</td><td>' + status + '</td></tr>';
+      html += '<tr style="background:' + bg + '"><td style="font-size:11px"><b>' + agoStr + '</b><br><span style="color:#94a3b8">' + tsStr + '</span></td><td>' + t.asset + '</td><td>' + t.side + '</td><td>$' + t.fill_price.toFixed(2) + '</td><td>$' + t.size_usd.toFixed(2) + '</td><td style="font-size:11px">' + (t.entry_type || '—') + '</td><td>' + t.model_prob.toFixed(3) + '</td><td>' + t.ev.toFixed(3) + '</td><td>' + pnlStr + '</td><td>' + status + '</td></tr>';
     }
     document.getElementById('ee-tbody').innerHTML = html || '<tr><td colspan="10" class="empty">No early entry trades yet</td></tr>';
 
