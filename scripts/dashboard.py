@@ -1420,6 +1420,14 @@ function renderAssetCard(asset, d) {
     <div class="stat-row"><span class="stat-label">Orders</span><span class="stat-value">${d.open_orders||0} open / ${d.filled_orders||0} filled</span></div>
     <div class="stat-row"><span class="stat-label">Spent</span><span class="stat-value">$${((d.main_filled||0)+(d.hedge_filled||0)+(d.cheap_filled||0)).toFixed(2)}</span></div>
     <div class="stat-row"><span class="stat-label">Orderbook</span><span class="stat-value gray" style="font-size:10px">YES ${(d.yes_bid||0).toFixed(2)}/${(d.yes_ask||0).toFixed(2)} | NO ${(d.no_bid||0).toFixed(2)}/${(d.no_ask||0).toFixed(2)}</span></div>
+    <div class="log">${(d.activity||[]).slice().reverse().map(a => {
+      let cls = 'gray';
+      if (a.includes('BUY') || a.includes('FILL')) cls = 'blue';
+      else if (a.includes('SELL')) cls = 'red';
+      else if (a.includes('PRE-POS')) cls = 'yellow';
+      else if (a.includes('CHECK')) cls = 'gray';
+      return '<div class="log-entry ' + cls + '">' + a + '</div>';
+    }).join('') || '<div class="log-entry gray">No activity yet</div>'}</div>
   </div>`;
 }
 

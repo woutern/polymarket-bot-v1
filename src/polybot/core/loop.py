@@ -100,6 +100,7 @@ class AssetState:
     early_down_shares: float = 0.0
     early_down_cost: float = 0.0
     early_rotate_done: set = field(default_factory=set)  # which 30s intervals posted cheap limits
+    early_activity_log: list = field(default_factory=list)  # last 20 actions for dashboard
 
 
 # ── Binance long/short ratio bias (free, no API key) ─────────────────────────
@@ -477,7 +478,7 @@ class TradingLoop:
                         await self._early_dca_round(state, price, seconds_since_open, dca_t)
                         break
 
-        if not state.late_entry_evaluated and not state.traded_this_window:
+        if not self.settings.early_entry_enabled and not state.late_entry_evaluated and not state.traded_this_window:
             await self._scan_tick(state, price, seconds_since_open)
 
         state.prev_open_ts = current_open_ts
@@ -1123,21 +1124,23 @@ class TradingLoop:
                     continue
                 shares = max(round(sz / post_price), 5)
                 try:
+                    logger.info("v2_preposition_placing", asset=state.asset, side=label,
+                                token=token[:16], price=post_price, shares=shares, sz=sz)
                     args = OrderArgs(price=post_price, size=shares, side=BUY, token_id=token)
                     signed = self.trader.client.create_order(args, options)
+                    logger.info("v2_preposition_signed", asset=state.asset, side=label)
                     resp = self.trader.client.post_order(signed, OrderType.GTC)
+                    logger.info("v2_preposition_response", asset=state.asset, side=label, resp=str(resp)[:120])
                     oid = resp.get("orderID", "")
                     if oid:
                         state.early_dca_orders.append({"order_id": oid, "price": post_price, "size": sz, "side": label})
-                        if label == "main":
-                            state.early_main_filled += sz
-                        else:
-                            state.early_hedge_filled += sz
                         logger.info("v2_preposition_posted", asset=state.asset, slug=early_slug,
                                     side=label, price=post_price, size=sz, order_id=oid[:16],
                                     direction="UP" if direction_up else "DOWN")
+                    else:
+                        logger.warning("v2_preposition_no_order_id", asset=state.asset, side=label, resp=str(resp)[:200])
                 except Exception as e:
-                    logger.warning("v2_preposition_error", side=label, error=str(e)[:80])
+                    logger.warning("v2_preposition_error", side=label, error=str(e)[:200])
 
             # Store position
             state.early_entry_traded = True
@@ -1151,10 +1154,11 @@ class TradingLoop:
                 "side": "YES" if direction_up else "NO",
                 "size": main_size,
             }
-            state.early_main_filled = main_size
             logger.info("v2_preposition_complete", asset=state.asset, slug=early_slug,
                         direction="UP" if direction_up else "DOWN", lgbm=round(lgbm_raw, 3),
                         main=main_size, hedge=hedge_size)
+            dir_str = "UP" if direction_up else "DOWN"
+            self._log_activity(state, f"PRE-POS {dir_str}", f"main=${main_size} hedge=${hedge_size} lgbm={lgbm_raw:.2f}")
 
         except Exception as e:
             logger.warning("v2_preposition_failed", asset=state.asset, error=str(e)[:80])
@@ -1246,6 +1250,7 @@ class TradingLoop:
                         state.early_down_shares += shares
                         state.early_down_cost += sz
                     logger.info("v2_fill_detected", side=side, price=price, size=sz, shares=shares)
+                    self._log_activity(state, f"FILL {side} ${price:.2f}", f"${sz:.2f} ({shares} shares)")
             except Exception:
                 pass
 
@@ -1521,6 +1526,7 @@ class TradingLoop:
                                 entry_type=entry_type, ask=current_ask)
                     self._log_early_trade(state, window, side, current_ask, size, lgbm_prob, ev,
                                           entry_type, limit_price, False, 0, order_id)
+                    self._log_activity(state, f"BUY {side} ${current_ask:.2f}", f"${size:.2f} FOK filled")
                 else:
                     # FOK failed (thin liquidity) — retry with GTC limit at current ask
                     logger.warning("early_entry_fok_failed", resp=str(resp), ask=current_ask)
@@ -2003,6 +2009,7 @@ class TradingLoop:
             lgbm_raw=round(lgbm_raw, 4),
             action=action,
         )
+        self._log_activity(state, f"CHECK val={position_value_pct:+.0f}% prob={dir_prob:.2f}", action)
 
         if sell_target == "main":
             sell_proceeds = await self._early_sell(state, pos, main_bid, action)
@@ -2142,6 +2149,7 @@ class TradingLoop:
                 pnl = sell_proceeds - pos["size"]
                 logger.info("early_sell_filled", slug=pos["slug"], reason=reason,
                             bid=current_bid, pnl=round(pnl, 2), order_id=order_id[:16])
+                self._log_activity(state, f"SELL {pos['side']} ${current_bid:.2f}", f"P&L ${pnl:+.2f} ({reason})")
                 # Log to DynamoDB
                 try:
                     from decimal import Decimal
@@ -2271,6 +2279,7 @@ class TradingLoop:
         state.early_down_shares = 0.0
         state.early_down_cost = 0.0
         state.early_rotate_done = set()
+        state.early_activity_log = []
         logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
         state.bayesian.reset(price, 0.5)
         try:
@@ -2666,6 +2675,17 @@ class TradingLoop:
 
     # 134 lines removed (dead method)
 
+    def _log_activity(self, state: AssetState, action: str, detail: str = ""):
+        """Append action to rolling activity log for dashboard."""
+        window = state.tracker.current
+        secs = int(time.time() - window.open_ts) if window and window.open_ts else 0
+        entry = f"T+{secs}s {action}"
+        if detail:
+            entry += f" {detail}"
+        state.early_activity_log.append(entry)
+        if len(state.early_activity_log) > 20:
+            state.early_activity_log = state.early_activity_log[-20:]
+
     def _write_live_state_async(self, state: AssetState, price: float, seconds_since_open: float):
         """Write current state to DynamoDB for dashboard. Fire-and-forget."""
         try:
@@ -2721,6 +2741,7 @@ class TradingLoop:
                 "hedge_filled": Decimal(str(round(state.early_hedge_filled, 2))),
                 "cheap_filled": Decimal(str(round(state.early_cheap_filled, 2))),
                 "has_position": 1 if pos else 0,
+                "activity": state.early_activity_log[-20:] if state.early_activity_log else [],
             }
 
             # Fire and forget
