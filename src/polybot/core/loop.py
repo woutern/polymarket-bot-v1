@@ -256,6 +256,9 @@ class TradingLoop:
             mode=self.settings.mode,
             bankroll=self.settings.bankroll,
             assets=list(self.asset_states.keys()),
+            early_entry_enabled=self.settings.early_entry_enabled,
+            early_entry_max_ask=self.settings.early_entry_max_ask,
+            early_entry_lgbm=self.settings.early_entry_lgbm_threshold,
         )
 
         await self.db.connect()
