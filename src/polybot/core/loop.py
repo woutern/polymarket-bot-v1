@@ -1129,22 +1129,22 @@ class TradingLoop:
                 state.early_entry_evaluated = True
                 return
 
-            from py_clob_client.clob_types import OrderArgs, OrderType
+            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
             from py_clob_client.order_builder.constants import BUY
-
-            shares = round(size / current_ask)
-            if shares < 5:
-                shares = 5
+            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
 
             if entry_type == "early_maker" and limit_price:
-                # GTC limit order
+                # GTC limit order — shares based on limit_price
+                shares = round(size / limit_price)
+                if shares < 5:
+                    shares = 5
                 order_args = OrderArgs(
                     price=limit_price,
                     size=shares,
                     side=BUY,
                     token_id=token_id,
                 )
-                signed = self.trader.client.create_order(order_args)
+                signed = self.trader.client.create_order(order_args, options)
                 resp = self.trader.client.post_order(signed, OrderType.GTC)
                 order_id = resp.get("orderID", "")
 
@@ -1191,15 +1191,18 @@ class TradingLoop:
                         entry_type = "early_taker_fallback"
                         logger.info("early_entry_gtc_timeout", slug=early_slug, wait_ms=wait_ms)
 
-            # FOK execution (taker or fallback)
+            # FOK execution (taker or fallback) — shares based on current_ask
             if entry_type in ("early_taker", "early_taker_fallback"):
+                shares = round(size / current_ask)
+                if shares < 5:
+                    shares = 5
                 order_args = OrderArgs(
                     price=current_ask,
                     size=shares,
                     side=BUY,
                     token_id=token_id,
                 )
-                signed = self.trader.client.create_order(order_args)
+                signed = self.trader.client.create_order(order_args, options)
                 resp = self.trader.client.post_order(signed, OrderType.FOK)
                 order_id = resp.get("orderID", "")
 
