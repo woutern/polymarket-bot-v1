@@ -840,10 +840,11 @@ class TestEarlyEntry:
         assert s.early_entry_hedge_pct == 0.17
 
     def test_early_entry_method_exists(self):
-        """TradingLoop must have _early_entry_tick method."""
+        """TradingLoop must have V2 both-sides methods."""
         from polybot.core.loop import TradingLoop
-        assert hasattr(TradingLoop, '_early_entry_tick')
-        assert hasattr(TradingLoop, '_execute_early_entry')
+        assert hasattr(TradingLoop, '_v2_open_position')
+        assert hasattr(TradingLoop, '_v2_confirm')
+        assert hasattr(TradingLoop, '_v2_accumulate_cheap')
 
     def test_early_entry_wired_in_tick(self):
         """_tick_asset must call V2 preposition + accumulation when enabled."""
@@ -855,56 +856,51 @@ class TestEarlyEntry:
         assert "early_accum_ticks" in source
 
     def test_early_entry_fires_on_lgbm_above_gate(self):
-        """Early entry should fire when lgbm >= 0.62 and ask <= 0.55."""
+        """V2 open position uses LGBM to determine direction."""
         from polybot.core.loop import TradingLoop
         import inspect
-        source = inspect.getsource(TradingLoop._early_entry_tick)
-        assert "early_entry_lgbm_threshold" in source
-        assert "early_entry_max_ask" in source
-        assert "early_entry_min_ask" in source
+        source = inspect.getsource(TradingLoop._v2_open_position)
+        assert "model_server" in source
+        assert "direction_up" in source
 
     def test_early_entry_skips_when_lgbm_low(self):
-        """Early entry must skip when lgbm < threshold."""
+        """V2 confirm uses LGBM re-run to flip/confirm direction."""
         from polybot.core.loop import TradingLoop
         import inspect
-        source = inspect.getsource(TradingLoop._early_entry_tick)
-        assert "early_lgbm_low" in source
+        source = inspect.getsource(TradingLoop._v2_confirm)
+        assert "model_server" in source
+        assert "direction_up" in source
 
     def test_early_entry_skips_when_ask_high(self):
-        """Early entry must skip when ask > max_ask."""
+        """V2 accumulate cheap uses fill-based budget cap per asset."""
         from polybot.core.loop import TradingLoop
         import inspect
-        source = inspect.getsource(TradingLoop._early_entry_tick)
-        assert "early_ask_ceiling" in source
+        source = inspect.getsource(TradingLoop._v2_accumulate_cheap)
+        assert "early_cheap_filled" in source
+        assert "max_bet_per_asset" in source
 
     def test_independent_dedup(self):
-        """Early entry uses 'early_' prefix for dedup — no collision with Scenario C."""
+        """V2 open position uses early_entry_traded dedup flag."""
         from polybot.core.loop import TradingLoop
         import inspect
-        source = inspect.getsource(TradingLoop._early_entry_tick)
-        assert "early_" in source
-        # Scenario C dedup doesn't use "early_" prefix
-        scan_source = inspect.getsource(TradingLoop._execute_scan_entry)
-        assert "early_" not in scan_source
+        source = inspect.getsource(TradingLoop._v2_open_position)
+        assert "early_entry_traded" in source
 
     def test_size_from_config(self):
-        """Early entry size comes from config (no hardcoded override)."""
+        """V2 per-asset budget is derived from early_entry_max_bet / num_assets."""
         from polybot.core.loop import TradingLoop
         import inspect
-        source = inspect.getsource(TradingLoop._execute_early_entry)
+        source = inspect.getsource(TradingLoop._v2_open_position)
         assert "early_entry_max_bet" in source
-        assert "min(" not in source.split("early_entry_max_bet")[0].split("\n")[-1]  # no min() wrapping it
+        assert "num_5m_assets" in source
 
     def test_limit_order_with_fallback(self):
-        """Early entry supports GTC limit with FOK fallback."""
+        """V2 open position posts two GTC orders (main + hedge)."""
         from polybot.core.loop import TradingLoop
         import inspect
-        source = inspect.getsource(TradingLoop._execute_early_entry)
-        assert "early_maker" in source
-        assert "early_taker_fallback" in source
-        assert "early_taker" in source
+        source = inspect.getsource(TradingLoop._v2_open_position)
         assert "GTC" in source
-        assert "FOK" in source
+        assert "hedge" in source.lower()
 
     def test_early_entry_state_reset_on_window_open(self):
         """early_entry_evaluated and early_entry_traded reset on new window."""

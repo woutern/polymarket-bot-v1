@@ -105,6 +105,7 @@ class AssetState:
     early_status_logged: set = field(default_factory=set)  # which 15s intervals logged status
     early_cheap_posted: float = 0.0   # total USD posted for cheap accumulation (budget cap)
     early_cheap_filled: float = 0.0   # total USD actually filled (fill-based budget cap)
+    early_confirm_done: bool = False  # Phase 2 T+15s confirm fired for this window
 
 
 # ── Binance long/short ratio bias (free, no API key) ─────────────────────────
@@ -474,7 +475,12 @@ class TradingLoop:
             # Cutoff: cancel unfilled + stop trading. 270s for 5m, 3540s for 1h.
             cutoff = win_secs - 30
 
-            # PHASE 2: Accumulate cheap every 3s from T+0 to cutoff
+            # PHASE 2: Confirm direction at T+15-20s (once per window)
+            if state.early_position and 15 <= seconds_since_open <= 20 and not state.early_confirm_done:
+                state.early_confirm_done = True
+                await self._v2_confirm(state, price)
+
+            # PHASE 3: Accumulate every 3s from T+0 to T+cutoff + poll fills
             if state.early_position and 0 <= seconds_since_open <= cutoff:
                 tick_3s = int(seconds_since_open // 3)
                 if tick_3s not in state.early_accum_ticks:
@@ -482,10 +488,10 @@ class TradingLoop:
                     await self._v2_accumulate_cheap(state, price)
                     await self._v2_poll_fills(state)
 
-            # PHASE 3: Stop-loss checkpoints every 15s (ONLY for expensive entries >40¢)
-            if state.early_position and 0 < seconds_since_open < cutoff:
+            # PHASE 4: Hard stop — expensive entries only, T+30 to T+240, down 25%+
+            if state.early_position and 30 <= seconds_since_open <= 240:
                 cp15 = int(seconds_since_open // 15) * 15
-                if 15 <= cp15 < cutoff and cp15 not in state.early_checkpoints_done:
+                if 30 <= cp15 <= 240 and cp15 not in state.early_checkpoints_done:
                     state.early_checkpoints_done.add(cp15)
                     await self._early_checkpoint(state, price, seconds_since_open, cp15)
 
@@ -1121,8 +1127,11 @@ class TradingLoop:
         hedge_token = window.no_token_id if direction_up else window.yes_token_id
         main_bid = state.orderbook.yes_best_bid if direction_up else state.orderbook.no_best_bid
         hedge_bid = state.orderbook.no_best_bid if direction_up else state.orderbook.yes_best_bid
-        main_size = 6.0
-        hedge_size = 3.0
+        # Budget: EARLY_ENTRY_MAX_BET / number of active 5m assets
+        num_5m_assets = len([k for k in self.asset_states if "_1h" not in k])
+        per_asset = self.settings.early_entry_max_bet / max(num_5m_assets, 1)
+        main_size = round(per_asset * 0.60, 2)   # 60% of per-asset budget ($3 at $5)
+        hedge_size = round(per_asset * 0.40, 2)  # 40% of per-asset budget ($2 at $5)
 
         logger.info("v2_open_orderbook", asset=state.asset,
                     direction="UP" if direction_up else "DOWN",
@@ -1180,15 +1189,114 @@ class TradingLoop:
         }
         logger.info("v2_open_complete", asset=state.asset, slug=early_slug,
                     direction="UP" if direction_up else "DOWN", lgbm=round(lgbm_raw, 3),
-                    main=main_size, hedge=hedge_size)
+                    main=main_size, hedge=hedge_size, per_asset=per_asset)
         self._log_activity(state, f"OPEN {'UP' if direction_up else 'DOWN'}",
                            f"main=${main_size} hedge=${hedge_size} lgbm={lgbm_raw:.2f}")
+
+    async def _v2_confirm(self, state: AssetState, price: float):
+        """Phase 2: Re-run LGBM at T+15s with early price data.
+
+        If direction confirmed: post 20% of per-asset budget more on main.
+        If direction flipped: swap main/hedge labels so accumulation targets the right side.
+        Skip if seconds_since_open > 20 (already handled by caller gate).
+        """
+        if self.settings.mode != "live":
+            return
+        pos = state.early_position
+        if not pos:
+            return
+        window = state.tracker.current
+        if not window or not window.open_price:
+            return
+
+        import math as _math
+        from datetime import datetime as _dt, timezone as _tz
+        _now = _dt.now(_tz.utc)
+        pct_move = ((price - window.open_price) / window.open_price * 100) if window.open_price > 0 else 0
+        vol = compute_realized_vol(list(state.price_history))
+        vol_ma = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol
+        features = {
+            "move_pct_15s": pct_move, "realized_vol_5m": vol,
+            "vol_ratio": vol / vol_ma if vol_ma > 0 else 1.0,
+            "body_ratio": abs(pct_move) / 0.1 if pct_move != 0 else 0.5,
+            "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price
+                and state.prev_window.open_price
+                and state.prev_window.close_price >= state.prev_window.open_price else -1)
+                if state.prev_window else 0,
+            "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price)
+                / state.prev_window.open_price * 100) if state.prev_window
+                and state.prev_window.open_price and state.prev_window.close_price else 0,
+            "hour_sin": _math.sin(2 * _math.pi * _now.hour / 24),
+            "hour_cos": _math.cos(2 * _math.pi * _now.hour / 24),
+            "dow_sin": _math.sin(2 * _math.pi * _now.weekday() / 7),
+            "dow_cos": _math.cos(2 * _math.pi * _now.weekday() / 7),
+            "signal_move_pct": abs(pct_move), "signal_ask_price": pos["entry_price"],
+            "signal_seconds": 15, "signal_ev": 0,
+        }
+        try:
+            lgbm_raw = self.model_server.predict(f"{state.asset}_5m", features)
+        except Exception as model_err:
+            logger.info("v2_confirm_model_fallback", asset=state.asset, error=str(model_err)[:60])
+            lgbm_raw = 0.50
+
+        confirm_direction_up = lgbm_raw >= 0.50
+        was_direction_up = pos["direction_up"]
+
+        if confirm_direction_up != was_direction_up:
+            # Direction flipped — swap main/hedge so accumulation targets winning side
+            pos["direction_up"] = confirm_direction_up
+            pos["token_id"], pos["hedge_token"] = pos["hedge_token"], pos["token_id"]
+            pos["entry_price"], pos["hedge_entry_price"] = pos["hedge_entry_price"], pos["entry_price"]
+            pos["side"] = "YES" if confirm_direction_up else "NO"
+            logger.info("v2_confirm_flip", asset=state.asset, slug=pos["slug"],
+                        new_direction="UP" if confirm_direction_up else "DOWN",
+                        lgbm=round(lgbm_raw, 3), pct_move=round(pct_move, 3))
+            self._log_activity(state, "CONFIRM FLIP",
+                               f"{'UP' if confirm_direction_up else 'DOWN'} lgbm={lgbm_raw:.2f}")
+            return
+
+        # Direction confirmed — post 20% more on main side
+        await self._refresh_orderbook(state)
+        main_bid = state.orderbook.yes_best_bid if confirm_direction_up else state.orderbook.no_best_bid
+        if not main_bid or main_bid <= 0:
+            return
+        num_5m_assets = len([k for k in self.asset_states if "_1h" not in k])
+        per_asset = self.settings.early_entry_max_bet / max(num_5m_assets, 1)
+        confirm_size = round(per_asset * 0.20, 2)  # $1 at $5/asset
+        post_price = round(main_bid + 0.01, 2)
+        if post_price <= 0 or post_price >= 1.0:
+            return
+        shares = max(round(confirm_size / post_price), 5)
+        try:
+            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
+            from py_clob_client.order_builder.constants import BUY
+            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
+            args = OrderArgs(price=post_price, size=shares, side=BUY, token_id=pos["token_id"])
+            signed = self.trader.client.create_order(args, options)
+            resp = self.trader.client.post_order(signed, OrderType.GTC)
+            oid = resp.get("orderID", "")
+            if oid:
+                state.early_dca_orders.append({"order_id": oid, "price": post_price,
+                                                "size": confirm_size, "side": "main"})
+                logger.info("v2_confirm_posted", asset=state.asset, slug=pos["slug"],
+                            price=post_price, size=confirm_size, order_id=oid[:16],
+                            lgbm=round(lgbm_raw, 3), pct_move=round(pct_move, 3))
+                self._log_activity(state, "CONFIRM +main",
+                                   f"${confirm_size} lgbm={lgbm_raw:.2f} move={pct_move:+.3f}%")
+            else:
+                logger.warning("v2_confirm_no_order_id", asset=state.asset, resp=str(resp)[:200])
+        except Exception as e:
+            logger.warning("v2_confirm_error", asset=state.asset, error=str(e)[:200])
 
     # ── V2 ACCUMULATE CHEAP + POLL FILLS ─────────────────────────────────
     async def _v2_accumulate_cheap(self, state: AssetState, price: float):
         """Every 3s: post GTC ladders on BOTH sides below current bid.
-        Orders below market sit unfilled (cost $0). Cap is on actual fills
-        tracked by _v2_poll_fills. Budget = early_entry_max_bet per window."""
+
+        K9 strategy: tighter 1¢ steps, $0.50/level, capped per-asset budget.
+        Cheap side (bid ≤ 0.35): 5 levels at bid, -1¢, -2¢, -4¢, -6¢
+        Expensive side (bid > 0.35): 3 levels at bid, -3¢, -6¢
+        Orders sit in book unfilled (cost $0). Cap is on actual fills only.
+        """
         pos = state.early_position
         if not pos or self.settings.mode != "live":
             return
@@ -1196,7 +1304,8 @@ class TradingLoop:
         if not window:
             return
 
-        max_bet = self.settings.early_entry_max_bet
+        num_5m_assets = len([k for k in self.asset_states if "_1h" not in k])
+        max_bet_per_asset = self.settings.early_entry_max_bet / max(num_5m_assets, 1)
 
         await self._refresh_orderbook(state)
 
@@ -1211,21 +1320,19 @@ class TradingLoop:
             if not bid or bid <= 0:
                 continue
 
-            # Post limit orders AT and BELOW current bid — sit unfilled until market moves to us.
-            # Cheap side (bid ≤ 0.35): deep 5-level ladder spaced 3¢ apart.
-            # Expensive side (bid > 0.35): 3 levels spaced 5¢ apart.
+            # K9 ladder: tighter spacing, smaller sizes per level
             if bid <= 0.35:
-                offsets = [0.00, 0.03, 0.05, 0.08, 0.10]
+                offsets = [0.00, 0.01, 0.02, 0.04, 0.06]
             else:
-                offsets = [0.00, 0.05, 0.10]
+                offsets = [0.00, 0.03, 0.06]
 
             for offset in offsets:
                 post_price = round(bid - offset, 2)
                 if post_price < 0.01 or post_price > 0.98:
                     continue
-                size = 1.0
-                # Skip if actual fills have hit the per-window budget
-                if state.early_cheap_filled + size > max_bet:
+                size = 0.50
+                # Skip if actual fills have hit the per-asset budget
+                if state.early_cheap_filled + size > max_bet_per_asset:
                     continue
                 shares = max(round(size / post_price), 5)
                 order_tasks.append(
@@ -1236,7 +1343,7 @@ class TradingLoop:
             await asyncio.gather(*order_tasks, return_exceptions=True)
             logger.info("v2_accumulate_tick", asset=state.asset,
                         orders=len(order_tasks), filled=round(state.early_cheap_filled, 2),
-                        max_bet=max_bet)
+                        max_bet=max_bet_per_asset)
 
     async def _post_cheap_order(self, state: AssetState, token_id: str, post_price: float,
                                 shares: int, size: float, side_up: bool, options) -> None:
@@ -1298,365 +1405,6 @@ class TradingLoop:
                     self._log_activity(state, f"FILL {side} ${price:.2f}", f"${sz:.2f} ({shares} shares)")
             except Exception as e:
                 logger.info("v2_poll_error", asset=state.asset, oid=oid[:16], error=str(e)[:80])
-
-    # ── EARLY ENTRY (T+14-18s, independent strategy) ────────────────────────
-    async def _early_entry_tick(self, state: AssetState, price: float, seconds_since_open: float):
-        """Check early entry conditions at T+14-18s. Independent from Scenario C."""
-        window = state.tracker.current
-        if not window or not window.open_price:
-            return
-
-        # Mark evaluated at T+18s deadline
-        if seconds_since_open >= 18:
-            state.early_entry_evaluated = True
-
-        # Already traded this window via early entry
-        if state.early_entry_traded:
-            state.early_entry_evaluated = True
-            return
-
-        # Dedup: check if already early-traded this slug
-        early_slug = f"early_{window.slug}"
-        if hasattr(self, '_early_traded_slugs') and early_slug in self._early_traded_slugs:
-            state.early_entry_evaluated = True
-            return
-
-        # Refresh orderbook
-        await self._refresh_orderbook(state)
-        yes_ask = state.orderbook.yes_best_ask or 0
-        no_ask = state.orderbook.no_best_ask or 0
-
-        # Direction from price move
-        pct_move = ((price - window.open_price) / window.open_price * 100) if window.open_price > 0 else 0
-        direction_up = pct_move >= 0
-        current_ask = yes_ask if direction_up else no_ask
-
-        # LightGBM prediction
-        import math as _math
-        from datetime import datetime as _dt2, timezone as _tz2
-        _now_utc = _dt2.now(_tz2.utc)
-        vol = compute_realized_vol(list(state.price_history))
-        vol_ma = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol
-        vol_ratio = vol / vol_ma if vol_ma > 0 else 1.0
-        hl_range = state.window_high - state.window_low
-        body = abs(price - window.open_price)
-        body_ratio = body / hl_range if hl_range > 0 else 0.5
-        features = {
-            "move_pct_15s": pct_move,
-            "realized_vol_5m": vol,
-            "vol_ratio": vol_ratio,
-            "body_ratio": body_ratio,
-            "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price
-                and state.prev_window.open_price and state.prev_window.close_price >= state.prev_window.open_price else -1)
-                if state.prev_window else 0,
-            "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price)
-                / state.prev_window.open_price * 100) if state.prev_window and state.prev_window.open_price
-                and state.prev_window.close_price else 0,
-            "hour_sin": _math.sin(2 * _math.pi * _now_utc.hour / 24),
-            "hour_cos": _math.cos(2 * _math.pi * _now_utc.hour / 24),
-            "dow_sin": _math.sin(2 * _math.pi * _now_utc.weekday() / 7),
-            "dow_cos": _math.cos(2 * _math.pi * _now_utc.weekday() / 7),
-            "signal_move_pct": abs(pct_move),
-            "signal_ask_price": current_ask,
-            "signal_seconds": seconds_since_open,
-            "signal_ev": 0,
-        }
-        lgbm_prob = self.model_server.predict(f"{state.asset}_5m", features)
-
-        # lgbm_prob = P(UP) always. For DOWN trades, our win prob is (1 - lgbm_prob).
-        directional_prob = lgbm_prob if direction_up else (1 - lgbm_prob)
-
-        # Gates — use directional_prob (our actual win probability)
-        skip_reason = ""
-        if directional_prob < self.settings.early_entry_lgbm_threshold:
-            skip_reason = "early_lgbm_low"
-        elif current_ask < self.settings.early_entry_min_ask:
-            skip_reason = "early_ask_floor"
-        elif current_ask > self.settings.early_entry_max_ask:
-            skip_reason = "early_ask_ceiling"
-
-        # EV check — use directional_prob (not raw lgbm_prob)
-        ev = directional_prob * (1 - current_ask) - (1 - directional_prob) * current_ask if current_ask > 0 else 0
-        if not skip_reason and ev <= 0:
-            skip_reason = "early_negative_ev"
-
-        logger.info(
-            "early_entry_eval",
-            asset=state.asset, slug=window.slug,
-            direction="UP" if direction_up else "DOWN",
-            ask=round(current_ask, 3),
-            lgbm_raw=round(lgbm_prob, 4),
-            directional_prob=round(directional_prob, 4),
-            ev=round(ev, 4), skip=skip_reason or "TRADE",
-            seconds=round(seconds_since_open, 1),
-        )
-
-        # Log to training_data for model learning (every eval, not just trades)
-        if not hasattr(state, '_early_logged_slug') or state._early_logged_slug != window.slug:
-            state._early_logged_slug = window.slug
-            try:
-                self.dynamo.put_training_data({
-                    "window_id": f"early_{state.asset}_5m_{window.slug}",
-                    "slug": f"early_{window.slug}",
-                    "asset": state.asset, "timeframe": "5m",
-                    "timestamp": time.time(),
-                    "entry_seconds": seconds_since_open,
-                    "source": "early_entry",
-                    "direction": "up" if direction_up else "down",
-                    "signal_ask_price": current_ask,
-                    "lgbm_prob_raw": lgbm_prob,
-                    "directional_prob": directional_prob,
-                    "ev": ev,
-                    "skip_reason": skip_reason or "TRADE",
-                    **features,
-                })
-            except Exception:
-                pass
-
-        if skip_reason:
-            if seconds_since_open >= 18:
-                state.early_entry_evaluated = True
-            return
-
-        # Execute early entry
-        await self._execute_early_entry(state, price, window, direction_up, current_ask, directional_prob, ev)
-
-    async def _execute_early_entry(self, state, price, window, direction_up, current_ask, lgbm_prob, ev):
-        """Place early entry trade (GTC limit with FOK fallback)."""
-        early_slug = f"early_{window.slug}"
-
-        # Dedup
-        if not hasattr(self, '_early_traded_slugs'):
-            self._early_traded_slugs = set()
-        if early_slug in self._early_traded_slugs:
-            return
-        self._early_traded_slugs.add(early_slug)
-
-        # DCA T+15s: initial buy = main_pct × dca_t1_pct of total budget
-        total_budget = self.settings.early_entry_max_bet
-        main_budget = round(total_budget * self.settings.early_entry_main_pct, 2)
-        size = round(main_budget * self.settings.early_entry_dca_t1_pct, 2)
-        # Hard ceiling check
-        spent = state.early_main_filled + state.early_hedge_filled
-        if spent + size > total_budget:
-            size = round(total_budget - spent, 2)
-        if size < 0.50:
-            return
-
-        side = "YES" if direction_up else "NO"
-        yes_id = window.yes_token_id if window else ""
-        no_id = window.no_token_id if window else ""
-        token_id = yes_id if direction_up else no_id
-
-        if not token_id:
-            logger.warning("early_entry_no_token", asset=state.asset, side=side)
-            return
-
-        # Determine execution method
-        entry_type = "early_taker"
-        limit_price = None
-
-        if self.settings.early_entry_use_limit:
-            # GTC limit at best_bid + offset
-            best_bid = state.orderbook.yes_best_bid if direction_up else state.orderbook.no_best_bid
-            if best_bid and best_bid > 0:
-                limit_price = round(best_bid + self.settings.early_entry_limit_offset, 2)
-                if limit_price < current_ask:
-                    entry_type = "early_maker"
-                else:
-                    # Limit would cross the spread — just FOK
-                    limit_price = None
-                    entry_type = "early_taker"
-
-        logger.info(
-            "early_entry_execute",
-            asset=state.asset, slug=window.slug, side=side,
-            ask=round(current_ask, 3), size=size, entry_type=entry_type,
-            limit_price=round(limit_price, 2) if limit_price else None,
-            lgbm=round(lgbm_prob, 4), ev=round(ev, 4),
-        )
-
-        # Execute via live trader
-        try:
-            if self.settings.mode != "live":
-                logger.info("early_entry_paper", asset=state.asset, slug=early_slug)
-                state.early_entry_traded = True
-                state.early_entry_evaluated = True
-                return
-
-            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
-            from py_clob_client.order_builder.constants import BUY
-            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
-
-            if entry_type == "early_maker" and limit_price:
-                # GTC limit order — shares based on limit_price
-                shares = round(size / limit_price)
-                if shares < 5:
-                    shares = 5
-                order_args = OrderArgs(
-                    price=limit_price,
-                    size=shares,
-                    side=BUY,
-                    token_id=token_id,
-                )
-                signed = self.trader.client.create_order(order_args, options)
-                resp = self.trader.client.post_order(signed, OrderType.GTC)
-                order_id = resp.get("orderID", "")
-
-                if not order_id:
-                    logger.warning("early_entry_gtc_failed", resp=str(resp)[:80])
-                    # Fallback to FOK
-                    entry_type = "early_taker_fallback"
-                else:
-                    # Poll for fill
-                    import asyncio
-                    filled = False
-                    wait_ms = 0
-                    poll_interval = 1.0
-                    max_wait = self.settings.early_entry_limit_wait_seconds
-
-                    while wait_ms < max_wait * 1000:
-                        await asyncio.sleep(poll_interval)
-                        wait_ms += poll_interval * 1000
-                        try:
-                            order_status = self.trader.client.get_order(order_id)
-                            status = order_status.get("status", "")
-                            if status in ("MATCHED", "FILLED"):
-                                filled = True
-                                break
-                            elif status in ("CANCELLED", "EXPIRED"):
-                                break
-                        except Exception:
-                            break
-
-                    if filled:
-                        logger.info("early_entry_filled", asset=state.asset, slug=early_slug,
-                                    entry_type="early_maker", limit_price=limit_price, wait_ms=wait_ms)
-                        self._log_early_trade(state, window, side, limit_price, size, lgbm_prob, ev,
-                                              "early_maker", limit_price, True, wait_ms, order_id)
-                        state.early_entry_traded = True
-                        state.early_entry_evaluated = True
-                        return
-                    else:
-                        # Cancel and fallback
-                        try:
-                            self.trader.client.cancel(order_id)
-                        except Exception:
-                            pass
-                        entry_type = "early_taker_fallback"
-                        logger.info("early_entry_gtc_timeout", slug=early_slug, wait_ms=wait_ms)
-
-            # FOK execution (taker or fallback) — shares based on current_ask
-            if entry_type in ("early_taker", "early_taker_fallback"):
-                shares = round(size / current_ask)
-                if shares < 5:
-                    shares = 5
-                order_args = OrderArgs(
-                    price=current_ask,
-                    size=shares,
-                    side=BUY,
-                    token_id=token_id,
-                )
-                signed = self.trader.client.create_order(order_args, options)
-                try:
-                    resp = self.trader.client.post_order(signed, OrderType.FOK)
-                    order_id = resp.get("orderID", "")
-                except Exception as fok_err:
-                    order_id = ""
-                    resp = {}
-                    logger.warning("early_entry_fok_exception", asset=state.asset, error=str(fok_err))
-
-                if order_id:
-                    logger.info("early_entry_fok_filled", asset=state.asset, slug=early_slug,
-                                entry_type=entry_type, ask=current_ask)
-                    self._log_early_trade(state, window, side, current_ask, size, lgbm_prob, ev,
-                                          entry_type, limit_price, False, 0, order_id)
-                    self._log_activity(state, f"BUY {side} ${current_ask:.2f}", f"${size:.2f} FOK filled")
-                else:
-                    # FOK failed (thin liquidity) — retry with GTC limit at current ask
-                    logger.warning("early_entry_fok_failed", resp=str(resp), ask=current_ask)
-                    try:
-                        gtc_args = OrderArgs(price=current_ask, size=shares, side=BUY, token_id=token_id)
-                        gtc_signed = self.trader.client.create_order(gtc_args, options)
-                        gtc_resp = self.trader.client.post_order(gtc_signed, OrderType.GTC)
-                        gtc_id = gtc_resp.get("orderID", "")
-                        if gtc_id:
-                            import asyncio as _aio
-                            filled = False
-                            wait_ms = 0
-                            while wait_ms < 8000:
-                                await _aio.sleep(1.0)
-                                wait_ms += 1000
-                                try:
-                                    status = self.trader.client.get_order(gtc_id).get("status", "")
-                                    if status in ("MATCHED", "FILLED"):
-                                        filled = True
-                                        break
-                                    elif status in ("CANCELLED", "EXPIRED"):
-                                        break
-                                except Exception:
-                                    break
-                            if filled:
-                                logger.info("early_entry_gtc_retry_filled", slug=early_slug, ask=current_ask, wait_ms=wait_ms)
-                                self._log_early_trade(state, window, side, current_ask, size, lgbm_prob, ev,
-                                                      "early_maker_retry", current_ask, True, wait_ms, gtc_id)
-                            else:
-                                try:
-                                    self.trader.client.cancel(gtc_id)
-                                except Exception:
-                                    pass
-                                logger.info("early_entry_gtc_retry_timeout", slug=early_slug, wait_ms=wait_ms)
-                    except Exception as gtc_e:
-                        logger.warning("early_entry_gtc_retry_failed", error=str(gtc_e))
-
-        except Exception as e:
-            logger.error("early_entry_error", asset=state.asset, error=str(e))
-
-        state.early_entry_traded = True
-        state.early_entry_evaluated = True
-
-        # Store position for checkpoint monitoring (only if a fill happened)
-        if not state.early_position and state.early_entry_traded:
-            _shares_filled = round(size / current_ask) if current_ask > 0 else 5
-            state.early_position = {
-                "slug": early_slug,
-                "token_id": token_id,
-                "shares": max(_shares_filled, 5),
-                "entry_price": current_ask,
-                "direction_up": direction_up,
-                "side": side,
-                "size": size,
-            }
-            state.early_main_filled = size
-            state.early_dca_done.add(15)
-            logger.info("early_position_opened", asset=state.asset, slug=early_slug,
-                        entry_price=current_ask, shares=state.early_position["shares"],
-                        main_filled=size, budget_remaining=round(main_budget - size, 2))
-
-            # Post hedge order on opposite side
-            try:
-                hedge_budget = round(total_budget * self.settings.early_entry_hedge_pct, 2)
-                # Hard ceiling: don't exceed total budget
-                hedge_budget = min(hedge_budget, round(total_budget - state.early_main_filled, 2))
-                hedge_token = (window.no_token_id if direction_up else window.yes_token_id) if window else ""
-                hedge_bid = state.orderbook.no_best_bid if direction_up else state.orderbook.yes_best_bid
-                hedge_price = round(hedge_bid + 0.01, 2) if hedge_bid else 0
-                # Only hedge if cheap (< 30¢) — above that it's too expensive
-                if hedge_token and hedge_bid and hedge_price <= 0.45 and hedge_budget >= 0.50 and self.settings.mode == "live":
-                    from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
-                    from py_clob_client.order_builder.constants import BUY
-                    options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
-                    hedge_shares = max(round(hedge_budget / hedge_price), 5)
-                    hedge_args = OrderArgs(price=hedge_price, size=hedge_shares, side=BUY, token_id=hedge_token)
-                    hedge_signed = self.trader.client.create_order(hedge_args, options)
-                    hedge_resp = self.trader.client.post_order(hedge_signed, OrderType.GTC)
-                    state.early_hedge_order_id = hedge_resp.get("orderID", "")
-                    hedge_side = "NO" if direction_up else "YES"
-                    logger.info("early_hedge_posted", asset=state.asset, slug=early_slug,
-                                side=hedge_side, price=hedge_price, size=hedge_budget,
-                                order_id=state.early_hedge_order_id or "failed")
-            except Exception as he:
-                logger.warning("early_hedge_failed", error=str(he)[:80])
 
     async def _verify_early_polymarket(self, early_slug: str, market_slug: str, delay: int):
         """Verify early entry trades against Polymarket oracle after delay."""
@@ -1756,110 +1504,6 @@ class TradingLoop:
         except Exception as e:
             logger.warning("early_resolve_failed", slug=window_slug, error=str(e)[:80])
 
-    # ── EARLY DCA ROUNDS (T+45s, T+90s) ──────────────────────────────────────
-    async def _early_dca_round(self, state: AssetState, price: float, seconds_since_open: float, dca_t: int):
-        """Post additional limit order on main side at current bid."""
-        pos = state.early_position
-        if not pos or self.settings.mode != "live":
-            return
-
-        window = state.tracker.current
-        if not window:
-            return
-
-        total_budget = self.settings.early_entry_max_bet
-        main_budget = total_budget * self.settings.early_entry_main_pct
-        remaining = main_budget - state.early_main_filled
-        if remaining < 0.50:
-            return  # Already filled enough
-
-        # DCA allocation
-        if dca_t == 45:
-            dca_size = round(main_budget * self.settings.early_entry_dca_t2_pct, 2)
-        else:  # 90
-            dca_size = round(main_budget * self.settings.early_entry_dca_t3_pct, 2)
-        dca_size = min(dca_size, remaining)
-        # Hard ceiling: total spent must not exceed max_bet
-        total_spent = state.early_main_filled + state.early_hedge_filled
-        dca_size = min(dca_size, round(total_budget - total_spent, 2))
-
-        if dca_size < 0.50:
-            return
-
-        await self._refresh_orderbook(state)
-        main_bid = state.orderbook.yes_best_bid if pos["direction_up"] else state.orderbook.no_best_bid
-        if not main_bid or main_bid <= 0:
-            return
-
-        dca_price = round(main_bid + 0.01, 2)
-        if dca_price > self.settings.early_entry_max_ask:
-            logger.info("early_dca_skip_max_ask", dca_t=dca_t, price=dca_price,
-                        max_ask=self.settings.early_entry_max_ask)
-            return
-        token_id = pos["token_id"]
-        dca_shares = max(round(dca_size / dca_price), 5)
-
-        try:
-            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
-            from py_clob_client.order_builder.constants import BUY
-            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
-            args = OrderArgs(price=dca_price, size=dca_shares, side=BUY, token_id=token_id)
-            signed = self.trader.client.create_order(args, options)
-            resp = self.trader.client.post_order(signed, OrderType.GTC)
-            order_id = resp.get("orderID", "")
-            if order_id:
-                state.early_dca_orders.append({"order_id": order_id, "price": dca_price, "size": dca_size})
-                logger.info("early_dca_posted", asset=state.asset, slug=pos["slug"],
-                            dca_t=dca_t, price=dca_price, size=dca_size, order_id=order_id)
-            else:
-                logger.warning("early_dca_post_failed", dca_t=dca_t, resp=str(resp)[:80])
-        except Exception as e:
-            logger.warning("early_dca_error", dca_t=dca_t, error=str(e)[:80])
-
-    async def _early_post_cheap_limits(self, state: AssetState, price: float):
-        """At T+30s, post cheap limit orders on the losing side at 10¢/15¢/20¢."""
-        pos = state.early_position
-        if not pos or self.settings.mode != "live":
-            return
-        window = state.tracker.current
-        if not window:
-            return
-
-        total_budget = self.settings.early_entry_max_bet
-        spent = state.early_main_filled + state.early_hedge_filled
-        remaining = total_budget - spent
-        if remaining < 1.00:
-            return
-
-        # Cheap limits on MAIN side — accumulate more at lower prices to bring avg down
-        main_token = pos["token_id"]
-        if not main_token:
-            return
-
-        try:
-            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
-            from py_clob_client.order_builder.constants import BUY
-            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
-
-            # Split remaining across 3 cheap price levels on our main direction
-            per_level = round(remaining / 3, 2)
-            for limit_price in (0.10, 0.15, 0.20):
-                order_size = min(per_level, remaining)
-                if order_size < 0.50:
-                    break
-                shares = max(round(order_size / limit_price), 5)
-                args = OrderArgs(price=limit_price, size=shares, side=BUY, token_id=main_token)
-                signed = self.trader.client.create_order(args, options)
-                resp = self.trader.client.post_order(signed, OrderType.GTC)
-                oid = resp.get("orderID", "")
-                if oid:
-                    state.early_dca_orders.append({"order_id": oid, "price": limit_price, "size": order_size, "side": "hedge_cheap"})
-                    remaining -= order_size
-                    logger.info("early_cheap_limit", asset=state.asset, slug=pos["slug"],
-                                price=limit_price, size=order_size, order_id=oid[:16])
-        except Exception as e:
-            logger.warning("early_cheap_limit_error", error=str(e)[:80])
-
     async def _early_rotate_buy(self, state: AssetState, pos: dict, proceeds: float, ask: float, window):
         """After selling, buy back cheap on SAME side with the proceeds."""
         if self.settings.mode != "live" or not window:
@@ -1887,258 +1531,78 @@ class TradingLoop:
         except Exception as e:
             logger.warning("early_rotate_buy_error", error=str(e)[:80])
 
-    async def _early_rotate_accumulate(self, state: AssetState, price: float):
-        """Every 30s: post cheap limits on both sides if ask < 25¢."""
-        pos = state.early_position
-        if not pos or self.settings.mode != "live":
-            return
-        window = state.tracker.current
-        if not window:
-            return
-
-        total_budget = self.settings.early_entry_max_bet
-        spent = state.early_main_filled + state.early_hedge_filled
-        remaining = total_budget - spent
-        buy_size = min(self.settings.early_entry_cheap_buy_size, remaining)
-        if buy_size < 0.50:
-            return
-
-        await self._refresh_orderbook(state)
-        max_ask = self.settings.early_entry_rotate_max_ask
-
-        try:
-            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
-            from py_clob_client.order_builder.constants import BUY
-            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
-
-            for side_up, token_id in [(True, window.yes_token_id), (False, window.no_token_id)]:
-                if not token_id:
-                    continue
-                ask = state.orderbook.yes_best_ask if side_up else state.orderbook.no_best_ask
-                if not ask or ask > max_ask or ask <= 0.02:
-                    continue
-                bid = state.orderbook.yes_best_bid if side_up else state.orderbook.no_best_bid
-                post_price = round((bid + 0.01) if bid and bid > 0 else ask, 2)
-                if post_price > max_ask:
-                    continue
-                shares = max(round(buy_size / post_price), 5)
-                args = OrderArgs(price=post_price, size=shares, side=BUY, token_id=token_id)
-                signed = self.trader.client.create_order(args, options)
-                resp = self.trader.client.post_order(signed, OrderType.GTC)
-                oid = resp.get("orderID", "")
-                if oid:
-                    state.early_dca_orders.append({"order_id": oid, "price": post_price, "size": buy_size, "side": "UP" if side_up else "DOWN"})
-                    side_name = "UP" if side_up else "DOWN"
-                    logger.info("early_accumulate", asset=state.asset, slug=pos["slug"],
-                                side=side_name, price=post_price, size=buy_size, order_id=oid[:16])
-        except Exception as e:
-            logger.warning("early_accumulate_error", error=str(e)[:80])
-
     async def _early_cancel_unfilled(self, state: AssetState):
-        """Cancel all unfilled DCA and hedge orders at T+180s."""
+        """Cancel all unfilled GTC orders at T+cutoff. Hold filled shares to resolution."""
         cancelled = 0
-        # Cancel DCA orders
-        for order in state.early_dca_orders:
+        unfilled = [o for o in state.early_dca_orders if not o.get("filled")]
+        for order in unfilled:
             oid = order.get("order_id")
             if oid:
                 try:
                     self.trader.client.cancel(oid)
                     cancelled += 1
-                except Exception:
-                    pass
-        # Cancel hedge
+                except Exception as e:
+                    logger.warning("early_cancel_error", asset=state.asset,
+                                   oid=oid[:16], error=str(e)[:80])
         if state.early_hedge_order_id:
             try:
                 self.trader.client.cancel(state.early_hedge_order_id)
                 cancelled += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("early_cancel_hedge_error", asset=state.asset, error=str(e)[:80])
             state.early_hedge_order_id = None
 
-        state.early_dca_orders = []
-        if cancelled:
-            logger.info("early_cancel_unfilled", asset=state.asset,
-                        slug=state.early_position["slug"] if state.early_position else "",
-                        cancelled=cancelled, main_filled=state.early_main_filled,
-                        hedge_filled=state.early_hedge_filled)
-        state.early_dca_orders = []
+        state.early_dca_orders = [o for o in state.early_dca_orders if o.get("filled")]
+        logger.info("early_cancel_unfilled", asset=state.asset,
+                    slug=state.early_position["slug"] if state.early_position else "",
+                    cancelled=cancelled, up_shares=int(state.early_up_shares),
+                    down_shares=int(state.early_down_shares),
+                    filled_usd=round(state.early_cheap_filled, 2))
 
     # ── EARLY ENTRY CHECKPOINTS ──────────────────────────────────────────
     async def _early_checkpoint(self, state: AssetState, price: float, seconds_since_open: float, checkpoint: int):
-        """Re-evaluate early entry position. Only stop-loss expensive entries (>40¢)."""
+        """Phase 4: Hard stop for expensive entries. Conditions (ALL required):
+        1. Entry price >= 40¢ (never touch cheap accumulation fills)
+        2. Position down > 25% from entry price
+        3. T+30 to T+240 (not too early, not in final 60s)
+        Immediately rebuys same side cheap if ask <= 40¢.
+        """
         pos = state.early_position
         if not pos:
             return
 
-        # Never sell cheap accumulation entries — hold to resolution
+        # Gate 1: never stop-loss cheap entries
         if pos.get("entry_price", 0) < 0.40:
             return
 
-        window = state.tracker.current
-        if not window or not window.open_price:
+        # Gate 3: T+240 hard cutoff — no selling in final 60s
+        if seconds_since_open > 240:
             return
 
-        # Re-run LightGBM with current data
-        import math as _math
-        from datetime import datetime as _dt3, timezone as _tz3
-        _now = _dt3.now(_tz3.utc)
-        pct_move = ((price - window.open_price) / window.open_price * 100) if window.open_price > 0 else 0
-        vol = compute_realized_vol(list(state.price_history))
-        vol_ma = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol
-        features = {
-            "move_pct_15s": pct_move,
-            "realized_vol_5m": vol,
-            "vol_ratio": vol / vol_ma if vol_ma > 0 else 1.0,
-            "body_ratio": abs(price - window.open_price) / max(state.window_high - state.window_low, 0.001),
-            "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price
-                and state.prev_window.open_price and state.prev_window.close_price >= state.prev_window.open_price else -1)
-                if state.prev_window else 0,
-            "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price)
-                / state.prev_window.open_price * 100) if state.prev_window and state.prev_window.open_price
-                and state.prev_window.close_price else 0,
-            "hour_sin": _math.sin(2 * _math.pi * _now.hour / 24),
-            "hour_cos": _math.cos(2 * _math.pi * _now.hour / 24),
-            "dow_sin": _math.sin(2 * _math.pi * _now.weekday() / 7),
-            "dow_cos": _math.cos(2 * _math.pi * _now.weekday() / 7),
-            "signal_move_pct": abs(pct_move),
-            "signal_ask_price": pos["entry_price"],
-            "signal_seconds": seconds_since_open,
-            "signal_ev": 0,
-        }
-        try:
-            lgbm_raw = self.model_server.predict(f"{state.asset}_5m", features)
-        except Exception:
-            lgbm_raw = 0.50
-        dir_prob = lgbm_raw if pos["direction_up"] else (1 - lgbm_raw)
-
-        # Current market value for BOTH sides
         await self._refresh_orderbook(state)
         main_bid = state.orderbook.yes_best_bid if pos["direction_up"] else state.orderbook.no_best_bid
-        hedge_bid = state.orderbook.no_best_bid if pos["direction_up"] else state.orderbook.yes_best_bid
         if not main_bid or main_bid <= 0:
-            logger.warning("early_checkpoint_no_bid", asset=state.asset, slug=pos["slug"],
-                           checkpoint=checkpoint, main_bid=main_bid)
             return
+
+        # Gate 2: only sell if down more than 25%
         position_value_pct = ((main_bid - pos["entry_price"]) / pos["entry_price"] * 100) if pos["entry_price"] > 0 else 0
 
-        # Estimate hedge value
-        hedge_value = state.early_hedge_filled * (hedge_bid / 0.25) if hedge_bid and state.early_hedge_filled > 0 else 0
-        main_value = pos["shares"] * main_bid if main_bid else 0
+        logger.info("early_checkpoint", asset=state.asset, slug=pos["slug"], checkpoint=checkpoint,
+                    direction="UP" if pos["direction_up"] else "DOWN",
+                    entry_price=round(pos["entry_price"], 3), main_bid=round(main_bid, 3),
+                    position_value_pct=round(position_value_pct, 1))
+        self._log_activity(state, f"CHECK val={position_value_pct:+.0f}%",
+                           "HOLD" if position_value_pct >= -25 else "SELL_STOP_25")
 
-        # Decision: sell the LOSING side while it has value
-        action = "HOLD"
-        sell_target = None  # "main" or "hedge"
-        if position_value_pct < -20:
-            # HARD STOP: down 20% → sell main regardless of model
-            action = "SELL_MAIN_STOP"
-            sell_target = "main"
-        elif dir_prob < 0.45:
-            # Model turning against us → sell main
-            action = "SELL_MAIN"
-            sell_target = "main"
-        elif position_value_pct >= 30:
-            # Main up 30%+ → lock profit by selling hedge
-            action = "SELL_HEDGE"
-            sell_target = "hedge"
-        elif position_value_pct > 20:
-            # Main winning → sell hedge (it's losing, recover remaining value)
-            action = "SELL_HEDGE"
-            sell_target = "hedge"
-        elif position_value_pct < -15 and hedge_value > main_value:
-            # Main losing AND hedge worth more → swap: sell main, keep hedge
-            action = "SELL_MAIN_SWAP"
-            sell_target = "main"
-
-        logger.info(
-            "early_checkpoint",
-            asset=state.asset, slug=pos["slug"], checkpoint=checkpoint,
-            direction="UP" if pos["direction_up"] else "DOWN",
-            entry_price=round(pos["entry_price"], 3),
-            main_bid=round(main_bid, 3) if main_bid else 0,
-            hedge_bid=round(hedge_bid, 3) if hedge_bid else 0,
-            position_value_pct=round(position_value_pct, 1),
-            directional_prob=round(dir_prob, 4),
-            lgbm_raw=round(lgbm_raw, 4),
-            action=action,
-        )
-        self._log_activity(state, f"CHECK val={position_value_pct:+.0f}% prob={dir_prob:.2f}", action)
-
-        if sell_target == "main":
-            sell_proceeds = await self._early_sell(state, pos, main_bid, action)
-            # Instant rebuy: fire immediately after sell confirmation in same call
-            if sell_proceeds and sell_proceeds > 0.50:
+        if position_value_pct < -25:
+            window = state.tracker.current
+            sell_proceeds = await self._early_sell(state, pos, main_bid, "HARD_STOP_25")
+            if sell_proceeds and sell_proceeds > 0.50 and window:
                 main_ask = state.orderbook.yes_best_ask if pos["direction_up"] else state.orderbook.no_best_ask
                 if main_ask and 0 < main_ask <= 0.40:
                     await self._early_rotate_buy(state, pos, sell_proceeds, main_ask, window)
                 else:
-                    logger.info("early_rotate_skip", slug=pos["slug"], ask=main_ask)
-        elif sell_target == "hedge":
-            # Never sell hedge bought cheap (< 40¢) — hold to resolution
-            hedge_entry = pos.get("hedge_entry_price", 1.0)
-            if hedge_entry < 0.40:
-                logger.info("early_hedge_hold_cheap", asset=state.asset, hedge_entry=hedge_entry)
-                return
-            hedge_token = (window.no_token_id if pos["direction_up"] else window.yes_token_id) if window else ""
-            if hedge_token and hedge_bid and hedge_bid > 0.02:
-                sell_proceeds = await self._early_sell_hedge(state, pos, hedge_token, hedge_bid, window)
-                # Instant rebuy hedge proceeds into main side
-                if sell_proceeds and sell_proceeds > 0.50:
-                    main_ask = state.orderbook.yes_best_ask if pos["direction_up"] else state.orderbook.no_best_ask
-                    if main_ask and 0 < main_ask <= 0.40:
-                        await self._early_rotate_buy(state, pos, sell_proceeds, main_ask, window)
-
-    async def _early_sell_hedge(self, state: AssetState, pos: dict, hedge_token: str, hedge_bid: float, window) -> float:
-        """Sell hedge side to recover value while main is winning."""
-        if self.settings.mode != "live" or not hedge_token:
-            return
-        try:
-            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
-            from py_clob_client.order_builder.constants import SELL
-            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
-
-            # Estimate hedge shares from hedge_filled
-            hedge_price_est = 0.25  # rough estimate
-            hedge_shares = max(round(state.early_hedge_filled / hedge_price_est), 5) if state.early_hedge_filled > 0 else 5
-
-            sell_price = round(hedge_bid, 2)
-            args = OrderArgs(price=sell_price, size=hedge_shares, side=SELL, token_id=hedge_token)
-            signed = self.trader.client.create_order(args, options)
-            try:
-                resp = self.trader.client.post_order(signed, OrderType.FOK)
-                order_id = resp.get("orderID", "")
-            except Exception:
-                order_id = ""
-
-            if order_id:
-                recovered = hedge_shares * sell_price
-                hedge_side = "NO" if pos["direction_up"] else "YES"
-                logger.info("early_hedge_sold", asset=state.asset, slug=pos["slug"],
-                            side=hedge_side, price=sell_price, shares=hedge_shares,
-                            recovered=round(recovered, 2))
-                # Log to DynamoDB
-                try:
-                    from decimal import Decimal
-                    import uuid
-                    self.dynamo._trades.put_item(Item={
-                        "id": str(uuid.uuid4()),
-                        "window_slug": pos["slug"],
-                        "asset": state.asset, "timeframe": "5m",
-                        "side": "SELL", "source": "early_hedge_exit",
-                        "fill_price": Decimal(str(sell_price)),
-                        "size_usd": Decimal(str(round(recovered, 2))),
-                        "shares": Decimal(str(hedge_shares)),
-                        "pnl": Decimal(str(round(recovered - state.early_hedge_filled, 2))),
-                        "timestamp": Decimal(str(round(time.time(), 3))),
-                        "entry_type": "SELL_HEDGE", "resolved": 1,
-                    })
-                    return recovered
-                except Exception:
-                    pass
-            else:
-                logger.info("early_hedge_sell_failed", slug=pos["slug"], bid=sell_price)
-        except Exception as e:
-            logger.warning("early_hedge_sell_error", error=str(e)[:80])
-        return 0
+                    logger.info("early_rotate_skip_expensive", slug=pos["slug"], ask=main_ask)
 
     async def _early_sell(self, state: AssetState, pos: dict, current_bid: float, reason: str) -> float:
         """Sell early entry position. Returns sell proceeds or 0."""
@@ -2340,6 +1804,7 @@ class TradingLoop:
         state.early_status_logged = set()
         state.early_cheap_posted = 0.0
         state.early_cheap_filled = 0.0
+        state.early_confirm_done = False
         logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
         state.bayesian.reset(price, 0.5)
         try:

@@ -121,6 +121,8 @@ def _make_bot(mode="live", max_bet=20.0):
     bot.risk = MagicMock()
     bot.risk.can_trade.return_value = True
 
+    bot.asset_states = {"BTC": MagicMock(), "ETH": MagicMock(), "SOL": MagicMock(), "XRP": MagicMock()}
+
     return bot
 
 
