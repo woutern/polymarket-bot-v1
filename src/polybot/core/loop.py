@@ -1527,9 +1527,9 @@ class TradingLoop:
         if remaining < 1.00:
             return
 
-        # Losing side token (opposite of main direction)
-        losing_token = (window.no_token_id if pos["direction_up"] else window.yes_token_id) if window else ""
-        if not losing_token:
+        # Cheap limits on MAIN side — accumulate more at lower prices to bring avg down
+        main_token = pos["token_id"]
+        if not main_token:
             return
 
         try:
@@ -1537,14 +1537,14 @@ class TradingLoop:
             from py_clob_client.order_builder.constants import BUY
             options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
 
-            # Split remaining across 3 price levels
+            # Split remaining across 3 cheap price levels on our main direction
             per_level = round(remaining / 3, 2)
             for limit_price in (0.10, 0.15, 0.20):
                 order_size = min(per_level, remaining)
                 if order_size < 0.50:
                     break
                 shares = max(round(order_size / limit_price), 5)
-                args = OrderArgs(price=limit_price, size=shares, side=BUY, token_id=losing_token)
+                args = OrderArgs(price=limit_price, size=shares, side=BUY, token_id=main_token)
                 signed = self.trader.client.create_order(args, options)
                 resp = self.trader.client.post_order(signed, OrderType.GTC)
                 oid = resp.get("orderID", "")
@@ -1577,6 +1577,7 @@ class TradingLoop:
                 pass
             state.early_hedge_order_id = None
 
+        state.early_dca_orders = []
         if cancelled:
             logger.info("early_cancel_unfilled", asset=state.asset,
                         slug=state.early_position["slug"] if state.early_position else "",
