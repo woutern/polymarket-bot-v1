@@ -1135,10 +1135,10 @@ class TradingLoop:
         # Budget: EARLY_ENTRY_MAX_BET / number of active 5m assets
         num_5m_assets = len([k for k in self.asset_states if "_1h" not in k])
         per_asset = self.settings.early_entry_max_bet / max(num_5m_assets, 1)
-        # Flat 50/50 split: LGBM determines direction only, not allocation
-        # (directional lean deferred until budget >= $100/asset)
-        main_size = round(per_asset * 0.50, 2)
-        hedge_size = round(per_asset * 0.50, 2)
+        # Open uses 40% of per-asset budget (20% main + 20% hedge).
+        # Remaining 60% is for accumulation. This prevents open from eating the whole cap.
+        main_size = round(per_asset * 0.20, 2)
+        hedge_size = round(per_asset * 0.20, 2)
 
         logger.info("v2_open_orderbook", asset=state.asset,
                     direction="UP" if direction_up else "DOWN",
@@ -1179,6 +1179,9 @@ class TradingLoop:
                     logger.warning("v2_open_error", asset=state.asset, side=label, error=str(e)[:200])
         except Exception as e:
             logger.warning("v2_open_import_error", asset=state.asset, error=str(e)[:200])
+
+        # Count open spend toward budget so accumulation respects the cap
+        state.early_cheap_filled += main_size + hedge_size
 
         # Always set position so accumulation loop fires even if orders failed
         state.early_entry_traded = True
@@ -1283,6 +1286,7 @@ class TradingLoop:
             resp = self.trader.client.post_order(signed, OrderType.GTC)
             oid = resp.get("orderID", "")
             if oid:
+                state.early_cheap_filled += confirm_size
                 state.early_dca_orders.append({"order_id": oid, "price": post_price,
                                                 "size": confirm_size, "side": "main"})
                 logger.info("v2_confirm_posted", asset=state.asset, slug=pos["slug"],

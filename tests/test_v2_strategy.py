@@ -1003,8 +1003,9 @@ class TestLGBMConfidenceSplit:
             await bot._v2_open_position(state, 50_000.0)
         return state
 
-    async def test_flat_50_50_split_regardless_of_lgbm(self):
-        """Always 50/50 regardless of lgbm — direction only, not allocation."""
+    async def test_flat_20_20_open_split(self):
+        """Open uses 40% of per-asset budget (20% main + 20% hedge).
+        Remaining 60% is reserved for accumulation."""
         for lgbm_val in [0.72, 0.56, 0.48, 0.30]:
             bot = _make_bot(max_bet=20.0)
             bot.model_server.predict = MagicMock(return_value=lgbm_val)
@@ -1018,8 +1019,22 @@ class TestLGBMConfidenceSplit:
             hedge_sz = next((o["size"] for o in orders if o.get("side") == "hedge"), None)
             per_asset = 20.0 / 4  # $5
             assert main_sz is not None and hedge_sz is not None, f"lgbm={lgbm_val}: orders missing"
-            assert abs(main_sz - per_asset * 0.50) < 0.01, f"lgbm={lgbm_val}: main={main_sz}, expected {per_asset*0.50}"
-            assert abs(hedge_sz - per_asset * 0.50) < 0.01, f"lgbm={lgbm_val}: hedge={hedge_sz}, expected {per_asset*0.50}"
+            assert abs(main_sz - per_asset * 0.20) < 0.01, f"lgbm={lgbm_val}: main={main_sz}, expected {per_asset*0.20}"
+            assert abs(hedge_sz - per_asset * 0.20) < 0.01, f"lgbm={lgbm_val}: hedge={hedge_sz}, expected {per_asset*0.20}"
+
+    async def test_open_spend_counted_toward_budget(self):
+        """Open spend (main + hedge) must be added to early_cheap_filled immediately."""
+        bot = _make_bot(max_bet=20.0)
+        bot.model_server.predict = MagicMock(return_value=0.65)
+        state = _make_state(window=_make_window())
+        bot._refresh_orderbook = _noop_refresh
+        with patch.object(bot, "_log_activity"):
+            await bot._v2_open_position(state, 50_000.0)
+        per_asset = 20.0 / 4  # $5
+        expected_open_spend = round(per_asset * 0.20, 2) * 2  # main + hedge
+        assert abs(state.early_cheap_filled - expected_open_spend) < 0.01, (
+            f"early_cheap_filled={state.early_cheap_filled}, expected {expected_open_spend}"
+        )
 
 
 # ── 11b. OpenTimingT5s ────────────────────────────────────────────────────────
