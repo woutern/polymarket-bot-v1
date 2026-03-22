@@ -7,105 +7,124 @@
 ## What this project is
 
 An algorithmic trading bot for Polymarket crypto binary prediction markets.
-We trade BTC/ETH/SOL × 5min Up/Down markets (3 pairs: BTC_5m, ETH_5m, SOL_5m).
-15m pairs disabled — SPRT negative, sub-40% WR on all three.
+Two strategies: 5-minute crypto bot (BTC/SOL) + opportunity bot (13 category workers).
 Binary bets: does price close higher or lower than the open at window start?
 
 Owner: Wouter (Scaleflow)
-Stack: Python, AWS (eu-west-1 bot, us-east-1 data), Polygon blockchain
-Live wallet: ~$240 on Polymarket, $1 flat bets until SPRT confirms edge
+Stack: Python, AWS (eu-west-1), Polygon blockchain
+Live wallet: ~$920 on Polymarket
+Tests: 526 passing
 
 ---
 
-## How it trades (scored confirmation system)
+## Strategy 1: 5-Minute Crypto Bot (Scenario C)
 
-1. Coinbase WebSocket feeds live prices every 250ms (ticker + level2 orderbook)
-2. Window opens → bot tracks price, OFI, volume from open
-3. At T+2s: capture price and OFI baseline
-4. At T+8s: capture price and OFI again
-5. At T+12s: compute confidence score 0-5 from 5 signals
-6. Decision: override / taker / maker / skip (see Entry Rules below)
-7. Execution: FOK or GTC limit order on Polymarket CLOB
+### How it trades
+1. Coinbase WebSocket feeds live prices every 250ms
+2. Window opens → bot tracks price from open
+3. At T+210s: scan window starts, checks orderbook every 3s
+4. LightGBM predicts probability (trained on 22K Jon-Becker windows)
+5. At T+240s: execute if all gates pass (lgbm, ask, volatility)
+6. Hard deadline: T+255s
+7. FOK taker order on Polymarket CLOB
 8. After close → verify outcome via Polymarket Gamma API (Chainlink oracle)
-9. After resolution → update SPRT, KPI tracker
+
+### Scenario C Entry Rules (lgbm gates first)
+
+| Order | Check | Skip if |
+|-------|-------|---------|
+| 1 | LightGBM gate | lgbm_prob < 0.62 |
+| 2 | Ask floor | ask < $0.60 |
+| 3 | Ask ceiling | ask > $0.95 |
+| 4 | Circuit breaker | 3 consecutive losses |
+| 5 | Volatility filter | vol > 2× rolling avg |
+| 6 | Time-of-day min ask | ask < $0.65 weekday / $0.70 weekend |
+| 7 | Per-asset max ask | ask > $0.78 BTC / $0.82 SOL (unless high lgbm) |
+
+### Sizing
+
+| Ask Range | Condition | Size |
+|-----------|-----------|------|
+| $0.60–$0.75 | default | $5 |
+| $0.75–$0.82 | peak hours only | $10 |
+| $0.75–$0.82 | weak hours / weekend | $5 |
+| $0.82–$0.88 | lgbm >= 0.70 | $5 |
+| $0.88–$0.95 | lgbm >= 0.80 | $5 |
+
+Peak hours: 09:00–21:00 UTC weekdays, excluding 12:00–13:00.
+Hard cap: $10 (HARDCODED_MAX_BET in config.py).
+
+### Early Entry
+- Peak: ask <= $0.58 → enter immediately
+- Weak hours: ask <= $0.68
+- Weekend: ask <= $0.72
 
 ---
 
-## Current architecture
+## Strategy 2: Opportunity Bot
 
-### AWS Infrastructure
-- Bot: ECS Fargate, eu-west-1 — always-on, 250ms tick loop
-- Dashboard: Lambda + API Gateway + CloudFront (HTTPS) — https://d2rj5lnnfnptd.cloudfront.net/
-- Storage: DynamoDB us-east-1 (trades, windows, signals, training_data, kpi_snapshots)
-- Models: S3 us-east-1 — 3 LightGBM artifacts, paths in SSM Parameter Store
-- Secrets: AWS Secrets Manager eu-west-1 (`polymarket-bot-env`)
-- Auto-retrain: EventBridge every 4h
+### Overview
+- 13 parallel workers scan all Polymarket markets every 30 min
+- All workers fetch → combine → dedup by condition_id → sort by resolve time → trade top-to-bottom
+- FOK taker orders only (never GTC)
+- MAX_BUDGET: $1,250 total deployed
 
-### Why split regions
-- Bot in eu-west-1: Polymarket CLOB geoblocks us-east-1 AWS IPs
-- Data/models in us-east-1: Coinbase proximity, Bedrock native
+### 13 Workers
+crypto, finance, fed, geopolitics, elections, tech, weather, culture, economics, companies, health, iran, whitehouse
 
----
+Removed: politics (-$7.91 all-time), basketball, tweets, sports
 
-## Data feeds (three WebSocket connections)
+### Tiers
 
-### Feed 1: Coinbase WebSocket (price + order book)
-- URL: wss://advanced-trade-ws.coinbase.com
-- Channels: ticker (250ms price), l2_data (level2 orderbook for OFI/depth)
-- Assets: BTC-USD, ETH-USD, SOL-USD
-- Computed features: ofi_30s, bid_ask_spread, depth_imbalance, trade_arrival_rate
+| Tier | Ask | Hours | Volume | Size | AI Gate |
+|------|-----|-------|--------|------|---------|
+| 0 | >= $0.93 | <= 6h | >= $5K | $10 | Haiku (conf >= 0.90) + Sonnet devil's advocate (conf >= 0.85) |
+| 1 | $0.85–$0.94 | <= 24h | any | $5 | Haiku sanity (conf >= 0.80) |
+| 2 | $0.85–$0.94 | 24-48h | any | $2.50 | Full Haiku (conf >= 0.85, edge >= 0.15) |
 
-### Feed 2: Polymarket RTDS (oracle lag signal)
-- URL: wss://ws-live-data.polymarket.com
-- Used for: oracle_lag_ms, oracle_dislocation signal (Tier A entries)
+### Data-Driven Filters (from opportunity_analysis.txt)
+- Min ask: $0.85 (below loses money: 71% WR, -$3.42)
+- Max ask: $0.94 (above $0.95 margin too thin: -$3.60)
+- Morning 06-12 UTC: blocked (76% WR, -$12.12)
+- 6-12h resolution window: blocked (80% WR, -$8.90)
 
-### Feed 3: Polymarket CLOB WebSocket
-- Market channel: wss://ws-subscriptions-clob.polymarket.com/ws/market
-- Used for: live order book (yes_ask/yes_bid)
+### AI Models
+- Haiku: `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
+- Sonnet: `eu.anthropic.claude-sonnet-4-20250514-v1:0`
+- Both via AWS Bedrock eu-west-1
 
----
-
-## Scored entry system (replaces old tier-based entry)
-
-### 5 Confirmation Signals (computed at T+12s)
-
-| Signal | Condition | +1 if true |
-|--------|-----------|-----------|
-| OFI | Order flow imbalance increasing T+2s → T+8s in trade direction | Yes |
-| No Reversal | Price at T+8s still same direction as T+2s | Yes |
-| Cross-Asset | BTC moved same direction (ETH/SOL only, N/A for BTC) | Yes |
-| PM Pressure | Polymarket ask stable or improving (2c tolerance) | Yes |
-| Volume | Window tick count > 1.5x average of prior 5 windows | Yes |
-
-### Entry Rules
-
-| Condition | Action | Order type |
-|-----------|--------|-----------|
-| **Hard filter override**: lgbm ≥ 0.65 AND ask ≤ $0.55 AND ev ≥ 0.10 | ENTER regardless of score | Taker FOK |
-| Score 4-5 + lgbm ≥ 0.60 + ask ≤ $0.55 + ev ≥ 0.08 | ENTER | Taker FOK |
-| Score 2-3 + lgbm ≥ 0.55 | ENTER | Maker GTC at $0.48, cancel after 8s |
-| Score 0-1, no override | SKIP | — |
-
-### Hard Limits (enforced by smoke test — bot halts if violated)
-
-| Parameter | Value | Cannot be overridden by |
-|-----------|-------|------------------------|
-| MAX_MARKET_PRICE | $0.55 | Env var or Secrets Manager |
-| MAX_BET_SIZE | $1.50 | `HARDCODED_MAX_BET` constant in config.py |
-| MIN_EV_THRESHOLD | 0.08 | — |
-| MIN_LGBM_PROB | 0.60 | `_DEFAULT_GATE` in server.py |
+### Skip Filters
+- SKIP_SLUGS: {5m, 15m, updown}
+- SKIP_KEYWORDS: {esports, lol, league-of-legends, dota, cs2, valorant, gaming}
 
 ---
 
-## LightGBM models
+## AWS Infrastructure (all eu-west-1)
 
-### 3 models (one per pair): BTC_5m, ETH_5m, SOL_5m
-- Training: rolling 5,000 windows, time-ordered 80/20 split, 5-min embargo
-- Signal-weighted: 3x weight on windows where |move_pct_15s| > 0.02%
-- `is_unbalance=True` for class imbalance handling
-- Calibration: Platt scaling → Isotonic regression
-- Deploy gate: only if brier_score < baseline (0.25)
-- Retrain: every 4h via EventBridge
+| Component | Service | Details |
+|-----------|---------|---------|
+| Bot | ECS Fargate | Single task, 4 processes (bot, opp bot, dashboard, auto-claim) |
+| Dashboard | Lambda + CloudFront | https://d2rj5lnnfnptd.cloudfront.net/ |
+| Storage | DynamoDB | trades, windows, signals, training_data, opportunity-trades |
+| Models | S3 | `polymarket-bot-data-688567279867-euw1/models/` |
+| Model paths | SSM Parameter Store | `/polymarket/models/{pair}/latest_path` |
+| Secrets | Secrets Manager | `polymarket-bot-env` |
+| AI | Bedrock | Haiku + Sonnet 4 |
+| Auto-retrain | EventBridge | Every 4h |
+| Auto-claim | Builder Relayer API | Every 30 min via Node.js script |
+
+---
+
+## LightGBM Models
+
+### 2 active models: BTC_5m, SOL_5m (ETH disabled)
+- Trained on 22,888 enriched windows from Jon-Becker dataset
+- Jon-Becker base (S3: `polymarket-bot-training-data-688567279867`) + live DynamoDB windows
+- BTC AUC: 0.7294, SOL AUC: 0.7660
+- Time-ordered 80/20 split, 5-min embargo
+- Signal-weighted: 3x on windows where |move_pct_15s| > 0.02%
+- Calibration: Platt scaling → Isotonic regression (if available)
+- Raw LightGBM output also supported (Jon-Becker models)
 
 ### 14 Features
 move_pct_15s, realized_vol_5m, vol_ratio, body_ratio,
@@ -113,74 +132,45 @@ prev_window_direction, prev_window_move_pct,
 hour_sin, hour_cos, dow_sin, dow_cos,
 signal_move_pct, signal_ask_price, signal_seconds, signal_ev
 
-### Orderbook features (collected for future retrains)
-ofi_30s, bid_ask_spread, depth_imbalance, trade_arrival_rate,
-liq_cluster_bias (Binance long/short ratio), btc_confirms_direction
+### Auto-Retrain (every 4h)
+- Loads Jon-Becker 22K base + live DynamoDB windows
+- Deduplicates by slug, sorts by timestamp
+- Quality gate: new AUC >= current AUC - 0.02 (prevents regression)
+- Brier gate: must beat baseline (0.25)
+- Calibration gate: mean_prob must be 0.25-0.75
 
 ---
 
-## Position sizing
+## Smoke Test (bot halts on failure)
 
-$1.00 flat bet until SPRT confirms edge. Max $1.50 hard cap.
-EV formula: `ev = prob × (1 - price) - (1 - prob) × price`
-
----
-
-## Hard rules
-
-1. **MAX_ASK = $0.55** — never buy above $0.55 per share
-2. **MAX_BET = $1.50** — never bet more than $1.50 total per trade
-3. **$1 flat bet** until SPRT confirmed at boundary 2.77. No exceptions.
-4. **Never expand beyond crypto price markets** until edge confirmed
-5. **Only 5m windows** — 15m disabled (negative SPRT)
-6. **3-layer dedup**: memory set + DynamoDB query + atomic conditional put
-7. When in doubt: ask before executing
+| Check | Type | What it verifies |
+|-------|------|-----------------|
+| clob_connectivity | Critical | Polymarket CLOB reachable (not geoblocked) |
+| model_load_{pair} | Critical | Models load from S3 via SSM paths |
+| model_predict_{pair} | Critical | Predictions are not 0.5 fallback |
+| polymarket_creds | Critical | Private key + API key present |
+| pairs_not_set | Critical | PAIRS explicitly set in live mode |
+| max_trade_usd | Critical | Not above $10 hard cap |
+| rogue_task_check | Critical | No duplicate ECS tasks running |
 
 ---
 
-## Edge measurement
-
-### SPRT — update after every trade
-```
-log_lambda += outcome * log(p1/p0) + (1-outcome) * log((1-p1)/(1-p0))
-Boundary A = log((1-β)/α) = 2.7726 → edge confirmed
-Boundary B = log(β/(1-α)) = -1.5581 → no edge
-```
-α=0.05, β=0.20. Current status: all 3 pairs accumulating (SPRT +0.08 to +0.17).
-
-### Per-pair SPRT (clean data, ask ≤ $0.55 only)
-| Pair | Trades | WR | SPRT | To confirm |
-|------|--------|-----|------|-----------|
-| BTC_5m | 6 | 67% | +0.17 | ~91 |
-| ETH_5m | 8 | 62% | +0.16 | ~130 |
-| SOL_5m | 5 | 60% | +0.08 | ~179 |
-
----
-
-## Dashboard (Lambda + API Gateway + CloudFront)
+## Dashboard
 
 URL: https://d2rj5lnnfnptd.cloudfront.net/
-Direct: https://r1a61boamb.execute-api.us-east-1.amazonaws.com/
-Login: admin / polybot2026 (Basic Auth on HTML page only, API endpoints open)
-
-5 pages:
-1. Overview: Portfolio, Cash, P&L, Win/Loss, Strategy cards, Equity curve, Recent Trades, Live Logs
-2. Trade Log: Full trade history with P&L, outcome, Polymarket links
-3. Window Scores: Score distribution, signal hit rates, per-window breakdown (OFI/NoRev/Cross/PM/Vol)
-4. Analytics: Per-pair config, calibration, strategy stats
-5. KPIs: SPRT, Brier score, win rates, model separation
+5 pages: Overview, Trades, Analytics, Opportunities, Rules
 
 ---
 
 ## Constraints — read before every change
 
-1. 384 tests must pass — run before and after every change
-2. Never increase bet above $1.50 without Wouter's explicit instruction
+1. **526 tests must pass** — run before and after every change
+2. Never increase bet above $10 without Wouter's explicit instruction
 3. Never deploy a model with higher Brier score than the current one
-4. All new AWS resources follow existing region split (bot=eu-west-1, data=us-east-1)
+4. **All AWS resources in eu-west-1** (bot, data, models, dashboard)
 5. DynamoDB table names must match exactly what code expects
 6. Secrets Manager: `polymarket-bot-env` in eu-west-1 is the source for ECS env vars
-7. Smoke test must pass on every startup — if thresholds violated, bot halts
+7. Smoke test must pass on every startup — if model loading fails, bot halts
 8. When in doubt: ask before executing
 
 ---
@@ -195,26 +185,25 @@ Login: admin / polybot2026 (Basic Auth on HTML page only, API endpoints open)
 - Data API: https://data-api.polymarket.com (balance, activity, positions)
 
 ### Order types
-- FOK: aggressive take — taker entries (score 4-5 + override)
-- GTC: passive limit — maker entries (score 2-3), cancel after 8s
+- FOK only (taker). No GTC/limit orders ever.
 
 ### Key constraints
 - Minimum order: 5 shares
-- Tick size: 0.01 (hardcoded, short-lived markets return 404 from get_tick_size)
+- Tick size: 0.01
 - Signing: EIP-712, signature_type=2 (Gnosis Safe proxy wallet)
 
 ---
 
 ## Libraries
 
-- lightgbm: batch model (3 per-pair classifiers)
-- py_clob_client: Polymarket orders (FOK + GTC)
-- boto3: AWS (DynamoDB, S3, SSM, Secrets Manager, CloudWatch)
+- lightgbm: per-pair classifiers (BTC/SOL)
+- py_clob_client: Polymarket orders (FOK)
+- boto3: AWS (DynamoDB, S3, SSM, Secrets Manager, Bedrock, CloudWatch)
 - websockets: Coinbase + Polymarket feeds
-- httpx: Gamma API, Binance long/short ratio, Polymarket data API
+- httpx: Gamma API, Coinbase REST, Polymarket data API
 - structlog: JSON structured logging → CloudWatch
 - fastapi + mangum: dashboard (Lambda)
-- pandas / numpy: feature computation
+- pandas / numpy / pyarrow: feature computation + training data
 
 ---
 
