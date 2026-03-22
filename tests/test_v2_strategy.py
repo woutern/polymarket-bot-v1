@@ -1003,10 +1003,18 @@ class TestLGBMConfidenceSplit:
             await bot._v2_open_position(state, 50_000.0)
         return state
 
-    async def test_flat_20_20_open_split(self):
-        """Open uses 40% of per-asset budget (20% main + 20% hedge).
-        Remaining 60% is reserved for accumulation."""
-        for lgbm_val in [0.72, 0.56, 0.48, 0.30]:
+    async def test_lgbm_confidence_tiers_on_open(self):
+        """K9 directional lean: open uses 25% of per-asset budget with LGBM tiers.
+        >= 0.60: 75/25, 0.52-0.60: 65/35, < 0.52: 55/45"""
+        cases = [
+            (0.72, 0.75, 0.25),
+            (0.60, 0.75, 0.25),
+            (0.56, 0.65, 0.35),
+            (0.52, 0.65, 0.35),
+            (0.48, 0.55, 0.45),
+            (0.30, 0.55, 0.45),
+        ]
+        for lgbm_val, exp_main_frac, exp_hedge_frac in cases:
             bot = _make_bot(max_bet=20.0)
             bot.model_server.predict = MagicMock(return_value=lgbm_val)
             window = _make_window(slug=f"btc-updown-5m-{lgbm_val}")
@@ -1018,9 +1026,14 @@ class TestLGBMConfidenceSplit:
             main_sz = next((o["size"] for o in orders if o.get("side") == "main"), None)
             hedge_sz = next((o["size"] for o in orders if o.get("side") == "hedge"), None)
             per_asset = 20.0 / 4  # $5
+            open_budget = round(per_asset * 0.25, 2)
             assert main_sz is not None and hedge_sz is not None, f"lgbm={lgbm_val}: orders missing"
-            assert abs(main_sz - per_asset * 0.20) < 0.01, f"lgbm={lgbm_val}: main={main_sz}, expected {per_asset*0.20}"
-            assert abs(hedge_sz - per_asset * 0.20) < 0.01, f"lgbm={lgbm_val}: hedge={hedge_sz}, expected {per_asset*0.20}"
+            assert abs(main_sz - round(open_budget * exp_main_frac, 2)) < 0.02, (
+                f"lgbm={lgbm_val}: main={main_sz}, expected {round(open_budget * exp_main_frac, 2)}"
+            )
+            assert abs(hedge_sz - round(open_budget * exp_hedge_frac, 2)) < 0.02, (
+                f"lgbm={lgbm_val}: hedge={hedge_sz}, expected {round(open_budget * exp_hedge_frac, 2)}"
+            )
 
     async def test_open_spend_counted_toward_budget(self):
         """Open spend (main + hedge) must be added to early_cheap_filled immediately."""
@@ -1031,7 +1044,9 @@ class TestLGBMConfidenceSplit:
         with patch.object(bot, "_log_activity"):
             await bot._v2_open_position(state, 50_000.0)
         per_asset = 20.0 / 4  # $5
-        expected_open_spend = round(per_asset * 0.20, 2) * 2  # main + hedge
+        open_budget = round(per_asset * 0.25, 2)
+        # lgbm=0.65 → 75/25 split
+        expected_open_spend = round(open_budget * 0.75, 2) + round(open_budget * 0.25, 2)
         assert abs(state.early_cheap_filled - expected_open_spend) < 0.01, (
             f"early_cheap_filled={state.early_cheap_filled}, expected {expected_open_spend}"
         )

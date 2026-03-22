@@ -1135,10 +1135,18 @@ class TradingLoop:
         # Budget: EARLY_ENTRY_MAX_BET / number of active 5m assets
         num_5m_assets = len([k for k in self.asset_states if "_1h" not in k])
         per_asset = self.settings.early_entry_max_bet / max(num_5m_assets, 1)
-        # Open uses 40% of per-asset budget (20% main + 20% hedge).
-        # Remaining 60% is for accumulation. This prevents open from eating the whole cap.
-        main_size = round(per_asset * 0.20, 2)
-        hedge_size = round(per_asset * 0.20, 2)
+        # Open uses 25% of per-asset budget (K9: 22% at open, 78% accumulation).
+        # LGBM confidence tiers drive main/hedge split within that 25%.
+        # Remaining 75% goes to cheap accumulation — this is where edge is built.
+        open_budget = round(per_asset * 0.25, 2)
+        if lgbm_raw >= 0.60:
+            main_frac, hedge_frac = 0.75, 0.25
+        elif lgbm_raw >= 0.52:
+            main_frac, hedge_frac = 0.65, 0.35
+        else:
+            main_frac, hedge_frac = 0.55, 0.45
+        main_size = round(open_budget * main_frac, 2)
+        hedge_size = round(open_budget * hedge_frac, 2)
 
         logger.info("v2_open_orderbook", asset=state.asset,
                     direction="UP" if direction_up else "DOWN",
@@ -1334,6 +1342,12 @@ class TradingLoop:
             if not bid or bid <= 0:
                 continue
 
+            logger.info("v2_accum_side", asset=state.asset,
+                        side="UP" if side_up else "DOWN",
+                        bid=round(bid, 3),
+                        filled=round(state.early_cheap_filled, 2),
+                        max_bet=round(max_bet_per_asset, 2))
+
             # K9 4-tier ladder
             if bid <= 0.15:
                 # Lottery zone: 7 levels, $0.50 each (14x+ return if wins)
@@ -1350,9 +1364,21 @@ class TradingLoop:
             else:
                 # Winning side (bid > 0.60): 2 levels, $0.50 each, only after T+60s
                 if seconds_since_open < 60:
+                    logger.info("v2_accum_tier", asset=state.asset,
+                                side="UP" if side_up else "DOWN",
+                                bid=round(bid, 3), tier="winning_blocked_t60",
+                                offsets="[]", num_orders=0)
                     continue
                 offsets = [0.00, 0.03]
                 size = 0.50
+
+            logger.info("v2_accum_tier", asset=state.asset,
+                        side="UP" if side_up else "DOWN",
+                        bid=round(bid, 3),
+                        tier="lottery" if bid <= 0.15 else "cheap" if bid <= 0.35
+                        else "mid" if bid <= 0.60 else "winning",
+                        offsets=str(offsets),
+                        num_orders=len([o for o in offsets if round(bid - o, 2) >= 0.01]))
 
             for offset in offsets:
                 post_price = round(bid - offset, 2)
