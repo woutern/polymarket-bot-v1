@@ -1977,7 +1977,7 @@ async function loadEarlyEntry() {
       }
       const pnlStr = t.resolved ? '<span class="' + (pnl >= 0 ? 'green' : 'red') + '" style="font-weight:700">' + (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2) + '</span>' : '—';
       const rawSlug = (t.slug || '').replace('early_', '');
-      const link = rawSlug ? ' <a href="https://polymarket.com/market/' + rawSlug + '" target="_blank" style="opacity:0.4;font-size:11px">&#x1F517;</a>' : '';
+      const link = rawSlug ? ' <a href="https://polymarket.com/event/' + rawSlug + '" target="_blank" style="opacity:0.4;font-size:11px">&#x1F517;</a>' : '';
       html += '<tr style="background:' + bg + '"><td style="font-size:11px"><b>' + agoStr + '</b><br><span style="color:#94a3b8">' + tsStr + '</span></td><td>' + t.asset + '</td><td>' + t.side + '</td><td>$' + t.fill_price.toFixed(2) + '</td><td>$' + t.size_usd.toFixed(2) + '</td><td>' + t.model_prob.toFixed(3) + '</td><td>' + t.ev.toFixed(3) + '</td><td>' + pnlStr + '</td><td>' + status + link + '</td></tr>';
     }
     document.getElementById('ee-tbody').innerHTML = html || '<tr><td colspan="10" class="empty">No early entry trades yet</td></tr>';
