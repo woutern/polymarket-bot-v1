@@ -51,9 +51,9 @@ class Settings(BaseSettings):
     # DCA + hedge config
     early_entry_main_pct: float = 0.83      # 83% of budget on main ($3.50 of $4.20)
     early_entry_hedge_pct: float = 0.17     # 17% on hedge ($0.70 of $4.20)
-    early_entry_dca_t1_pct: float = 0.57    # T+15s initial buy: 57% of main ($2.00)
-    early_entry_dca_t2_pct: float = 0.23    # T+45s dip buy: 23% of main ($0.80)
-    early_entry_dca_t3_pct: float = 0.20    # T+90s remainder: 20% of main ($0.70)
+    early_entry_dca_t1_pct: float = 0.70    # T+15s initial buy: 70% of main ($8.71)
+    early_entry_dca_t2_pct: float = 0.18    # T+45s dip buy: 18% of main ($2.24)
+    early_entry_dca_t3_pct: float = 0.12    # T+90s remainder: 12% of main ($1.49)
 
     # Per-asset move thresholds (T+2s-T+15s early entry with quality filters)
     min_move_btc_5m: float = 0.02   # BTC 5m: lowered to see more signals
