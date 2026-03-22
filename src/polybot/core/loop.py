@@ -1384,9 +1384,12 @@ class TradingLoop:
                 post_price = round(bid - offset, 2)
                 if post_price < 0.01 or post_price > 0.98:
                     continue
-                # Skip if actual fills have hit the per-asset budget
                 if state.early_cheap_filled + size > max_bet_per_asset:
-                    continue
+                    break  # budget exhausted for this side — skip remaining levels too
+                # Pre-reserve budget synchronously so subsequent iterations in this
+                # same gather batch see the correct running total (fixes race condition
+                # where all tasks pass the check before any of them increment).
+                state.early_cheap_filled += size
                 shares = max(round(size / post_price), 5)
                 order_tasks.append(
                     self._post_cheap_order(state, token_id, post_price, shares, size, side_up, options)
@@ -1443,7 +1446,7 @@ class TradingLoop:
                     sz = order.get("size", 0)
                     side = order.get("side", "")
                     price = order.get("price", 0)
-                    state.early_cheap_filled += sz
+                    # Budget already pre-reserved at posting time — do not add again
                     # Track per-side shares — resolve "main"/"hedge" using direction
                     shares = round(sz / price) if price > 0 else 0
                     is_up = (side == "UP") or (side == "main" and direction_up) or (side == "hedge" and not direction_up)

@@ -486,11 +486,15 @@ class TestBudgetCap:
         # All order attempts should be skipped
         assert len(post_calls) == 0, f"Should post 0 orders when budget exhausted, got {len(post_calls)}"
 
-    async def test_fill_tracking_increments_correctly(self):
+    async def test_fill_tracking_does_not_double_count(self):
+        """Budget is pre-reserved at posting time. poll_fills must NOT add to early_cheap_filled
+        (that would double-count against the cap)."""
         bot = _make_bot()
         window = _make_window()
         state = _make_state(window=window)
         state.early_position = {"direction_up": True}
+        # Simulate pre-reserved budget from posting
+        state.early_cheap_filled = 7.0
         state.early_dca_orders = [
             {"order_id": "oid1", "price": 0.33, "size": 3.0, "side": "UP", "filled": False},
             {"order_id": "oid2", "price": 0.68, "size": 4.0, "side": "DOWN", "filled": False},
@@ -504,7 +508,10 @@ class TestBudgetCap:
         with patch.object(bot, "_log_activity", MagicMock()):
             await bot._v2_poll_fills(state)
 
-        assert state.early_cheap_filled == 7.0  # 3.0 + 4.0
+        # early_cheap_filled must stay at 7.0 — not increment again to 14.0
+        assert state.early_cheap_filled == 7.0, (
+            f"poll_fills double-counted: early_cheap_filled={state.early_cheap_filled}, expected 7.0"
+        )
 
     async def test_budget_resets_on_new_window(self):
         window = _make_window()
