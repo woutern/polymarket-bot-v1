@@ -4,21 +4,27 @@ Algorithmic trading system for Polymarket prediction markets.
 
 **Status:** LIVE on AWS ECS (eu-west-1)
 **Dashboard:** https://d2rj5lnnfnptd.cloudfront.net/
-**Tests:** 593 passing
+**Tests:** 603 passing
 **V2 both-sides:** paused (enable via `EARLY_ENTRY_ENABLED=true`)
 
 ## Three Trading Strategies
 
-### 1. V2 Both-Sides (experimental, currently paused)
-- Opens YES + NO on every 5-min BTC/ETH/SOL window at T+0
-- $6 main + $3 hedge GTC at bid+1¢ (immediate fill)
-- Accumulation: GTC limit ladder on BOTH sides every 3s for 270s
-  - Cheap side (bid ≤ 0.35): 5 levels at bid, -3¢, -5¢, -8¢, -10¢
-  - Expensive side (bid > 0.35): 3 levels at bid, -5¢, -10¢
-  - Orders sit in book unfilled until market moves to them (free until filled)
+### 1. V2 Both-Sides (K9-style, currently paused)
+Modelled on K9 trader: 13.4% ROI, 69% GP rate across 3,500 real trades.
+
+- **Assets:** BTC, ETH, SOL, XRP — 4 assets, $5/asset/window ($20 total)
+- **Phase 1 — Open (T+5–15s):** post GTC on YES + NO after orderbook forms
+  - `lgbm >= 0.60` → 70/30 main/hedge; `0.52–0.60` → 60/40; `< 0.52` → 50/50
+- **Phase 2 — Confirm (T+15–20s):** re-run LGBM; if flipped → swap direction; if confirmed → add 10% more
+- **Phase 3 — Accumulate (every 3s, T+5 to T+270s):** GTC ladder on BOTH sides
+  - `bid ≤ 0.15` (lottery zone): 7 levels `[0,1,2,3,4,5,6¢]` — $0.50/level
+  - `bid 0.15–0.35` (cheap zone): 5 levels `[0,1,2,4,6¢]` — $0.35/level
+  - `bid 0.35–0.60` (mid zone): 3 levels `[0,2,5¢]` — $0.25/level
+  - `bid > 0.60` (winning side): 2 levels `[0,3¢]` — $0.50/level, only after T+60s
+  - Orders sit unfilled (cost $0); only fills count against budget
+- **Phase 4 — Sell-rotate (optional, 35% of windows):** only if entry > 40¢ AND down > 25% AND T+30–240s; instant rebuy same call
+- **Phase 5 — Cancel + hold (T+270s):** cancel unfilled GTC, hold all shares to resolution
 - Fill budget: `EARLY_ENTRY_MAX_BET` ($20/window) caps actual fills, not orders posted
-- Stop-loss: only on main entries > 40¢; hedge < 40¢ always held to resolution
-- Enabled via `EARLY_ENTRY_ENABLED=true` in Secrets Manager
 
 ### 2. 5-Minute Crypto Bot (Scenario C, paused)
 - Trades BTC/SOL 5-minute Up/Down windows
@@ -56,8 +62,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete system diagram.
 | Guard | Value |
 |-------|-------|
 | V2 fill budget | $20/window (`EARLY_ENTRY_MAX_BET`) |
-| V2 open position | $6 main + $3 hedge at window open |
-| V2 stop-loss | Only main entries > 40¢; cheap hedge always held |
+| V2 open position | 70/30 to 50/50 main/hedge split (LGBM-driven) |
+| V2 stop-loss | Only entries > 40¢ down > 25%, T+30–240s only |
+| V2 winning side gate | bid > 0.60 accumulation blocked before T+60s |
 | Max bet (5min bot) | $10 peak / $5 weak+weekend |
 | LightGBM gate (5min) | lgbm_prob >= 0.62 (Scenario C) |
 | Max ask (5min bot) | $0.95 ceiling, $0.78/$0.82 default, relaxed with high lgbm |
@@ -79,7 +86,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete system diagram.
 
 ```bash
 # Local development
-uv run pytest tests/          # 593 tests
+uv run pytest tests/          # 603 tests
 uv run python scripts/run.py  # Start 5min bot
 
 # Deploy to AWS
