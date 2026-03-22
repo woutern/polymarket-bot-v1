@@ -405,45 +405,65 @@ def api_early_entry():
     trades = get_trades(limit=500)
     early = [t for t in trades if _extract_field(t, "source") in ("early_entry", "early_exit", "early_hedge_exit")]
 
-    # Stats
-    resolved = [t for t in early if t.get("resolved") or _bool_field(t, "resolved")]
-    wins = [t for t in resolved if _float_field(t, "pnl") > 0]
-    losses = [t for t in resolved if _float_field(t, "pnl") <= 0]
-    unresolved = [t for t in early if not (t.get("resolved") or _bool_field(t, "resolved"))]
-    total_pnl = sum(_float_field(t, "pnl") for t in resolved)
+    # Stats — net P&L per window (buys + sells for same slug)
+    from collections import defaultdict
+    windows = defaultdict(lambda: {"pnl": 0, "cost": 0, "resolved": False, "ts": 0, "buys": [], "sells": []})
+    for t in early:
+        slug = _extract_field(t, "window_slug")
+        src = _extract_field(t, "source")
+        pnl = _float_field(t, "pnl")
+        ts = _float_field(t, "timestamp")
+        if src == "early_entry":
+            windows[slug]["buys"].append(t)
+            windows[slug]["cost"] += _float_field(t, "size_usd")
+            windows[slug]["ts"] = max(windows[slug]["ts"], ts)
+            if t.get("resolved") or _bool_field(t, "resolved"):
+                windows[slug]["resolved"] = True
+                windows[slug]["pnl"] += pnl
+        else:  # early_exit, early_hedge_exit
+            windows[slug]["sells"].append(t)
+            windows[slug]["pnl"] += pnl  # sells have negative pnl (cost - proceeds)
+            windows[slug]["ts"] = max(windows[slug]["ts"], ts)
 
-    avg_entry = sum(_float_field(t, "fill_price") for t in early) / len(early) if early else 0
-    avg_prob = sum(_float_field(t, "model_prob") for t in early) / len(early) if early else 0
-    avg_ev = sum(_float_field(t, "ev") for t in early) / len(early) if early else 0
+    resolved_windows = {s: w for s, w in windows.items() if w["resolved"]}
+    unresolved_windows = {s: w for s, w in windows.items() if not w["resolved"]}
+    total_pnl = sum(w["pnl"] for w in resolved_windows.values())
+    win_windows = [w for w in resolved_windows.values() if w["pnl"] > 0]
+    loss_windows = [w for w in resolved_windows.values() if w["pnl"] <= 0]
+
+    buys_only = [t for t in early if _extract_field(t, "source") == "early_entry"]
+    avg_entry = sum(_float_field(t, "fill_price") for t in buys_only) / len(buys_only) if buys_only else 0
+    avg_prob = sum(_float_field(t, "model_prob") for t in buys_only) / len(buys_only) if buys_only else 0
+    avg_ev = sum(_float_field(t, "ev") for t in buys_only) / len(buys_only) if buys_only else 0
 
     # Limit fill rate
-    makers = sum(1 for t in early if _extract_field(t, "entry_type") == "early_maker")
-    takers = sum(1 for t in early if _extract_field(t, "entry_type") == "early_taker")
-    fallbacks = sum(1 for t in early if _extract_field(t, "entry_type") == "early_taker_fallback")
+    makers = sum(1 for t in buys_only if _extract_field(t, "entry_type") == "early_maker")
+    takers = sum(1 for t in buys_only if _extract_field(t, "entry_type") == "early_taker")
+    fallbacks = sum(1 for t in buys_only if _extract_field(t, "entry_type") == "early_taker_fallback")
 
     # Trades per hour (last 4h)
     now = _t.time()
-    last_4h = [t for t in early if _float_field(t, "timestamp") > now - 14400]
+    last_4h = [t for t in buys_only if _float_field(t, "timestamp") > now - 14400]
     tph = len(last_4h) / 4 if last_4h else 0
 
-    # Streak
+    # Streak (per window, not per trade)
     streak = 0
     streak_type = ""
-    for t in sorted(resolved, key=lambda x: _float_field(x, "timestamp"), reverse=True):
-        w = _float_field(t, "pnl") > 0
+    for w in sorted(resolved_windows.values(), key=lambda x: x["ts"], reverse=True):
+        won = w["pnl"] > 0
         if not streak_type:
-            streak_type = "W" if w else "L"
-        if (streak_type == "W") == w:
+            streak_type = "W" if won else "L"
+        if (streak_type == "W") == won:
             streak += 1
         else:
             break
 
-    # Equity curve
+    # Equity curve (per window)
     curve = []
     cum = 0
-    for t in sorted(resolved, key=lambda x: _float_field(x, "timestamp")):
-        cum += _float_field(t, "pnl")
-        curve.append({"ts": _float_field(t, "timestamp"), "pnl": round(cum, 2)})
+    for w in sorted(resolved_windows.values(), key=lambda x: x["ts"]):
+        cum += w["pnl"]
+        curve.append({"ts": w["ts"], "pnl": round(cum, 2)})
 
     # Trade list
     trade_list = []
@@ -467,11 +487,11 @@ def api_early_entry():
 
     return {
         "stats": {
-            "trades": len(early),
-            "wins": len(wins),
-            "losses": len(losses),
-            "open": len(unresolved),
-            "wr": round(len(wins) / len(resolved) * 100) if resolved else 0,
+            "trades": len(windows),
+            "wins": len(win_windows),
+            "losses": len(loss_windows),
+            "open": len(unresolved_windows),
+            "wr": round(len(win_windows) / len(resolved_windows) * 100) if resolved_windows else 0,
             "pnl": round(total_pnl, 2),
             "avg_entry": round(avg_entry, 3),
             "avg_prob": round(avg_prob, 3),
