@@ -101,6 +101,9 @@ class AssetState:
     early_down_cost: float = 0.0
     early_rotate_done: set = field(default_factory=set)  # which 30s intervals posted cheap limits
     early_activity_log: list = field(default_factory=list)  # last 20 actions for dashboard
+    early_accum_ticks: set = field(default_factory=set)   # which 3s ticks fired accumulation
+    early_status_logged: set = field(default_factory=set)  # which 15s intervals logged status
+    early_cheap_posted: float = 0.0   # total USD posted for cheap accumulation (budget cap)
 
 
 # ── Binance long/short ratio bias (free, no API key) ─────────────────────────
@@ -190,8 +193,8 @@ class TradingLoop:
     def __init__(self, settings: Settings):
         self.settings = settings
         enabled = settings.enabled_pairs
-        # Unique assets needed for price feeds
-        assets = sorted({a for a, _ in enabled})
+        # Unique assets needed for price feeds (add XRP for hourly markets)
+        assets = sorted({a for a, _ in enabled} | {"XRP"})
         self.coinbase = CoinbaseWS(assets=assets)
         self.risk = RiskManager(
             bankroll=settings.bankroll,
@@ -238,7 +241,7 @@ class TradingLoop:
             asset: self._load_base_rate_for(asset) for asset in assets
         }
 
-        # One AssetState per enabled pair
+        # One AssetState per enabled pair (5m)
         self.asset_states: dict[str, AssetState] = {}
         for asset, dur in enabled:
             key = f"{asset}_5m"
@@ -252,10 +255,27 @@ class TradingLoop:
                 bayesian=BayesianUpdater(base_rates[asset]),
             )
 
+        # Hourly states: BTC, ETH, SOL, XRP
+        _hourly_assets = ["BTC", "ETH", "SOL", "XRP"]
+        for asset in _hourly_assets:
+            key = f"{asset}_1h"
+            # Reuse base_rate for known assets, empty for XRP
+            br = base_rates.get(asset, self._load_base_rate_for(assets[0]))
+            self.asset_states[key] = AssetState(
+                asset=asset,
+                tracker=WindowTracker(
+                    entry_seconds=60,
+                    asset=asset,
+                    window_seconds=3600,
+                ),
+                bayesian=BayesianUpdater(br),
+            )
+
         logger.info("pairs_enabled", pairs=list(self.asset_states.keys()))
 
-        # RTDS client for Chainlink oracle prices
-        self.rtds = RTDSClient(assets=assets)
+        # RTDS client for Chainlink oracle prices (include XRP for hourly markets)
+        rtds_assets = list(dict.fromkeys(assets + ["XRP"]))
+        self.rtds = RTDSClient(assets=rtds_assets)
 
         self._wallet_address: str = settings.polymarket_funder or ""
         self._last_claim_check: float = 0.0
@@ -309,6 +329,7 @@ class TradingLoop:
             asyncio.create_task(self.coinbase.connect(), name="coinbase_ws"),
             asyncio.create_task(self.rtds.connect(), name="rtds_ws"),
             asyncio.create_task(self._strategy_loop_resilient(), name="strategy_loop"),
+            asyncio.create_task(self._shadow_tracker_loop(), name="shadow_tracker"),
         ]
 
         try:
@@ -441,42 +462,42 @@ class TradingLoop:
 
         # ── V2 EARLY ENTRY PLAYBOOK ──────────────────────────────────────────
         if self.settings.early_entry_enabled:
-            # PHASE 1: Pre-position at T-5s (295s into PREVIOUS window = 5s before next)
+            win_secs = state.tracker.window_seconds
+            # Cutoff: cancel unfilled + stop trading. 270s for 5m, 3540s for 1h.
+            cutoff = win_secs - 30
+
+            # PHASE 1: Pre-position at T-5s (last 5s of previous window)
             if (not state.early_entry_evaluated
-                    and 295 <= seconds_since_open <= 299
+                    and (win_secs - 5) <= seconds_since_open <= (win_secs - 1)
                     and not state.early_entry_traded):
                 await self._v2_preposition(state, price)
 
-            # PHASE 2: Confirm at T+15s
-            if (state.early_entry_traded
-                    and not state.early_entry_evaluated
-                    and 14 <= seconds_since_open <= 18):
-                await self._early_entry_tick(state, price, seconds_since_open)
-
-            # PHASE 3: Accumulate cheap + checkpoints every 15s from T+30 to T+270
-            if state.early_position and seconds_since_open >= 30:
-                cp = int(seconds_since_open // 15) * 15
-                if 30 <= cp <= 270 and cp not in state.early_checkpoints_done:
-                    state.early_checkpoints_done.add(cp)
-                    # Checkpoint: stops on expensive entries
-                    await self._early_checkpoint(state, price, seconds_since_open, cp)
-                    # Accumulate cheap sides
-                    if self.settings.early_entry_rotate_enabled and cp % 15 == 0:
-                        await self._v2_accumulate_cheap(state, price)
-                    # Poll fill status
+            # PHASE 2: Accumulate cheap every 3s from T+0 to cutoff
+            if state.early_position and 0 <= seconds_since_open <= cutoff:
+                tick_3s = int(seconds_since_open // 3)
+                if tick_3s not in state.early_accum_ticks:
+                    state.early_accum_ticks.add(tick_3s)
+                    await self._v2_accumulate_cheap(state, price)
                     await self._v2_poll_fills(state)
-                # Cancel unfilled at T+270
-                if seconds_since_open >= 270 and 270 not in state.early_checkpoints_done:
-                    state.early_checkpoints_done.add(270)
-                    await self._early_cancel_unfilled(state)
 
-            # DCA on main side at T+45, T+90
+            # PHASE 3: Stop-loss checkpoints every 15s (ONLY for expensive entries >40¢)
+            if state.early_position and 0 < seconds_since_open < cutoff:
+                cp15 = int(seconds_since_open // 15) * 15
+                if 15 <= cp15 < cutoff and cp15 not in state.early_checkpoints_done:
+                    state.early_checkpoints_done.add(cp15)
+                    await self._early_checkpoint(state, price, seconds_since_open, cp15)
+
+            # Status log every 15s
             if state.early_position:
-                for dca_t in (45, 90):
-                    if dca_t not in state.early_dca_done and abs(seconds_since_open - dca_t) < 1.5:
-                        state.early_dca_done.add(dca_t)
-                        await self._early_dca_round(state, price, seconds_since_open, dca_t)
-                        break
+                st15 = int(seconds_since_open // 15)
+                if st15 not in state.early_status_logged:
+                    state.early_status_logged.add(st15)
+                    self._log_v2_status(state, seconds_since_open)
+
+            # Cancel unfilled at cutoff, then hold everything to resolution
+            if state.early_position and seconds_since_open >= cutoff and cutoff not in state.early_checkpoints_done:
+                state.early_checkpoints_done.add(cutoff)
+                await self._early_cancel_unfilled(state)
 
         if not self.settings.early_entry_enabled and not state.late_entry_evaluated and not state.traded_this_window:
             await self._scan_tick(state, price, seconds_since_open)
@@ -1048,8 +1069,10 @@ class TradingLoop:
 
         # Get next window's market info
         import httpx as _hx
-        next_window_ts = ((int(time.time()) // 300) + 1) * 300
-        early_slug = f"early_{state.asset.lower()}-updown-5m-{next_window_ts}"
+        win_secs = state.tracker.window_seconds
+        tf_label = "1h" if win_secs == 3600 else "5m"
+        next_window_ts = ((int(time.time()) // win_secs) + 1) * win_secs
+        early_slug = f"early_{state.asset.lower()}-updown-{tf_label}-{next_window_ts}"
 
         # Dedup
         if not hasattr(self, '_early_traded_slugs'):
@@ -1059,7 +1082,7 @@ class TradingLoop:
         self._early_traded_slugs.add(early_slug)
 
         try:
-            slug = f"{state.asset.lower()}-updown-5m-{next_window_ts}"
+            slug = f"{state.asset.lower()}-updown-{tf_label}-{next_window_ts}"
             async with _hx.AsyncClient(timeout=5) as c:
                 r = await c.get("https://gamma-api.polymarket.com/markets", params={"slug": slug})
                 if r.status_code != 200 or not r.json():
@@ -1124,9 +1147,13 @@ class TradingLoop:
                 (main_token, main_bid, main_size, "main"),
                 (hedge_token, hedge_bid, hedge_size, "hedge"),
             ]:
-                if not bid or bid <= 0 or sz < 0.50:
+                if sz < 0.50:
                     continue
-                post_price = round(bid + 0.01, 2)
+                # Zero-bid fallback: orderbook not yet live for next window → post at $0.49
+                if not bid or bid <= 0:
+                    post_price = 0.49
+                else:
+                    post_price = round(bid + 0.01, 2)
                 if post_price > self.settings.early_entry_max_ask:
                     continue
                 shares = max(round(sz / post_price), 5)
@@ -1172,7 +1199,7 @@ class TradingLoop:
 
     # ── V2 ACCUMULATE CHEAP + POLL FILLS ─────────────────────────────────
     async def _v2_accumulate_cheap(self, state: AssetState, price: float):
-        """Phase 3: Post cheap limits on both sides if ask < 25¢."""
+        """Every 3s: post order ladder on both sides. $12 budget per window."""
         pos = state.early_position
         if not pos or self.settings.mode != "live":
             return
@@ -1180,55 +1207,76 @@ class TradingLoop:
         if not window:
             return
 
-        # Budget for cheap accumulation: $12 of $20
         cheap_budget = 12.0
-        cheap_spent = state.early_cheap_filled
-        remaining = cheap_budget - cheap_spent
-        if remaining < 1.00:
+        if state.early_cheap_posted >= cheap_budget:
             return
 
         await self._refresh_orderbook(state)
-        max_ask = self.settings.early_entry_rotate_max_ask
 
+        from py_clob_client.clob_types import CreateOrderOptions
+        options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
+
+        order_tasks = []
+        for side_up, token_id in [(True, window.yes_token_id), (False, window.no_token_id)]:
+            if not token_id:
+                continue
+            ask = state.orderbook.yes_best_ask if side_up else state.orderbook.no_best_ask
+            bid = state.orderbook.yes_best_bid if side_up else state.orderbook.no_best_bid
+            if not ask or ask <= 0:
+                continue
+
+            # Price ladder based on current ask
+            if ask <= 0.10:
+                levels = [(0.04, 3.5), (0.05, 3.5), (0.06, 3.5), (0.07, 3.5), (0.08, 3.5)]
+            elif ask <= 0.15:
+                levels = [(0.08, 2.5), (0.10, 2.5), (0.12, 2.5)]
+            elif ask <= 0.20:
+                levels = [(0.12, 1.75), (0.15, 1.75), (0.18, 1.75)]
+            elif ask <= 0.25:
+                levels = [(0.18, 1.0), (0.20, 1.0), (0.23, 1.0)]
+            else:
+                # Only post on main direction at bid+1¢ when ask > 25¢
+                if side_up != pos["direction_up"]:
+                    continue
+                if not bid or bid <= 0 or bid > 0.40:
+                    continue
+                levels = [(round(bid + 0.01, 2), 2.0)]
+
+            for post_price, size in levels:
+                remaining = cheap_budget - state.early_cheap_posted
+                if remaining < 0.50:
+                    break
+                size = min(size, remaining)
+                shares = max(round(size / post_price), 5)
+                order_tasks.append(
+                    self._post_cheap_order(state, token_id, post_price, shares, size, side_up, options)
+                )
+
+        if order_tasks:
+            await asyncio.gather(*order_tasks, return_exceptions=True)
+
+    async def _post_cheap_order(self, state: AssetState, token_id: str, post_price: float,
+                                shares: int, size: float, side_up: bool, options) -> None:
+        """Post one cheap limit order and track it. Full error logging."""
+        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client.order_builder.constants import BUY
+        side = "UP" if side_up else "DOWN"
         try:
-            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
-            from py_clob_client.order_builder.constants import BUY
-            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
-
-            for side_up, token_id in [(True, window.yes_token_id), (False, window.no_token_id)]:
-                if not token_id or remaining < 1.00:
-                    continue
-                ask = state.orderbook.yes_best_ask if side_up else state.orderbook.no_best_ask
-                if not ask or ask > max_ask or ask <= 0.02:
-                    continue
-
-                # Size based on how cheap
-                if ask < 0.10:
-                    buy_size = min(4.00, remaining)
-                elif ask < 0.15:
-                    buy_size = min(3.00, remaining)
-                elif ask < 0.20:
-                    buy_size = min(2.00, remaining)
-                else:
-                    buy_size = min(1.50, remaining)
-
-                bid = state.orderbook.yes_best_bid if side_up else state.orderbook.no_best_bid
-                post_price = round((bid + 0.01) if bid and bid > 0 else ask, 2)
-                if post_price > max_ask:
-                    continue
-                shares = max(round(buy_size / post_price), 5)
-                args = OrderArgs(price=post_price, size=shares, side=BUY, token_id=token_id)
-                signed = self.trader.client.create_order(args, options)
-                resp = self.trader.client.post_order(signed, OrderType.GTC)
-                oid = resp.get("orderID", "")
-                if oid:
-                    state.early_dca_orders.append({"order_id": oid, "price": post_price, "size": buy_size, "side": "UP" if side_up else "DOWN"})
-                    remaining -= buy_size
-                    side_name = "UP" if side_up else "DOWN"
-                    logger.info("v2_cheap_posted", asset=state.asset, slug=pos["slug"],
-                                side=side_name, price=post_price, size=buy_size, ask=round(ask, 2))
+            args = OrderArgs(price=post_price, size=shares, side=BUY, token_id=token_id)
+            signed = self.trader.client.create_order(args, options)
+            resp = self.trader.client.post_order(signed, OrderType.GTC)
+            oid = resp.get("orderID", "")
+            if oid:
+                state.early_cheap_posted += size
+                state.early_dca_orders.append({"order_id": oid, "price": post_price, "size": size, "side": side})
+                logger.info("v2_cheap_posted", asset=state.asset, side=side,
+                            price=post_price, size=size, order_id=oid[:16])
+            else:
+                logger.warning("v2_cheap_no_order_id", asset=state.asset, side=side,
+                               price=post_price, resp=str(resp)[:200])
         except Exception as e:
-            logger.warning("v2_accumulate_error", error=str(e)[:80])
+            logger.warning("v2_cheap_post_error", asset=state.asset, side=side,
+                           price=post_price, error=str(e))
 
     async def _v2_poll_fills(self, state: AssetState):
         """Check fill status of all tracked GTC orders, update state totals."""
@@ -1925,11 +1973,15 @@ class TradingLoop:
                         hedge_filled=state.early_hedge_filled)
         state.early_dca_orders = []
 
-    # ── EARLY ENTRY CHECKPOINTS (T+60, T+120, T+180) ────────────────────────
+    # ── EARLY ENTRY CHECKPOINTS ──────────────────────────────────────────
     async def _early_checkpoint(self, state: AssetState, price: float, seconds_since_open: float, checkpoint: int):
-        """Re-evaluate early entry position. Sell if model flipped or profit target hit."""
+        """Re-evaluate early entry position. Only stop-loss expensive entries (>40¢)."""
         pos = state.early_position
         if not pos:
+            return
+
+        # Never sell cheap accumulation entries — hold to resolution
+        if pos.get("entry_price", 0) < 0.40:
             return
 
         window = state.tracker.current
@@ -2287,6 +2339,9 @@ class TradingLoop:
         state.early_down_cost = 0.0
         state.early_rotate_done = set()
         state.early_activity_log = []
+        state.early_accum_ticks = set()
+        state.early_status_logged = set()
+        state.early_cheap_posted = 0.0
         logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
         state.bayesian.reset(price, 0.5)
         try:
@@ -2681,6 +2736,86 @@ class TradingLoop:
             logger.warning("auto_claim_failed", error=str(e)[:100])
 
     # 134 lines removed (dead method)
+
+    def _log_v2_status(self, state: AssetState, seconds_since_open: float):
+        """Log summary every 15s: shares, costs, combined avg, margin, order counts."""
+        up_avg = (state.early_up_cost / state.early_up_shares) if state.early_up_shares > 0 else 0
+        down_avg = (state.early_down_cost / state.early_down_shares) if state.early_down_shares > 0 else 0
+        combined = up_avg + down_avg if up_avg > 0 and down_avg > 0 else 0
+        margin = round((1 - combined) * 100, 1) if 0 < combined < 1 else 0
+        open_orders = len([o for o in state.early_dca_orders if not o.get("filled")])
+        filled_orders = len([o for o in state.early_dca_orders if o.get("filled")])
+        cheap_remaining = round(max(12.0 - state.early_cheap_posted, 0), 2)
+        logger.info(
+            "v2_status",
+            asset=state.asset,
+            seconds=int(seconds_since_open),
+            up_shares=int(state.early_up_shares),
+            up_cost=round(state.early_up_cost, 2),
+            up_avg=round(up_avg, 4),
+            down_shares=int(state.early_down_shares),
+            down_cost=round(state.early_down_cost, 2),
+            down_avg=round(down_avg, 4),
+            combined_avg=round(combined, 4),
+            margin_pct=margin,
+            orders_posted=len(state.early_dca_orders),
+            orders_filled=filled_orders,
+            cheap_budget_remaining=cheap_remaining,
+        )
+
+    async def _shadow_tracker_loop(self):
+        """Background: poll competitor wallet every 30s. Data collection only."""
+        COMPETITOR = "0x63ce342161250d705dc0b16df89036c8e5f9ba9a"
+        while self._running:
+            try:
+                await asyncio.sleep(30)
+                import httpx as _hx
+                async with _hx.AsyncClient(timeout=5) as c:
+                    r = await c.get(
+                        "https://data-api.polymarket.com/activity",
+                        params={"user": COMPETITOR, "limit": 20},
+                    )
+                if r.status_code != 200:
+                    continue
+                activity = r.json()
+                if not activity:
+                    continue
+                # Map to current 5m windows
+                for key, state in list(self.asset_states.items()):
+                    if "_1h" in key:
+                        continue
+                    window = state.tracker.current
+                    if not window:
+                        continue
+                    slug = window.slug
+                    his_up = [a for a in activity if slug in a.get("title", "") and "YES" in a.get("side", "")]
+                    his_down = [a for a in activity if slug in a.get("title", "") and "NO" in a.get("side", "")]
+                    if not his_up and not his_down:
+                        continue
+                    try:
+                        import uuid
+                        from decimal import Decimal as _D
+                        pos = state.early_position
+                        self.dynamo._trades.meta.client.put_item(
+                            TableName="competitor-shadow",
+                            Item={
+                                "id": {"S": str(uuid.uuid4())},
+                                "window_slug": {"S": slug},
+                                "asset": {"S": state.asset},
+                                "timestamp": {"N": str(round(time.time(), 1))},
+                                "his_up_count": {"N": str(len(his_up))},
+                                "his_down_count": {"N": str(len(his_down))},
+                                "our_direction": {"S": ("UP" if pos["direction_up"] else "DOWN") if pos else ""},
+                                "divergence": {"BOOL": (bool(his_up) and bool(pos) and not pos["direction_up"]) or
+                                               (bool(his_down) and bool(pos) and pos["direction_up"])},
+                            }
+                        )
+                        logger.info("shadow_tracked", asset=state.asset, slug=slug[-20:],
+                                    his_up=len(his_up), his_down=len(his_down))
+                    except Exception:
+                        pass  # DynamoDB table may not exist yet — silent fail
+            except Exception:
+                pass  # Never slow down trading
 
     def _log_activity(self, state: AssetState, action: str, detail: str = ""):
         """Append action to rolling activity log for dashboard."""

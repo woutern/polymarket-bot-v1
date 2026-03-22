@@ -22,7 +22,7 @@ import structlog
 logger = structlog.get_logger()
 
 RTDS_URL = "wss://ws-live-data.polymarket.com"
-SYMBOLS = {"BTC": "btc/usd", "ETH": "eth/usd", "SOL": "sol/usd"}
+SYMBOLS = {"BTC": "btc/usd", "ETH": "eth/usd", "SOL": "sol/usd", "XRP": "xrp/usd"}
 DISLOCATION_THRESHOLD = 0.003  # 0.3%
 
 

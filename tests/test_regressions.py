@@ -846,14 +846,14 @@ class TestEarlyEntry:
         assert hasattr(TradingLoop, '_execute_early_entry')
 
     def test_early_entry_wired_in_tick(self):
-        """_tick_asset must call _early_entry_tick when enabled."""
+        """_tick_asset must call V2 preposition + accumulation when enabled."""
         from polybot.core.loop import TradingLoop
         import inspect
         source = inspect.getsource(TradingLoop._tick_asset)
         assert "early_entry_enabled" in source
-        assert "_early_entry_tick" in source
-        assert "14 <=" in source or "14<=" in source  # T+14s start
-        assert "<= 18" in source or "<=18" in source  # T+18s end
+        assert "_v2_preposition" in source
+        assert "_v2_accumulate_cheap" in source
+        assert "early_accum_ticks" in source
 
     def test_early_entry_fires_on_lgbm_above_gate(self):
         """Early entry should fire when lgbm >= 0.62 and ask <= 0.55."""
