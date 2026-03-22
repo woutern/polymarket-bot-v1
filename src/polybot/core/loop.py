@@ -1293,7 +1293,9 @@ class TradingLoop:
                 return
             table = dynamo._trades
             early_slug = f"early_{window.slug}"
+            import uuid
             table.put_item(Item={
+                "id": str(uuid.uuid4()),
                 "window_slug": early_slug,
                 "asset": state.asset,
                 "timeframe": "5m",
