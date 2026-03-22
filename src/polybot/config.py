@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     # Set to e.g. "BTC_5m,ETH_5m" to enable only those pairs.
     pairs: str = ""
 
+    # Early entry strategy (T+14-18s, independent from Scenario C)
+    early_entry_enabled: bool = False
+    early_entry_max_bet: float = 2.00
+    early_entry_lgbm_threshold: float = 0.62
+    early_entry_max_ask: float = 0.55
+    early_entry_min_ask: float = 0.40
+    early_entry_use_limit: bool = True
+    early_entry_limit_offset: float = 0.02  # post at best_bid + this
+    early_entry_limit_wait_seconds: float = 8.0
+
     # Per-asset move thresholds (T+2s-T+15s early entry with quality filters)
     min_move_btc_5m: float = 0.02   # BTC 5m: lowered to see more signals
     min_move_eth_5m: float = 0.02   # ETH 5m: same

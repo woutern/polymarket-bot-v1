@@ -814,3 +814,111 @@ class TestTimeOfDayFilter:
         for hour in [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 21, 22, 23]:
             weak = (hour < 9) or (hour >= 21) or (hour == 12)
             assert weak, f"Hour {hour} SHOULD be weak"
+
+
+class TestEarlyEntry:
+    """Early entry strategy (T+14-18s) — independent from Scenario C."""
+
+    def test_disabled_by_default(self):
+        """Early entry must be disabled by default."""
+        from polybot.config import Settings
+        s = Settings()
+        assert s.early_entry_enabled is False
+
+    def test_config_defaults(self):
+        """Early entry config has correct defaults."""
+        from polybot.config import Settings
+        s = Settings()
+        assert s.early_entry_max_bet == 2.00
+        assert s.early_entry_lgbm_threshold == 0.62
+        assert s.early_entry_max_ask == 0.55
+        assert s.early_entry_min_ask == 0.40
+        assert s.early_entry_use_limit is True
+        assert s.early_entry_limit_offset == 0.02
+        assert s.early_entry_limit_wait_seconds == 8.0
+
+    def test_early_entry_method_exists(self):
+        """TradingLoop must have _early_entry_tick method."""
+        from polybot.core.loop import TradingLoop
+        assert hasattr(TradingLoop, '_early_entry_tick')
+        assert hasattr(TradingLoop, '_execute_early_entry')
+
+    def test_early_entry_wired_in_tick(self):
+        """_tick_asset must call _early_entry_tick when enabled."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._tick_asset)
+        assert "early_entry_enabled" in source
+        assert "_early_entry_tick" in source
+        assert "14 <=" in source or "14<=" in source  # T+14s start
+        assert "<= 18" in source or "<=18" in source  # T+18s end
+
+    def test_early_entry_fires_on_lgbm_above_gate(self):
+        """Early entry should fire when lgbm >= 0.62 and ask <= 0.55."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._early_entry_tick)
+        assert "early_entry_lgbm_threshold" in source
+        assert "early_entry_max_ask" in source
+        assert "early_entry_min_ask" in source
+
+    def test_early_entry_skips_when_lgbm_low(self):
+        """Early entry must skip when lgbm < threshold."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._early_entry_tick)
+        assert "early_lgbm_low" in source
+
+    def test_early_entry_skips_when_ask_high(self):
+        """Early entry must skip when ask > max_ask."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._early_entry_tick)
+        assert "early_ask_ceiling" in source
+
+    def test_independent_dedup(self):
+        """Early entry uses 'early_' prefix for dedup — no collision with Scenario C."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._early_entry_tick)
+        assert "early_" in source
+        # Scenario C dedup doesn't use "early_" prefix
+        scan_source = inspect.getsource(TradingLoop._execute_scan_entry)
+        assert "early_" not in scan_source
+
+    def test_hard_cap_2_dollars(self):
+        """Early entry size never exceeds $2.00."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._execute_early_entry)
+        assert "2.00" in source
+
+    def test_limit_order_with_fallback(self):
+        """Early entry supports GTC limit with FOK fallback."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._execute_early_entry)
+        assert "early_maker" in source
+        assert "early_taker_fallback" in source
+        assert "early_taker" in source
+        assert "GTC" in source
+        assert "FOK" in source
+
+    def test_early_entry_state_reset_on_window_open(self):
+        """early_entry_evaluated and early_entry_traded reset on new window."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._on_window_open)
+        assert "early_entry_evaluated = False" in source
+        assert "early_entry_traded = False" in source
+
+    def test_early_entry_logs_to_dynamo(self):
+        """Early entry trades logged with source='early_entry'."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._log_early_trade)
+        assert '"early_entry"' in source
+        assert "entry_type" in source
+        assert "limit_price" in source
+        assert "limit_filled" in source
+        assert "limit_wait_ms" in source

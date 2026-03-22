@@ -13,7 +13,7 @@ Binary bets: does price close higher or lower than the open at window start?
 Owner: Wouter (Scaleflow)
 Stack: Python, AWS (eu-west-1), Polygon blockchain
 Live wallet: ~$920 on Polymarket
-Tests: 526 passing
+Tests: 538 passing
 
 ---
 
@@ -58,6 +58,28 @@ Hard cap: $10 (HARDCODED_MAX_BET in config.py).
 - Peak: ask <= $0.58 → enter immediately
 - Weak hours: ask <= $0.68
 - Weekend: ask <= $0.72
+
+---
+
+## Strategy 1b: Early Entry (T+14-18s, disabled by default)
+
+Independent strategy that fires at T+14-18s if the LightGBM model is confident and the ask is cheap.
+Enabled via `EARLY_ENTRY_ENABLED=true` in Secrets Manager. Default: disabled.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| early_entry_enabled | False | Master switch |
+| early_entry_max_bet | $2.00 | Hard cap per trade |
+| early_entry_lgbm_threshold | 0.62 | Min lgbm_prob |
+| early_entry_max_ask | $0.55 | Max ask price |
+| early_entry_min_ask | $0.40 | Min ask price |
+| early_entry_use_limit | True | GTC limit with FOK fallback |
+| early_entry_limit_offset | 0.02 | GTC price = best_bid + offset |
+| early_entry_limit_wait_seconds | 8.0 | Cancel GTC after this |
+
+- Own dedup: `early_{slug}` prefix (no collision with Scenario C)
+- Own DynamoDB records: `source = "early_entry"`
+- Both strategies can trade the same window
 
 ---
 
@@ -164,7 +186,7 @@ URL: https://d2rj5lnnfnptd.cloudfront.net/
 
 ## Constraints — read before every change
 
-1. **526 tests must pass** — run before and after every change
+1. **538 tests must pass** — run before and after every change
 2. Never increase bet above $10 without Wouter's explicit instruction
 3. Never deploy a model with higher Brier score than the current one
 4. **All AWS resources in eu-west-1** (bot, data, models, dashboard)
