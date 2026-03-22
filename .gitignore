@@ -25,6 +25,10 @@ uv.lock
 # Data files
 /tmp/
 data/candles/*.parquet
+data/
+
+# Node
+node_modules/
 
 # macOS
 .DS_Store

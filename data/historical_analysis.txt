@@ -1,9 +1,0 @@
-Historical Analysis — 176 windows
-Generated: 2026-03-21 09:39 UTC
-
-Total P&L: $-110.30
-WR: 69.9%
-A) Current ($5/<$0.68, $10/>=$0.68): 176 trades, 69.9% WR, $-110.30
-B) High conviction only ($0.75+): 92 trades, 79.3% WR, $-81.04
-C) BTC low only ($0.55-$0.62): 11 trades, 63.6% WR, $+5.81
-D) With time filter: 175 trades, 70.3% WR, $-105.10
