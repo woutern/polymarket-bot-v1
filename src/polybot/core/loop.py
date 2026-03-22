@@ -1579,32 +1579,95 @@ class TradingLoop:
         lgbm_raw = self.model_server.predict(f"{state.asset}_5m", features)
         dir_prob = lgbm_raw if pos["direction_up"] else (1 - lgbm_raw)
 
-        # Current market value
+        # Current market value for BOTH sides
         await self._refresh_orderbook(state)
-        current_bid = state.orderbook.yes_best_bid if pos["direction_up"] else state.orderbook.no_best_bid
-        position_value_pct = ((current_bid - pos["entry_price"]) / pos["entry_price"] * 100) if pos["entry_price"] > 0 else 0
+        main_bid = state.orderbook.yes_best_bid if pos["direction_up"] else state.orderbook.no_best_bid
+        hedge_bid = state.orderbook.no_best_bid if pos["direction_up"] else state.orderbook.yes_best_bid
+        position_value_pct = ((main_bid - pos["entry_price"]) / pos["entry_price"] * 100) if pos["entry_price"] > 0 else 0
 
-        # Decision
+        # Decision: sell the LOSING side while it has value
         action = "HOLD"
-        if dir_prob < 0.40:
-            action = "SELL_LOSS"
-        elif position_value_pct >= 30:
-            action = "SELL_PROFIT"
+        sell_target = None  # "main" or "hedge"
+        if position_value_pct > 20:
+            # Main winning → sell hedge (it's losing, recover remaining value)
+            action = "SELL_HEDGE"
+            sell_target = "hedge"
+        elif position_value_pct < -20 and dir_prob < 0.40:
+            # Main losing + model flipped → sell main (hedge is now the winner)
+            action = "SELL_MAIN"
+            sell_target = "main"
 
         logger.info(
             "early_checkpoint",
             asset=state.asset, slug=pos["slug"], checkpoint=checkpoint,
             direction="UP" if pos["direction_up"] else "DOWN",
             entry_price=round(pos["entry_price"], 3),
-            current_bid=round(current_bid, 3) if current_bid else 0,
+            main_bid=round(main_bid, 3) if main_bid else 0,
+            hedge_bid=round(hedge_bid, 3) if hedge_bid else 0,
             position_value_pct=round(position_value_pct, 1),
             directional_prob=round(dir_prob, 4),
             lgbm_raw=round(lgbm_raw, 4),
             action=action,
         )
 
-        if action.startswith("SELL"):
-            await self._early_sell(state, pos, current_bid, action)
+        if sell_target == "main":
+            await self._early_sell(state, pos, main_bid, action)
+        elif sell_target == "hedge":
+            # Sell hedge side
+            hedge_token = (window.no_token_id if pos["direction_up"] else window.yes_token_id) if window else ""
+            if hedge_token and hedge_bid and hedge_bid > 0.02:
+                await self._early_sell_hedge(state, pos, hedge_token, hedge_bid, window)
+
+    async def _early_sell_hedge(self, state: AssetState, pos: dict, hedge_token: str, hedge_bid: float, window):
+        """Sell hedge side to recover value while main is winning."""
+        if self.settings.mode != "live" or not hedge_token:
+            return
+        try:
+            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
+            from py_clob_client.order_builder.constants import SELL
+            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
+
+            # Estimate hedge shares from hedge_filled
+            hedge_price_est = 0.25  # rough estimate
+            hedge_shares = max(round(state.early_hedge_filled / hedge_price_est), 5) if state.early_hedge_filled > 0 else 5
+
+            sell_price = round(hedge_bid, 2)
+            args = OrderArgs(price=sell_price, size=hedge_shares, side=SELL, token_id=hedge_token)
+            signed = self.trader.client.create_order(args, options)
+            try:
+                resp = self.trader.client.post_order(signed, OrderType.FOK)
+                order_id = resp.get("orderID", "")
+            except Exception:
+                order_id = ""
+
+            if order_id:
+                recovered = hedge_shares * sell_price
+                hedge_side = "NO" if pos["direction_up"] else "YES"
+                logger.info("early_hedge_sold", asset=state.asset, slug=pos["slug"],
+                            side=hedge_side, price=sell_price, shares=hedge_shares,
+                            recovered=round(recovered, 2))
+                # Log to DynamoDB
+                try:
+                    from decimal import Decimal
+                    import uuid
+                    self.dynamo._trades.put_item(Item={
+                        "id": str(uuid.uuid4()),
+                        "window_slug": pos["slug"],
+                        "asset": state.asset, "timeframe": "5m",
+                        "side": "SELL", "source": "early_hedge_exit",
+                        "fill_price": Decimal(str(sell_price)),
+                        "size_usd": Decimal(str(round(recovered, 2))),
+                        "shares": Decimal(str(hedge_shares)),
+                        "pnl": Decimal(str(round(recovered - state.early_hedge_filled, 2))),
+                        "timestamp": Decimal(str(round(time.time(), 3))),
+                        "entry_type": "SELL_HEDGE", "resolved": 1,
+                    })
+                except Exception:
+                    pass
+            else:
+                logger.info("early_hedge_sell_failed", slug=pos["slug"], bid=sell_price)
+        except Exception as e:
+            logger.warning("early_hedge_sell_error", error=str(e)[:80])
 
     async def _early_sell(self, state: AssetState, pos: dict, current_bid: float, reason: str):
         """Sell early entry position."""
