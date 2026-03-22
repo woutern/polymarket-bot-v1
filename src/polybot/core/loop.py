@@ -1007,8 +1007,8 @@ class TradingLoop:
 
         # Refresh orderbook
         await self._refresh_orderbook(state)
-        yes_ask = state.orderbook.yes_ask or 0
-        no_ask = state.orderbook.no_ask or 0
+        yes_ask = state.orderbook.yes_best_ask or 0
+        no_ask = state.orderbook.no_best_ask or 0
 
         # Direction from price move
         pct_move = ((price - window.open_price) / window.open_price * 100) if window.open_price > 0 else 0
@@ -1092,8 +1092,8 @@ class TradingLoop:
         size = min(self.settings.early_entry_max_bet, 2.00)  # Hard cap $2
 
         side = "YES" if direction_up else "NO"
-        yes_id = state.orderbook.yes_token_id or ""
-        no_id = state.orderbook.no_token_id or ""
+        yes_id = window.yes_token_id if window else ""
+        no_id = window.no_token_id if window else ""
         token_id = yes_id if direction_up else no_id
 
         if not token_id:
@@ -1106,7 +1106,7 @@ class TradingLoop:
 
         if self.settings.early_entry_use_limit:
             # GTC limit at best_bid + offset
-            best_bid = state.orderbook.yes_bid if direction_up else state.orderbook.no_bid
+            best_bid = state.orderbook.yes_best_bid if direction_up else state.orderbook.no_best_bid
             if best_bid and best_bid > 0:
                 limit_price = round(best_bid + self.settings.early_entry_limit_offset, 2)
                 if limit_price < current_ask:
