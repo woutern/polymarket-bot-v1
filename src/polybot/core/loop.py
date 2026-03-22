@@ -1151,8 +1151,14 @@ class TradingLoop:
 
         # DCA T+15s: initial buy = main_pct × dca_t1_pct of total budget
         total_budget = self.settings.early_entry_max_bet
-        main_budget = total_budget * self.settings.early_entry_main_pct
+        main_budget = round(total_budget * self.settings.early_entry_main_pct, 2)
         size = round(main_budget * self.settings.early_entry_dca_t1_pct, 2)
+        # Hard ceiling check
+        spent = state.early_main_filled + state.early_hedge_filled
+        if spent + size > total_budget:
+            size = round(total_budget - spent, 2)
+        if size < 0.50:
+            return
 
         side = "YES" if direction_up else "NO"
         yes_id = window.yes_token_id if window else ""
@@ -1346,13 +1352,16 @@ class TradingLoop:
             # Post hedge order on opposite side
             try:
                 hedge_budget = round(total_budget * self.settings.early_entry_hedge_pct, 2)
+                # Hard ceiling: don't exceed total budget
+                hedge_budget = min(hedge_budget, round(total_budget - state.early_main_filled, 2))
                 hedge_token = (window.no_token_id if direction_up else window.yes_token_id) if window else ""
                 hedge_bid = state.orderbook.no_best_bid if direction_up else state.orderbook.yes_best_bid
-                if hedge_token and hedge_bid and hedge_bid > 0.10 and self.settings.mode == "live":
+                hedge_price = round(hedge_bid + 0.01, 2) if hedge_bid else 0
+                # Only hedge if cheap (< 30¢) — above that it's too expensive
+                if hedge_token and hedge_bid and hedge_price <= 0.30 and hedge_budget >= 0.50 and self.settings.mode == "live":
                     from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
                     from py_clob_client.order_builder.constants import BUY
                     options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
-                    hedge_price = round(hedge_bid + 0.01, 2)
                     hedge_shares = max(round(hedge_budget / hedge_price), 5)
                     hedge_args = OrderArgs(price=hedge_price, size=hedge_shares, side=BUY, token_id=hedge_token)
                     hedge_signed = self.trader.client.create_order(hedge_args, options)
@@ -1364,6 +1373,86 @@ class TradingLoop:
                                 order_id=state.early_hedge_order_id or "failed")
             except Exception as he:
                 logger.warning("early_hedge_failed", error=str(he)[:80])
+
+    async def _verify_early_polymarket(self, early_slug: str, market_slug: str, delay: int):
+        """Verify early entry trades against Polymarket oracle after delay."""
+        await asyncio.sleep(delay)
+        try:
+            from polybot.feeds.polymarket_rest import get_market_outcome
+            for attempt in range(4):
+                winner, source = await get_market_outcome(market_slug)
+                if winner:
+                    went_up = winner == "YES"
+                    self._resolve_early_trades_polymarket(early_slug, went_up)
+                    return
+                await asyncio.sleep(60)
+        except Exception as e:
+            logger.warning("early_verify_polymarket_failed", slug=early_slug, error=str(e)[:60])
+
+    def _resolve_early_trades_polymarket(self, early_slug: str, went_up: bool):
+        """Update early trades with Polymarket-verified outcome."""
+        try:
+            if not self.dynamo or not self.dynamo._available:
+                return
+            from decimal import Decimal
+            from boto3.dynamodb.conditions import Attr
+            resp = self.dynamo._trades.scan(
+                FilterExpression=Attr("window_slug").eq(early_slug),
+            )
+            for t in resp.get("Items", []):
+                if t.get("source") == "early_exit":
+                    continue  # Already manually resolved
+                side = t.get("side", "")
+                fill = float(t.get("fill_price", 0) or 0)
+                size = float(t.get("size_usd", 0) or 0)
+                won = (side == "YES" and went_up) or (side == "NO" and not went_up)
+                pnl = round((size / fill) - size, 2) if won and fill > 0 else round(-size, 2)
+                self.dynamo._trades.update_item(
+                    Key={"id": t["id"]},
+                    UpdateExpression="SET resolved=:r, pnl=:p, outcome_source=:s",
+                    ExpressionAttributeValues={
+                        ":r": 1, ":p": Decimal(str(pnl)), ":s": "polymarket_verified",
+                    },
+                )
+                logger.info("early_trade_verified", slug=early_slug, side=side, won=won, pnl=pnl)
+        except Exception as e:
+            logger.warning("early_verify_update_failed", error=str(e)[:60])
+
+    def _resolve_early_trades(self, asset: str, window_slug: str, went_up: bool):
+        """Resolve early entry trades in DynamoDB for a closed window."""
+        try:
+            if not self.dynamo or not self.dynamo._available:
+                return
+            from decimal import Decimal
+            from boto3.dynamodb.conditions import Attr
+            # Scan for unresolved early trades matching this window
+            early_slug = f"early_{window_slug}"
+            resp = self.dynamo._trades.scan(
+                FilterExpression=Attr("window_slug").eq(early_slug) & Attr("resolved").eq(0),
+            )
+            items = resp.get("Items", [])
+            for t in items:
+                side = t.get("side", "")
+                fill = float(t.get("fill_price", 0) or 0)
+                size = float(t.get("size_usd", 0) or 0)
+                won = (side == "YES" and went_up) or (side == "NO" and not went_up)
+                if won and fill > 0:
+                    pnl = round((size / fill) - size, 2)
+                else:
+                    pnl = round(-size, 2)
+                self.dynamo._trades.update_item(
+                    Key={"id": t["id"]},
+                    UpdateExpression="SET resolved=:r, pnl=:p, outcome_source=:s",
+                    ExpressionAttributeValues={
+                        ":r": 1,
+                        ":p": Decimal(str(pnl)),
+                        ":s": "coinbase_provisional",
+                    },
+                )
+                logger.info("early_trade_resolved", slug=early_slug, side=side,
+                            won=won, pnl=pnl, source="coinbase")
+        except Exception as e:
+            logger.warning("early_resolve_failed", slug=window_slug, error=str(e)[:80])
 
     # ── EARLY DCA ROUNDS (T+45s, T+90s) ──────────────────────────────────────
     async def _early_dca_round(self, state: AssetState, price: float, seconds_since_open: float, dca_t: int):
@@ -1388,6 +1477,9 @@ class TradingLoop:
         else:  # 90
             dca_size = round(main_budget * self.settings.early_entry_dca_t3_pct, 2)
         dca_size = min(dca_size, remaining)
+        # Hard ceiling: total spent must not exceed max_bet
+        total_spent = state.early_main_filled + state.early_hedge_filled
+        dca_size = min(dca_size, round(total_budget - total_spent, 2))
 
         if dca_size < 0.50:
             return
@@ -1692,14 +1784,15 @@ class TradingLoop:
         # Provisional resolve using Coinbase (blue indicator) — will be overwritten
         # by Polymarket Chainlink oracle once confirmed
         await self.trader.resolve_window(window.slug, went_up)
-        # Also resolve early entry trades (same window, prefixed slug)
-        await self.trader.resolve_window(f"early_{window.slug}", went_up)
+        # Resolve early entry trades directly in DynamoDB (not in SQLite)
+        self._resolve_early_trades(state.asset, window.slug, went_up)
 
         # Schedule authoritative Polymarket verification 90s after close
         slug = window.slug
         task = asyncio.create_task(self._verify_outcome_after_delay(slug, 90), name=f"verify_{slug}")
-        # Also verify early entry trades
-        early_task = asyncio.create_task(self._verify_outcome_after_delay(f"early_{slug}", 90), name=f"verify_early_{slug}")
+        # Verify early entry trades via Polymarket after delay (overwrites provisional)
+        _early_slug = f"early_{slug}"
+        early_task = asyncio.create_task(self._verify_early_polymarket(_early_slug, slug, 90), name=f"verify_early_{slug}")
         early_task.add_done_callback(lambda t: logger.error("verify_task_exception", error=str(t.exception())) if t.exception() else None)
         task.add_done_callback(lambda t: logger.error("verify_task_exception", error=str(t.exception())) if t.exception() else None)
 
