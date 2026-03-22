@@ -11,7 +11,6 @@ from decimal import Decimal
 
 import os as _os
 import secrets
-import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -1518,6 +1517,13 @@ def dashboard(_: str = Depends(_require_auth)):
     return HTML
 
 
+try:
+    from mangum import Mangum
+    handler = Mangum(app, lifespan="off")
+except ImportError:
+    handler = None
+
 if __name__ == "__main__":
+    import uvicorn
     print("\n  Dashboard: http://localhost:8888\n")
     uvicorn.run(app, host="0.0.0.0", port=8888, log_level="warning")
