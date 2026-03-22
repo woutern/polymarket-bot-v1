@@ -1094,7 +1094,7 @@ class TradingLoop:
             return
         self._early_traded_slugs.add(early_slug)
 
-        size = min(self.settings.early_entry_max_bet, 2.00)  # Hard cap $2
+        size = self.settings.early_entry_max_bet
 
         side = "YES" if direction_up else "NO"
         yes_id = window.yes_token_id if window else ""

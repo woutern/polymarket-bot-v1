@@ -886,12 +886,13 @@ class TestEarlyEntry:
         scan_source = inspect.getsource(TradingLoop._execute_scan_entry)
         assert "early_" not in scan_source
 
-    def test_hard_cap_2_dollars(self):
-        """Early entry size never exceeds $2.00."""
+    def test_size_from_config(self):
+        """Early entry size comes from config (no hardcoded override)."""
         from polybot.core.loop import TradingLoop
         import inspect
         source = inspect.getsource(TradingLoop._execute_early_entry)
-        assert "2.00" in source
+        assert "early_entry_max_bet" in source
+        assert "min(" not in source.split("early_entry_max_bet")[0].split("\n")[-1]  # no min() wrapping it
 
     def test_limit_order_with_fallback(self):
         """Early entry supports GTC limit with FOK fallback."""
