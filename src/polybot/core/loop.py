@@ -1075,6 +1075,27 @@ class TradingLoop:
             seconds=round(seconds_since_open, 1),
         )
 
+        # Log to training_data for model learning (every eval, not just trades)
+        if not hasattr(state, '_early_logged_slug') or state._early_logged_slug != window.slug:
+            state._early_logged_slug = window.slug
+            try:
+                self.dynamo.put_training_data({
+                    "slug": f"early_{window.slug}",
+                    "asset": state.asset, "timeframe": "5m",
+                    "timestamp": time.time(),
+                    "entry_seconds": seconds_since_open,
+                    "source": "early_entry",
+                    "direction": "up" if direction_up else "down",
+                    "signal_ask_price": current_ask,
+                    "lgbm_prob_raw": lgbm_prob,
+                    "directional_prob": directional_prob,
+                    "ev": ev,
+                    "skip_reason": skip_reason or "TRADE",
+                    **features,
+                })
+            except Exception:
+                pass
+
         if skip_reason:
             if seconds_since_open >= 18:
                 state.early_entry_evaluated = True
@@ -1220,10 +1241,44 @@ class TradingLoop:
                     self._log_early_trade(state, window, side, current_ask, size, lgbm_prob, ev,
                                           entry_type, limit_price, False, 0, order_id)
                 else:
-                    logger.warning("early_entry_fok_failed", resp=str(resp)[:80])
+                    # FOK failed (thin liquidity) — retry with GTC limit at current ask
+                    logger.warning("early_entry_fok_failed", resp=str(resp), ask=current_ask)
+                    try:
+                        gtc_args = OrderArgs(price=current_ask, size=shares, side=BUY, token_id=token_id)
+                        gtc_signed = self.trader.client.create_order(gtc_args, options)
+                        gtc_resp = self.trader.client.post_order(gtc_signed, OrderType.GTC)
+                        gtc_id = gtc_resp.get("orderID", "")
+                        if gtc_id:
+                            import asyncio as _aio
+                            filled = False
+                            wait_ms = 0
+                            while wait_ms < 8000:
+                                await _aio.sleep(1.0)
+                                wait_ms += 1000
+                                try:
+                                    status = self.trader.client.get_order(gtc_id).get("status", "")
+                                    if status in ("MATCHED", "FILLED"):
+                                        filled = True
+                                        break
+                                    elif status in ("CANCELLED", "EXPIRED"):
+                                        break
+                                except Exception:
+                                    break
+                            if filled:
+                                logger.info("early_entry_gtc_retry_filled", slug=early_slug, ask=current_ask, wait_ms=wait_ms)
+                                self._log_early_trade(state, window, side, current_ask, size, lgbm_prob, ev,
+                                                      "early_maker_retry", current_ask, True, wait_ms, gtc_id)
+                            else:
+                                try:
+                                    self.trader.client.cancel(gtc_id)
+                                except Exception:
+                                    pass
+                                logger.info("early_entry_gtc_retry_timeout", slug=early_slug, wait_ms=wait_ms)
+                    except Exception as gtc_e:
+                        logger.warning("early_entry_gtc_retry_failed", error=str(gtc_e))
 
         except Exception as e:
-            logger.error("early_entry_error", asset=state.asset, error=str(e)[:80])
+            logger.error("early_entry_error", asset=state.asset, error=str(e))
 
         state.early_entry_traded = True
         state.early_entry_evaluated = True
@@ -1313,10 +1368,15 @@ class TradingLoop:
         # Provisional resolve using Coinbase (blue indicator) — will be overwritten
         # by Polymarket Chainlink oracle once confirmed
         await self.trader.resolve_window(window.slug, went_up)
+        # Also resolve early entry trades (same window, prefixed slug)
+        await self.trader.resolve_window(f"early_{window.slug}", went_up)
 
         # Schedule authoritative Polymarket verification 90s after close
         slug = window.slug
         task = asyncio.create_task(self._verify_outcome_after_delay(slug, 90), name=f"verify_{slug}")
+        # Also verify early entry trades
+        early_task = asyncio.create_task(self._verify_outcome_after_delay(f"early_{slug}", 90), name=f"verify_early_{slug}")
+        early_task.add_done_callback(lambda t: logger.error("verify_task_exception", error=str(t.exception())) if t.exception() else None)
         task.add_done_callback(lambda t: logger.error("verify_task_exception", error=str(t.exception())) if t.exception() else None)
 
         window_record = {
@@ -1391,7 +1451,9 @@ class TradingLoop:
             try:
                 logger.info("resolution_checking", slug=window_slug, attempt=attempt + 1)
                 from polybot.feeds.polymarket_rest import get_market_outcome
-                winner, source = await get_market_outcome(window_slug)
+                # Strip early_ prefix for Polymarket API (market indexed by original slug)
+                lookup_slug = window_slug.removeprefix("early_")
+                winner, source = await get_market_outcome(lookup_slug)
 
                 if winner is None:
                     if attempt < 5:
@@ -1544,7 +1606,9 @@ class TradingLoop:
                 slug = t.get("window_slug", "")
                 if not slug:
                     continue
-                winner, source = await get_market_outcome(slug)
+                # Strip early_ prefix for Polymarket API lookup (market indexed by original slug)
+                lookup_slug = slug.removeprefix("early_")
+                winner, source = await get_market_outcome(lookup_slug)
                 if not winner:
                     continue
                 side = t.get("side", "")

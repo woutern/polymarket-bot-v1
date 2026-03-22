@@ -330,6 +330,15 @@ def api_data():
 
     current_bankroll = _BANKROLL + total_pnl
 
+    # Early entry stats (source="early_entry" in trades table)
+    early_trades = [t for t in trades if _extract_field(t, "source") == "early_entry"]
+    early_resolved = [t for t in early_trades if t.get("resolved") or _bool_field(t, "resolved")]
+    early_wins = sum(1 for t in early_resolved if _float_field(t, "pnl") > 0)
+    early_losses = sum(1 for t in early_resolved if _float_field(t, "pnl") <= 0)
+    early_pnl = sum(_float_field(t, "pnl") for t in early_resolved)
+    early_pending = len(early_trades) - len(early_resolved)
+    early_deployed = sum(_float_field(t, "size_usd") for t in early_trades)
+
     return {
         "trades": trades[:50],
         "windows": windows,
@@ -348,7 +357,29 @@ def api_data():
             "mode": _TRADE_MODE,
             "starting_bankroll": _BANKROLL,
             "current_bankroll": current_bankroll,
+            "early_entry": {
+                "trades": len(early_trades),
+                "wins": early_wins,
+                "losses": early_losses,
+                "pending": early_pending,
+                "pnl": early_pnl,
+                "deployed": early_deployed,
+                "wr": round(early_wins / (early_wins + early_losses) * 100) if (early_wins + early_losses) > 0 else 0,
+            },
         },
+        "early_trades": [{
+            "slug": _extract_field(t, "window_slug"),
+            "asset": _extract_field(t, "asset"),
+            "side": _extract_field(t, "side"),
+            "fill_price": _float_field(t, "fill_price"),
+            "size_usd": _float_field(t, "size_usd"),
+            "entry_type": _extract_field(t, "entry_type"),
+            "model_prob": _float_field(t, "model_prob"),
+            "ev": _float_field(t, "ev"),
+            "pnl": _float_field(t, "pnl"),
+            "resolved": bool(t.get("resolved") or _bool_field(t, "resolved")),
+            "timestamp": _float_field(t, "timestamp"),
+        } for t in early_trades[:20]],
     }
 
 
@@ -361,6 +392,97 @@ def api_trades(
     """Filtered, paginated trade list."""
     trades = get_trades(limit=limit, asset=asset, tf=tf)
     return {"trades": trades, "count": len(trades)}
+
+
+@app.get("/api/early-entry")
+def api_early_entry():
+    """Early entry trades and stats."""
+    import time as _t
+    from decimal import Decimal
+    trades = get_trades(limit=500)
+    early = [t for t in trades if _extract_field(t, "source") == "early_entry"]
+
+    # Stats
+    resolved = [t for t in early if t.get("resolved") or _bool_field(t, "resolved")]
+    wins = [t for t in resolved if _float_field(t, "pnl") > 0]
+    losses = [t for t in resolved if _float_field(t, "pnl") <= 0]
+    unresolved = [t for t in early if not (t.get("resolved") or _bool_field(t, "resolved"))]
+    total_pnl = sum(_float_field(t, "pnl") for t in resolved)
+
+    avg_entry = sum(_float_field(t, "fill_price") for t in early) / len(early) if early else 0
+    avg_prob = sum(_float_field(t, "model_prob") for t in early) / len(early) if early else 0
+    avg_ev = sum(_float_field(t, "ev") for t in early) / len(early) if early else 0
+
+    # Limit fill rate
+    makers = sum(1 for t in early if _extract_field(t, "entry_type") == "early_maker")
+    takers = sum(1 for t in early if _extract_field(t, "entry_type") == "early_taker")
+    fallbacks = sum(1 for t in early if _extract_field(t, "entry_type") == "early_taker_fallback")
+
+    # Trades per hour (last 4h)
+    now = _t.time()
+    last_4h = [t for t in early if _float_field(t, "timestamp") > now - 14400]
+    tph = len(last_4h) / 4 if last_4h else 0
+
+    # Streak
+    streak = 0
+    streak_type = ""
+    for t in sorted(resolved, key=lambda x: _float_field(x, "timestamp"), reverse=True):
+        w = _float_field(t, "pnl") > 0
+        if not streak_type:
+            streak_type = "W" if w else "L"
+        if (streak_type == "W") == w:
+            streak += 1
+        else:
+            break
+
+    # Equity curve
+    curve = []
+    cum = 0
+    for t in sorted(resolved, key=lambda x: _float_field(x, "timestamp")):
+        cum += _float_field(t, "pnl")
+        curve.append({"ts": _float_field(t, "timestamp"), "pnl": round(cum, 2)})
+
+    # Trade list
+    trade_list = []
+    for t in sorted(early, key=lambda x: _float_field(x, "timestamp"), reverse=True):
+        is_resolved = bool(t.get("resolved") or _bool_field(t, "resolved"))
+        pnl = _float_field(t, "pnl")
+        trade_list.append({
+            "slug": _extract_field(t, "window_slug"),
+            "asset": _extract_field(t, "asset"),
+            "side": _extract_field(t, "side"),
+            "fill_price": _float_field(t, "fill_price"),
+            "size_usd": _float_field(t, "size_usd"),
+            "entry_type": _extract_field(t, "entry_type"),
+            "model_prob": _float_field(t, "model_prob"),
+            "ev": _float_field(t, "ev"),
+            "pnl": pnl,
+            "resolved": is_resolved,
+            "won": pnl > 0 if is_resolved else None,
+            "timestamp": _float_field(t, "timestamp"),
+        })
+
+    return {
+        "stats": {
+            "trades": len(early),
+            "wins": len(wins),
+            "losses": len(losses),
+            "open": len(unresolved),
+            "wr": round(len(wins) / len(resolved) * 100) if resolved else 0,
+            "pnl": round(total_pnl, 2),
+            "avg_entry": round(avg_entry, 3),
+            "avg_prob": round(avg_prob, 3),
+            "avg_ev": round(avg_ev, 3),
+            "makers": makers,
+            "takers": takers,
+            "fallbacks": fallbacks,
+            "limit_fill_rate": round(makers / len(early) * 100) if early else 0,
+            "tph": round(tph, 1),
+            "streak": f"{streak_type}{streak}" if streak else "—",
+        },
+        "curve": curve,
+        "trades": trade_list,
+    }
 
 
 @app.get("/api/signals")
@@ -1131,6 +1253,7 @@ HTML = r"""<!DOCTYPE html>
     <button class="nav-tab" onclick="showPage('trades',this)">Trades</button>
     <button class="nav-tab" onclick="showPage('analytics',this)">Analytics</button>
     <button class="nav-tab" onclick="showPage('opportunities',this)">Opportunities</button>
+    <button class="nav-tab" onclick="showPage('early',this)">Early Entry</button>
     <button class="nav-tab" onclick="showPage('rules',this)">Rules</button>
   </div>
   <div class="nav-mode" id="mode-badge">LIVE</div>
@@ -1145,6 +1268,7 @@ HTML = r"""<!DOCTYPE html>
   <button onclick="showPage('trades',this);document.getElementById('mobile-menu').classList.remove('open')">Trades</button>
   <button onclick="showPage('analytics',this);document.getElementById('mobile-menu').classList.remove('open')">Analytics</button>
   <button onclick="showPage('opportunities',this);document.getElementById('mobile-menu').classList.remove('open')">Opportunities</button>
+  <button onclick="showPage('early',this);document.getElementById('mobile-menu').classList.remove('open')">Early Entry</button>
   <button onclick="showPage('rules',this);document.getElementById('mobile-menu').classList.remove('open')">Rules</button>
 </div>
 
@@ -1195,9 +1319,25 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Early Entry -->
+  <div class="section">
+    <div class="section-title">Early Entry (T+15s)</div>
+    <div class="grid grid-4" style="margin-bottom:12px">
+      <div class="card"><div class="card-label">Trades</div><div class="card-value" id="ee-trades">—</div></div>
+      <div class="card"><div class="card-label">Win Rate</div><div class="card-value" id="ee-wr">—</div></div>
+      <div class="card"><div class="card-label">P&L</div><div class="card-value" id="ee-pnl">—</div></div>
+      <div class="card"><div class="card-label">Deployed</div><div class="card-value" id="ee-deployed">—</div></div>
+    </div>
+    <div class="panel" style="max-height:300px;overflow-y:auto">
+      <table class="t"><thead><tr>
+        <th>Time</th><th>Asset</th><th>Side</th><th>Ask</th><th>Size</th><th>Type</th><th>lgbm</th><th>EV</th><th>P&L</th><th>Status</th>
+      </tr></thead><tbody id="ee-body"><tr><td colspan="10" class="empty">No early entry trades yet</td></tr></tbody></table>
+    </div>
+  </div>
+
   <!-- Recent trades -->
   <div class="section">
-    <div class="section-title">Recent Trades</div>
+    <div class="section-title">Recent Trades (Scenario C)</div>
     <div class="panel">
       <div style="overflow-x:auto">
         <table>
@@ -1283,6 +1423,39 @@ HTML = r"""<!DOCTYPE html>
 </div>
 
 <!-- ═══ RULES ═══ -->
+<!-- ═══ EARLY ENTRY ═══ -->
+<div id="page-early" class="page-content">
+<div class="page">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <span style="font-size:12px;color:var(--text3)" id="ee-updated">—</span>
+  </div>
+  <div class="grid grid-4">
+    <div class="card"><div class="card-label">Trades</div><div class="card-value" id="ee-stat-trades">—</div></div>
+    <div class="card"><div class="card-label">Win Rate</div><div class="card-value" id="ee-stat-wr">—</div></div>
+    <div class="card"><div class="card-label">P&L</div><div class="card-value" id="ee-stat-pnl">—</div></div>
+    <div class="card"><div class="card-label">Streak</div><div class="card-value" id="ee-stat-streak">—</div></div>
+  </div>
+  <div class="grid grid-4">
+    <div class="card"><div class="card-label">Avg Entry</div><div class="card-value" id="ee-stat-entry">—</div></div>
+    <div class="card"><div class="card-label">Avg Dir Prob</div><div class="card-value" id="ee-stat-prob">—</div></div>
+    <div class="card"><div class="card-label">Avg EV</div><div class="card-value" id="ee-stat-ev">—</div></div>
+    <div class="card"><div class="card-label">Limit Fill %</div><div class="card-value" id="ee-stat-limit">—</div></div>
+  </div>
+  <div class="section">
+    <div class="section-title">Equity Curve</div>
+    <div class="panel"><div class="chart-wrap"><canvas id="ee-chart"></canvas></div></div>
+  </div>
+  <div class="section">
+    <div class="section-title">Trades</div>
+    <div class="panel" style="max-height:500px;overflow-y:auto">
+      <table class="t"><thead><tr>
+        <th>Time</th><th>Asset</th><th>Side</th><th>Ask</th><th>Size</th><th>Type</th><th>Prob</th><th>EV</th><th>P&L</th><th>Status</th>
+      </tr></thead><tbody id="ee-tbody"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody></table>
+    </div>
+  </div>
+</div>
+</div>
+
 <div id="page-rules" class="page-content">
 <div class="page">
   <div class="section">
@@ -1430,6 +1603,7 @@ function showPage(name, btn) {
   else if (name === 'trades') loadTrades();
   else if (name === 'analytics') loadAnalytics();
   else if (name === 'opportunities') loadOpportunities();
+  else if (name === 'early') loadEarlyEntry();
   // 'rules' page is static — no data to load
 }
 
@@ -1722,6 +1896,62 @@ async function loadOpportunities() {
     }
     document.getElementById('opp-resolved').innerHTML = rh || '<tr><td colspan="7" class="empty">No resolved trades yet</td></tr>';
   } catch(e) { console.error('opportunities error', e); }
+}
+
+let eeChart = null;
+let eeInterval = null;
+
+async function loadEarlyEntry() {
+  try {
+    const resp = await fetch('/api/early-entry');
+    const data = await resp.json();
+    const s = data.stats;
+
+    // Stats
+    document.getElementById('ee-stat-trades').textContent = s.trades + ' (' + s.open + ' open)';
+    const wrEl = document.getElementById('ee-stat-wr');
+    wrEl.textContent = s.wr + '%';
+    wrEl.className = 'card-value ' + (s.wr >= 60 ? 'green' : s.wr < 50 ? 'red' : '');
+    const pnlEl = document.getElementById('ee-stat-pnl');
+    pnlEl.textContent = (s.pnl >= 0 ? '+' : '') + '$' + Math.abs(s.pnl).toFixed(2);
+    pnlEl.className = 'card-value ' + (s.pnl >= 0 ? 'green' : 'red');
+    document.getElementById('ee-stat-streak').textContent = s.streak;
+    document.getElementById('ee-stat-entry').textContent = '$' + s.avg_entry.toFixed(3);
+    document.getElementById('ee-stat-prob').textContent = s.avg_prob.toFixed(3);
+    document.getElementById('ee-stat-ev').textContent = s.avg_ev.toFixed(3);
+    document.getElementById('ee-stat-limit').textContent = s.limit_fill_rate + '% (' + s.makers + 'M/' + s.takers + 'T/' + s.fallbacks + 'F)';
+
+    document.getElementById('ee-updated').textContent = 'Last updated: ' + new Date().toLocaleTimeString('en-GB', {timeZone: 'Europe/Amsterdam'});
+
+    // Equity curve
+    if (data.curve && data.curve.length > 0) {
+      const labels = data.curve.map(c => new Date(c.ts * 1000).toLocaleTimeString('en-GB', {timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit'}));
+      const values = data.curve.map(c => c.pnl);
+      const ctx = document.getElementById('ee-chart').getContext('2d');
+      if (eeChart) eeChart.destroy();
+      eeChart = new Chart(ctx, {
+        type: 'line',
+        data: {labels, datasets: [{data: values, borderColor: values[values.length-1] >= 0 ? '#10b981' : '#ef4444', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, tension: 0.1}]},
+        options: {responsive: true, maintainAspectRatio: false, animation: false, plugins: {legend: {display: false}}, scales: {y: {ticks: {callback: v => '$' + v.toFixed(2), font: {size: 10}}}, x: {ticks: {font: {size: 9}, maxTicksLimit: 12}}}}
+      });
+    }
+
+    // Trade table
+    let html = '';
+    for (const t of (data.trades || [])) {
+      const ts = t.timestamp ? new Date(t.timestamp * 1000).toLocaleString('en-GB', {timeZone: 'Europe/Amsterdam', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false}) : '—';
+      const pnl = t.pnl || 0;
+      const bg = t.resolved ? (t.won ? '#f0fdf4' : '#fef2f2') : '#fffbeb';
+      const status = t.resolved ? (t.won ? '<span class="badge badge-win">WON</span>' : '<span class="badge badge-loss">LOST</span>') : '<span class="badge badge-pending">OPEN</span>';
+      const pnlStr = t.resolved ? '<span class="' + (pnl >= 0 ? 'green' : 'red') + '" style="font-weight:700">' + (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2) + '</span>' : '—';
+      html += '<tr style="background:' + bg + '"><td style="font-size:12px">' + ts + '</td><td>' + t.asset + '</td><td>' + t.side + '</td><td>$' + t.fill_price.toFixed(2) + '</td><td>$' + t.size_usd.toFixed(2) + '</td><td style="font-size:11px">' + (t.entry_type || '—') + '</td><td>' + t.model_prob.toFixed(3) + '</td><td>' + t.ev.toFixed(3) + '</td><td>' + pnlStr + '</td><td>' + status + '</td></tr>';
+    }
+    document.getElementById('ee-tbody').innerHTML = html || '<tr><td colspan="10" class="empty">No early entry trades yet</td></tr>';
+
+    // Auto-refresh every 30s
+    if (eeInterval) clearInterval(eeInterval);
+    eeInterval = setInterval(loadEarlyEntry, 30000);
+  } catch(e) { console.error('early entry error', e); }
 }
 
 async function manualTrade(slug, side, price) {
