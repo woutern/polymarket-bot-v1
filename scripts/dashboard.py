@@ -50,8 +50,10 @@ try:
     _trades_table = _ddb.Table("polymarket-bot-trades")
     _windows_table = _ddb.Table("polymarket-bot-windows")
     _signals_table = _ddb.Table("polymarket-bot-signals")
+    _live_table = _ddb.Table("polymarket-bot-live-state")
     _USE_DYNAMO = True
 except Exception:
+    _live_table = None
     pass
 
 _USE_SQLITE = _os.path.exists(_DB_PATH)
@@ -1157,923 +1159,347 @@ async def api_opportunities_trade(slug: str, side: str, price: float):
     return result
 
 
+# ── NEW V2 API ENDPOINTS ─────────────────────────────────────────────────────
+
+@app.get("/api/live-state")
+def api_live_state():
+    """Fast endpoint: current window state for all 3 assets from DynamoDB."""
+    if not _live_table:
+        return {"assets": {}}
+    try:
+        result = {}
+        for asset in ["BTC", "ETH", "SOL"]:
+            resp = _live_table.get_item(Key={"asset": asset})
+            item = resp.get("Item")
+            if item:
+                result[asset] = {k: float(v) if isinstance(v, Decimal) else v for k, v in item.items()}
+        return {"assets": result, "ts": time.time()}
+    except Exception as e:
+        return {"assets": {}, "error": str(e)[:60]}
+
+
+@app.get("/api/overview")
+def api_overview():
+    """Aggregated stats + last 100 windows for overview tab."""
+    import httpx as _hx
+    from collections import defaultdict
+
+    # Get on-chain activity for real P&L
+    try:
+        r = _hx.get("https://data-api.polymarket.com/activity", params={
+            "user": _WALLET_ADDRESS, "limit": 500,
+        }, timeout=15)
+        activity = r.json() if r.status_code == 200 else []
+    except Exception:
+        activity = []
+
+    fivemin = [a for a in activity if "Up or Down" in a.get("title", "")]
+
+    # Group by market
+    windows = defaultdict(lambda: {"buys": 0, "sells": 0, "redeems": 0, "buy_count": 0})
+    for a in fivemin:
+        title = a.get("title", "")
+        typ = a.get("type", "")
+        usd = float(a.get("usdcSize", 0) or 0)
+        if typ == "TRADE":
+            if a.get("side") == "BUY":
+                windows[title]["buys"] += usd
+                windows[title]["buy_count"] += 1
+            elif a.get("side") == "SELL":
+                windows[title]["sells"] += usd
+        elif typ == "REDEEM":
+            windows[title]["redeems"] += usd
+
+    # Compute stats
+    window_list = []
+    total_pnl = 0
+    wins = 0
+    losses = 0
+    combined_avgs = []
+
+    for title in sorted(windows.keys(), reverse=True)[:100]:
+        d = windows[title]
+        if d["buys"] == 0:
+            continue
+        net = d["redeems"] + d["sells"] - d["buys"]
+        total_pnl += net
+        is_win = net > 0.5
+        if is_win:
+            wins += 1
+        elif net < -0.5:
+            losses += 1
+
+        # Determine asset
+        asset = "BTC" if "Bitcoin" in title else "ETH" if "Ethereum" in title else "SOL" if "Solana" in title else "?"
+
+        window_list.append({
+            "title": title[:55],
+            "asset": asset,
+            "buys": round(d["buys"], 2),
+            "sells": round(d["sells"], 2),
+            "redeems": round(d["redeems"], 2),
+            "net": round(net, 2),
+            "win": is_win,
+            "buy_count": d["buy_count"],
+        })
+
+    resolved = wins + losses
+    wr = round(wins / resolved * 100) if resolved > 0 else 0
+
+    # Asset breakdown
+    asset_stats = defaultdict(lambda: {"wins": 0, "losses": 0, "pnl": 0})
+    for w in window_list:
+        a = w["asset"]
+        asset_stats[a]["pnl"] += w["net"]
+        if w["net"] > 0.5:
+            asset_stats[a]["wins"] += 1
+        elif w["net"] < -0.5:
+            asset_stats[a]["losses"] += 1
+
+    # Equity curve
+    cum = 0
+    curve = []
+    for w in reversed(window_list):
+        cum += w["net"]
+        curve.append(round(cum, 2))
+    curve.reverse()
+
+    # Portfolio value
+    portfolio = 0
+    try:
+        r2 = _hx.get("https://data-api.polymarket.com/value", params={"user": _WALLET_ADDRESS}, timeout=10)
+        if r2.status_code == 200 and r2.json():
+            portfolio = float(r2.json()[0].get("value", 0))
+    except Exception:
+        pass
+
+    return {
+        "stats": {
+            "total_pnl": round(total_pnl, 2),
+            "wins": wins,
+            "losses": losses,
+            "wr": wr,
+            "windows": len(window_list),
+            "portfolio": round(portfolio, 2),
+        },
+        "assets": {k: {"wins": v["wins"], "losses": v["losses"], "pnl": round(v["pnl"], 2)}
+                   for k, v in asset_stats.items()},
+        "windows": window_list[:50],
+        "curve": curve[:50],
+    }
+
+
 # ── HTML dashboard ────────────────────────────────────────────────────────────
 
 
 HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Polymarket Bot</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PolyBot V2</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-  :root{
-    --bg:#f4f5f7;--card:#fff;--border:#e5e7eb;--text:#111827;--text2:#6b7280;--text3:#9ca3af;
-    --green:#10b981;--red:#ef4444;--purple:#8b5cf6;--blue:#3b82f6;
-    --radius:12px;
-  }
-  body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
-
-  /* Nav */
-  nav{background:#111;padding:0 24px;height:48px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
-  .nav-logo{font-size:15px;font-weight:700;color:#fff;letter-spacing:-0.3px}
-  .nav-logo span{color:var(--purple);font-weight:800}
-  .nav-tabs{display:flex;gap:2px}
-  .nav-tab{padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;color:#9ca3af;cursor:pointer;border:none;background:none;transition:.15s}
-  .nav-tab:hover{color:#fff;background:rgba(255,255,255,.08)}
-  .nav-tab.active{color:#fff;background:rgba(139,92,246,.25)}
-  .nav-mode{font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;background:rgba(16,185,129,.15);color:var(--green);letter-spacing:.5px}
-
-  /* Layout */
-  .page{max-width:1200px;margin:0 auto;padding:24px 20px 60px}
-  .page-content{display:none}.page-content.active{display:block}
-
-  /* Cards */
-  .grid{display:grid;gap:16px;margin-bottom:24px}
-  .grid-4{grid-template-columns:repeat(4,1fr)}
-  .grid-2{grid-template-columns:repeat(2,1fr)}
-  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;transition:box-shadow .2s}
-  .card:hover{box-shadow:0 4px 12px rgba(0,0,0,.06)}
-  .card-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--text3);margin-bottom:8px}
-  .card-value{font-size:28px;font-weight:800;letter-spacing:-.5px;line-height:1.1}
-  .card-sub{font-size:12px;color:var(--text2);margin-top:6px}
-  .green{color:var(--green)}.red{color:var(--red)}.purple{color:var(--purple)}.blue{color:#2563eb}
-
-  /* Tables */
-  table{width:100%;border-collapse:collapse}
-  th{text-align:left;font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;padding:10px 14px;border-bottom:2px solid var(--border);white-space:nowrap}
-  td{padding:10px 14px;border-bottom:1px solid #f3f4f6;font-size:13px;color:var(--text2)}
-  tbody tr:hover td{background:#fafafa}
-  .tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
-  .tag-btc{background:#fff7ed;color:#ea580c}
-  .tag-sol{background:#f3f0ff;color:#7c3aed}
-  .tag-up{background:#ecfdf5;color:#059669}
-  .tag-down{background:#fef2f2;color:#dc2626}
-  .tag-win{background:#ecfdf5;color:#059669}
-  .tag-loss{background:#fef2f2;color:#dc2626}
-  .tag-prov-win{background:#eff6ff;color:#2563eb}
-  .tag-prov-loss{background:#eff6ff;color:#2563eb}
-  .tag-open{background:#f0f9ff;color:#0284c7}
-  .empty{text-align:center;padding:40px;color:var(--text3);font-size:13px}
-
-  /* Section */
-  .section{margin-bottom:24px}
-  .section-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px}
-  .panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
-
-  /* Chart */
-  .chart-wrap{padding:16px;height:220px}
-
-  /* WR bars */
-  .wr-row{display:flex;align-items:center;gap:8px;margin:6px 0}
-  .wr-label{width:80px;font-size:12px;color:var(--text2);flex-shrink:0}
-  .wr-bar-bg{flex:1;height:24px;background:#f3f4f6;border-radius:4px;overflow:hidden;position:relative}
-  .wr-bar{height:100%;border-radius:4px;display:flex;align-items:center;padding:0 8px;font-size:11px;font-weight:700;color:#fff;min-width:30px}
-  .wr-val{width:50px;text-align:right;font-size:12px;font-weight:600;color:var(--text);flex-shrink:0}
-
-  /* Hamburger + mobile menu */
-  .hamburger{display:none;background:none;border:none;cursor:pointer;color:#9ca3af;padding:4px}
-  .mobile-menu{display:none;position:fixed;top:48px;left:0;right:0;background:#111;padding:8px 16px 12px;z-index:49;flex-direction:column;gap:4px}
-  .mobile-menu.open{display:flex}
-  .mobile-menu button{width:100%;padding:10px;border-radius:8px;font-size:14px;font-weight:600;color:#9ca3af;border:none;background:none;text-align:left;cursor:pointer}
-  .mobile-menu button:hover,.mobile-menu button.active{color:#fff;background:rgba(139,92,246,.2)}
-
-  /* Responsive */
-  @media(max-width:768px){
-    .grid-4{grid-template-columns:repeat(2,1fr)}
-    .page{padding:16px 12px 40px}
-    nav{padding:0 12px}
-    .nav-tabs{display:none}
-    .hamburger{display:block}
-  }
-  .sortable th[data-sort]{cursor:pointer;user-select:none;position:relative;padding-right:18px}
-  .sortable th[data-sort]:hover{background:#f1f5f9}
-  .sortable th[data-sort]::after{content:'↕';position:absolute;right:4px;opacity:0.3;font-size:11px}
-  .sortable th.sort-asc::after{content:'↑';opacity:0.8}
-  .sortable th.sort-desc::after{content:'↓';opacity:0.8}
-  .btn-trade{background:#3b82f6;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
-  .q-cell{cursor:help;position:relative}
-  .q-cell:hover .q-tip{display:block}
-  .q-tip{display:none;position:absolute;left:0;top:100%;z-index:100;background:#1e293b;color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;line-height:1.4;max-width:400px;min-width:250px;white-space:normal;box-shadow:0 4px 12px rgba(0,0,0,.15)}
-  .btn-trade:hover{background:#2563eb}
-  .btn-trade:disabled{background:#94a3b8;cursor:not-allowed}
-  .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
-  .badge-pending{background:#fef3c7;color:#92400e}
-  .badge-verifying{background:#dbeafe;color:#1e40af}
-  .badge-win{background:#d1fae5;color:#065f46}
-  .badge-loss{background:#fee2e2;color:#991b1b}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,system-ui,sans-serif;background:#0f1117;color:#e2e8f0;min-height:100vh}
+.nav{background:#1a1d29;border-bottom:1px solid #2d3148;padding:0 20px;display:flex;align-items:center;height:48px;gap:16px}
+.nav-logo{font-weight:700;font-size:16px;color:#10b981}
+.nav-tab{background:none;border:none;color:#94a3b8;font-size:13px;cursor:pointer;padding:8px 12px;border-radius:6px}
+.nav-tab:hover{color:#e2e8f0;background:#2d3148}
+.nav-tab.active{color:#10b981;background:#1e3a2f}
+.nav-right{margin-left:auto;font-size:11px;color:#64748b}
+.page{display:none;padding:16px}
+.page.active{display:block}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+@media(max-width:900px){.grid3{grid-template-columns:1fr}}
+.card{background:#1a1d29;border:1px solid #2d3148;border-radius:8px;padding:12px}
+.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #2d3148}
+.card-title{font-weight:600;font-size:14px}
+.card-badge{font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600}
+.badge-pre{background:#3b82f620;color:#60a5fa}
+.badge-open{background:#f59e0b20;color:#f59e0b}
+.badge-acc{background:#10b98120;color:#10b981}
+.badge-hold{background:#6366f120;color:#a78bfa}
+.stat-row{display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid #1e2030}
+.stat-label{color:#94a3b8}
+.stat-value{font-weight:600}
+.green{color:#10b981}.red{color:#ef4444}.blue{color:#60a5fa}.yellow{color:#f59e0b}.gray{color:#64748b}
+.log{max-height:200px;overflow-y:auto;font-size:11px;font-family:monospace;padding:4px}
+.log-entry{padding:2px 4px;border-bottom:1px solid #1e2030}
+.kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:12px}
+.kpi{background:#1a1d29;border:1px solid #2d3148;border-radius:8px;padding:10px;text-align:center}
+.kpi-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px}
+.kpi-value{font-size:20px;font-weight:700;margin-top:2px}
+.tbl{width:100%;border-collapse:collapse;font-size:12px}
+.tbl th{text-align:left;padding:6px 8px;color:#64748b;font-size:10px;text-transform:uppercase;border-bottom:1px solid #2d3148}
+.tbl td{padding:6px 8px;border-bottom:1px solid #1e2030}
+.tbl tr:hover{background:#1e2030}
+.win-row{background:#10b98110}.loss-row{background:#ef444410}
+.chart-wrap{height:200px;position:relative}
+.section{margin-top:12px}
+.section-title{font-size:13px;font-weight:600;color:#94a3b8;margin-bottom:6px}
 </style>
 </head>
 <body>
-
-<nav>
-  <div class="nav-logo">Poly<span>Bot</span></div>
-  <div class="nav-tabs">
-    <button class="nav-tab active" onclick="showPage('early',this)">Early Entry</button>
-    <button class="nav-tab" onclick="showPage('overview',this)">Overview</button>
-    <button class="nav-tab" onclick="showPage('trades',this)">Trades</button>
-    <button class="nav-tab" onclick="showPage('analytics',this)">Analytics</button>
-    <button class="nav-tab" onclick="showPage('opportunities',this)">Opportunities</button>
-    <button class="nav-tab" onclick="showPage('rules',this)">Rules</button>
-  </div>
-  <div class="nav-mode" id="mode-badge">LIVE</div>
-  <button class="hamburger" onclick="document.getElementById('mobile-menu').classList.toggle('open')" aria-label="Menu">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="22" height="22">
-      <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
-    </svg>
-  </button>
-</nav>
-<div class="mobile-menu" id="mobile-menu">
-  <button class="active" onclick="showPage('early',this);document.getElementById('mobile-menu').classList.remove('open')">Early Entry</button>
-  <button onclick="showPage('overview',this);document.getElementById('mobile-menu').classList.remove('open')">Overview</button>
-  <button onclick="showPage('trades',this);document.getElementById('mobile-menu').classList.remove('open')">Trades</button>
-  <button onclick="showPage('analytics',this);document.getElementById('mobile-menu').classList.remove('open')">Analytics</button>
-  <button onclick="showPage('opportunities',this);document.getElementById('mobile-menu').classList.remove('open')">Opportunities</button>
-  <button onclick="showPage('early',this);document.getElementById('mobile-menu').classList.remove('open')">Early Entry</button>
-  <button onclick="showPage('rules',this);document.getElementById('mobile-menu').classList.remove('open')">Rules</button>
+<div class="nav">
+  <span class="nav-logo">PolyBot V2</span>
+  <button class="nav-tab active" onclick="showTab('live',this)">Live</button>
+  <button class="nav-tab" onclick="showTab('overview',this)">Overview</button>
+  <span class="nav-right" id="nav-ts">—</span>
 </div>
 
-<!-- ═══ OVERVIEW ═══ -->
-<div id="page-overview" class="page-content">
-<div class="page">
-
-  <div class="grid grid-4">
-    <div class="card">
-      <div class="card-label">Total P&L</div>
-      <div class="card-value" id="s-pnl">—</div>
-      <div class="card-sub" id="s-pnl-sub"></div>
-    </div>
-    <div class="card">
-      <div class="card-label">Portfolio</div>
-      <div class="card-value purple" id="s-portfolio">—</div>
-      <div class="card-sub" id="s-portfolio-sub"></div>
-    </div>
-    <div class="card">
-      <div class="card-label">Win Rate</div>
-      <div class="card-value" id="s-wr">—</div>
-      <div class="card-sub" id="s-wr-sub"></div>
-    </div>
-    <div class="card">
-      <div class="card-label">Trades</div>
-      <div class="card-value" id="s-count">—</div>
-      <div class="card-sub" id="s-count-sub"></div>
-    </div>
-  </div>
-
-  <!-- WR by asset -->
-  <div class="grid grid-2">
-    <div class="card">
-      <div class="card-label">Win Rate by Asset</div>
-      <div id="wr-asset"></div>
-    </div>
-    <div class="card">
-      <div class="card-label">Win Rate by Ask Price</div>
-      <div id="wr-price"></div>
-    </div>
-  </div>
-
-  <!-- Equity curve -->
-  <div class="section">
-    <div class="panel">
-      <div style="padding:16px 20px 0;font-weight:700;font-size:14px">Equity Curve</div>
-      <div class="chart-wrap"><canvas id="pnl-chart"></canvas></div>
-    </div>
-  </div>
-
-  <!-- Early Entry -->
-  <div class="section">
-    <div class="section-title">Early Entry (T+15s)</div>
-    <div class="grid grid-4" style="margin-bottom:12px">
-      <div class="card"><div class="card-label">Trades</div><div class="card-value" id="ee-trades">—</div></div>
-      <div class="card"><div class="card-label">Win Rate</div><div class="card-value" id="ee-wr">—</div></div>
-      <div class="card"><div class="card-label">P&L</div><div class="card-value" id="ee-pnl">—</div></div>
-      <div class="card"><div class="card-label">Deployed</div><div class="card-value" id="ee-deployed">—</div></div>
-    </div>
-    <div class="panel" style="max-height:300px;overflow-y:auto">
-      <table class="t"><thead><tr>
-        <th>Time</th><th>Asset</th><th>Side</th><th>Ask</th><th>Size</th><th>Type</th><th>lgbm</th><th>EV</th><th>P&L</th><th>Status</th>
-      </tr></thead><tbody id="ee-body"><tr><td colspan="10" class="empty">No early entry trades yet</td></tr></tbody></table>
-    </div>
-  </div>
-
-  <!-- Recent trades -->
-  <div class="section">
-    <div class="section-title">Recent Trades (Scenario C)</div>
-    <div class="panel">
-      <div style="overflow-x:auto">
-        <table>
-          <thead><tr><th>Time</th><th>Asset</th><th>Dir</th><th>Ask</th><th>Size</th><th>P&L</th><th>Result</th></tr></thead>
-          <tbody id="trades-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-</div>
+<!-- LIVE TAB -->
+<div id="page-live" class="page active">
+  <div class="grid3" id="live-grid"></div>
 </div>
 
-<!-- ═══ TRADES ═══ -->
-<div id="page-trades" class="page-content">
-<div class="page">
-  <div class="section-title">Trade History</div>
-  <div class="panel">
-    <div style="overflow-x:auto">
-      <table>
-        <thead><tr><th>Time</th><th>Asset</th><th>Side</th><th>Dir</th><th>Price</th><th>Size</th><th>P&L</th><th>Result</th></tr></thead>
-        <tbody id="tl-body"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-</div>
-</div>
-
-<!-- ═══ ANALYTICS ═══ -->
-<div id="page-analytics" class="page-content">
-<div class="page">
-  <div class="grid grid-2">
-    <div class="card">
-      <div class="card-label">P&L by Asset</div>
-      <div id="pnl-asset"></div>
-    </div>
-    <div class="card">
-      <div class="card-label">P&L by Ask Bucket</div>
-      <div id="pnl-bucket"></div>
-    </div>
-  </div>
-  <div class="grid grid-2">
-    <div class="card">
-      <div class="card-label">LightGBM Gate (Scenario C)</div>
-      <div id="lgbm-stats"></div>
-    </div>
-    <div class="card">
-      <div class="card-label">Skip Reasons (last 24h)</div>
-      <div id="skip-reasons"></div>
-    </div>
-  </div>
-  <div class="section">
-    <div class="section-title">P&L by Hour (CET)</div>
-    <div class="panel">
-      <div class="chart-wrap"><canvas id="hour-chart"></canvas></div>
-    </div>
-  </div>
-</div>
-</div>
-
-<!-- ═══ OPPORTUNITIES ═══ -->
-<div id="page-opportunities" class="page-content">
-<div class="page">
-  <div class="grid grid-4">
-    <div class="card"><div class="card-label">Deployed Today</div><div class="card-value" id="opp-deployed">—</div></div>
-    <div class="card"><div class="card-label">Win Rate</div><div class="card-value" id="opp-wr">—</div></div>
-    <div class="card"><div class="card-label">P&L</div><div class="card-value" id="opp-pnl">—</div></div>
-    <div class="card"><div class="card-label">Active Trades (24h)</div><div class="card-value" id="opp-count">—</div></div>
-  </div>
-  <div class="section">
-    <div class="section-title">Active Trades</div>
-    <div class="panel"><table class="t sortable" id="tbl-opp-active"><thead><tr>
-      <th data-sort="str">Market</th><th data-sort="str">Side</th><th data-sort="num">Entry</th><th data-sort="num">Invested</th><th data-sort="num">To Win</th><th data-sort="str">AI</th><th data-sort="num">Resolves</th><th data-sort="str">Status</th>
-    </tr></thead><tbody id="opp-active"></tbody></table></div>
-  </div>
-  <div class="section">
-    <div class="section-title">Resolved Trades (all time)</div>
-    <div class="panel" style="max-height:600px;overflow-y:auto"><table class="t sortable" id="tbl-opp-resolved"><thead><tr>
-      <th data-sort="str">Market</th><th data-sort="str">Side</th><th data-sort="num">Entry</th><th data-sort="num">Invested</th><th data-sort="str">Result</th><th data-sort="num">P&L</th><th data-sort="str">Resolved</th>
-    </tr></thead><tbody id="opp-resolved"></tbody></table></div>
-  </div>
-</div>
-</div>
-
-<!-- ═══ RULES ═══ -->
-<!-- ═══ EARLY ENTRY ═══ -->
-<div id="page-early" class="page-content active">
-<div class="page">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-    <span style="font-size:12px;color:var(--text3)" id="ee-updated">—</span>
-  </div>
-  <div class="grid grid-4">
-    <div class="card"><div class="card-label">Trades</div><div class="card-value" id="ee-stat-trades">—</div></div>
-    <div class="card"><div class="card-label">Win Rate</div><div class="card-value" id="ee-stat-wr">—</div></div>
-    <div class="card"><div class="card-label">P&L</div><div class="card-value" id="ee-stat-pnl">—</div></div>
-    <div class="card"><div class="card-label">Streak</div><div class="card-value" id="ee-stat-streak">—</div></div>
-  </div>
-  <div class="grid grid-4">
-    <div class="card"><div class="card-label">Avg Entry</div><div class="card-value" id="ee-stat-entry">—</div></div>
-    <div class="card"><div class="card-label">Avg Dir Prob</div><div class="card-value" id="ee-stat-prob">—</div></div>
-    <div class="card"><div class="card-label">Avg EV</div><div class="card-value" id="ee-stat-ev">—</div></div>
-    <div class="card"><div class="card-label">Limit Fill %</div><div class="card-value" id="ee-stat-limit">—</div></div>
-  </div>
+<!-- OVERVIEW TAB -->
+<div id="page-overview" class="page">
+  <div class="kpi-row" id="ov-kpis"></div>
   <div class="section">
     <div class="section-title">Equity Curve</div>
-    <div class="panel"><div class="chart-wrap"><canvas id="ee-chart"></canvas></div></div>
+    <div class="card"><div class="chart-wrap"><canvas id="eq-chart"></canvas></div></div>
   </div>
-  <div class="section">
-    <div class="section-title">Trades</div>
-    <div class="panel" style="max-height:500px;overflow-y:auto">
-      <table class="t"><thead><tr>
-        <th>Time</th><th>Asset</th><th>Side</th><th>Ask</th><th>Size</th><th>Prob</th><th>EV</th><th>P&L</th><th>Status</th>
-      </tr></thead><tbody id="ee-tbody"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody></table>
+  <div class="section" style="margin-top:12px">
+    <div class="section-title">Asset Breakdown</div>
+    <div id="ov-assets" style="display:flex;gap:8px"></div>
+  </div>
+  <div class="section" style="margin-top:12px">
+    <div class="section-title">Recent Windows</div>
+    <div class="card" style="max-height:400px;overflow-y:auto">
+      <table class="tbl"><thead><tr>
+        <th>Market</th><th>Asset</th><th>Buys</th><th>Sells</th><th>Redeem</th><th>Net P&L</th><th>Result</th>
+      </tr></thead><tbody id="ov-windows"></tbody></table>
     </div>
   </div>
-</div>
-</div>
-
-<div id="page-rules" class="page-content">
-<div class="page">
-  <div class="section">
-    <div class="section-title">5-Minute Crypto Bot</div>
-    <div class="panel">
-      <table class="t">
-        <thead><tr><th>Rule</th><th>Value</th></tr></thead>
-        <tbody>
-          <tr><td><b>Pairs</b></td><td>BTC_5m, SOL_5m (ETH disabled)</td></tr>
-          <tr><td><b>Entry window</b></td><td>T+210s → T+240s scan (every 3s), hard deadline T+255s</td></tr>
-          <tr><td><b>Direction</b></td><td>Follow higher ask side (YES if yes_ask ≥ no_ask, else NO)</td></tr>
-          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">ENTRY RULES (Scenario C — lgbm gates first)</td></tr>
-          <tr><td>1. LightGBM gate</td><td>lgbm_prob ≥ 0.62 required (skip if below)</td></tr>
-          <tr><td>2. Absolute ask floor</td><td>$0.60 (never trade below)</td></tr>
-          <tr><td>3. Absolute ask ceiling</td><td>$0.95 (never trade above)</td></tr>
-          <tr><td>4. Min ask (weekday)</td><td>$0.65</td></tr>
-          <tr><td>5. Min ask (weekend)</td><td>$0.70</td></tr>
-          <tr><td>Early entry (peak)</td><td>≤ $0.58 → enter immediately</td></tr>
-          <tr><td>Early entry (weak hours)</td><td>≤ $0.68</td></tr>
-          <tr><td>Early entry (weekend)</td><td>≤ $0.72</td></tr>
-          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">SIZING (conviction-based)</td></tr>
-          <tr><td>Ask $0.60–$0.75</td><td><b>$5.00</b></td></tr>
-          <tr><td>Ask $0.75–$0.82 (peak hours)</td><td><b>$10.00</b></td></tr>
-          <tr><td>Ask $0.75–$0.82 (weak/weekend)</td><td><b>$5.00</b></td></tr>
-          <tr><td>Ask $0.82–$0.88 + lgbm ≥ 0.70</td><td><b>$5.00</b> (relaxed ceiling)</td></tr>
-          <tr><td>Ask $0.88–$0.95 + lgbm ≥ 0.80</td><td><b>$5.00</b> (high conviction only)</td></tr>
-          <tr><td>Hard cap</td><td>$10.00 (HARDCODED_MAX_BET)</td></tr>
-          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIME FILTERS</td></tr>
-          <tr><td>Peak hours (CET)</td><td>10:00–13:00, 14:00–22:00 → min_ask $0.65</td></tr>
-          <tr><td>Weak hours (CET)</td><td>22:00–10:00 + 13:00–14:00 → min_ask $0.65, early $0.68</td></tr>
-          <tr><td>Weekend (Sat/Sun)</td><td>min_ask $0.70, early $0.72</td></tr>
-          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">OTHER GUARDS</td></tr>
-          <tr><td>Volatility filter</td><td>Skip if realized_vol > 2× rolling avg ("choppy_market")</td></tr>
-          <tr><td>Direction flip</td><td>Skip if direction reverses during scan</td></tr>
-          <tr><td>Circuit breaker</td><td>3 consecutive losses → 15min pause</td></tr>
-          <tr><td>Dedup</td><td>3-layer: memory + DynamoDB query + atomic claim</td></tr>
-          <tr><td>Resolution</td><td>Polymarket Chainlink oracle only (verify sweep every 5min)</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Opportunity Bot</div>
-    <div class="panel">
-      <table class="t">
-        <thead><tr><th>Rule</th><th>Value</th></tr></thead>
-        <tbody>
-          <tr><td><b>Scan interval</b></td><td>Every 30 minutes</td></tr>
-          <tr><td><b>Workers</b></td><td>9 parallel: crypto, finance, fed, politics, geopolitics, elections, tech, weather, culture</td></tr>
-          <tr><td><b>Processing</b></td><td>All workers fetch → combine → dedup by condition_id → sort by resolve time (soonest first) → trade top-to-bottom</td></tr>
-          <tr><td><b>Scan window</b></td><td>Markets resolving in 30min – 48h</td></tr>
-          <tr><td><b>Min volume</b></td><td>$1,000</td></tr>
-          <tr><td><b>Skip</b></td><td>Slugs with 5m, 15m, updown (main bot handles)</td></tr>
-          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIER 0 — HIGH CONVICTION ($10)</td></tr>
-          <tr><td>Ask range</td><td>≥ $0.93</td></tr>
-          <tr><td>Resolves within</td><td>6 hours</td></tr>
-          <tr><td>Volume</td><td>≥ $5,000</td></tr>
-          <tr><td>Size</td><td><b>$10.00</b> FOK at best ask</td></tr>
-          <tr><td>AI gate</td><td>Dual AI: Haiku sanity (conf ≥ 0.90) → Sonnet 4 devil's advocate (conf ≥ 0.85)</td></tr>
-          <tr><td>Sonnet prompt</td><td>Risk analyst: finds reasons trade could LOSE before approving</td></tr>
-          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIER 1 — AUTO TRADE ($5)</td></tr>
-          <tr><td>Ask range</td><td>$0.85–$0.95</td></tr>
-          <tr><td>Resolves within</td><td>24 hours</td></tr>
-          <tr><td>Size</td><td><b>$5.00</b> FOK at best ask</td></tr>
-          <tr><td>AI check</td><td>Haiku sanity check (conf ≥ 0.75 to proceed)</td></tr>
-          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">TIER 2 — AI ASSESSED ($2.50)</td></tr>
-          <tr><td>Ask range</td><td>$0.65–$0.85 (<24h) OR $0.85–$0.95 (24-48h)</td></tr>
-          <tr><td>AI model</td><td>Claude Haiku via Bedrock</td></tr>
-          <tr><td>Trade gate</td><td>confidence ≥ 0.80 AND edge ≥ 0.15</td></tr>
-          <tr><td>Size</td><td><b>$2.50</b> FOK at best ask</td></tr>
-          <tr><td colspan="2" style="padding-top:12px;font-weight:700;color:var(--text2)">LIMITS</td></tr>
-          <tr><td>Max total deployed</td><td>$1,250</td></tr>
-          <tr><td>Max ask on orderbook</td><td>$0.95 (reject if best ask > $0.95)</td></tr>
-          <tr><td>Dedup</td><td>3-layer: memory + DynamoDB query + atomic conditional put</td></tr>
-          <tr><td>Resolution</td><td>Gamma API, 5 retries at 60s, checked every scan + on dashboard load</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Worker Categories &amp; Tags</div>
-    <div class="panel">
-      <table class="t">
-        <thead><tr><th>Worker</th><th>Tag slugs scanned</th></tr></thead>
-        <tbody>
-          <tr><td><b>crypto</b></td><td>crypto, crypto-prices, bitcoin, ethereum, solana, xrp, bitcoin-prices, ethereum-prices, solana-prices, xrp-prices, cryptocurrency, hit-price</td></tr>
-          <tr><td><b>finance</b></td><td>finance, economics, economy, stocks, earnings, daily-close, finance-updown, tsla, nvda, nflx, aapl, meta</td></tr>
-          <tr><td><b>fed</b></td><td>fed, fed-rates, fomc, federal-reserve, jerome-powell, fed-chair, economic-policy</td></tr>
-          <tr><td><b>politics</b></td><td>politics, us-politics, trump, elections, government, trump-approval, world-elections, global-elections, presidential-election</td></tr>
-          <tr><td><b>geopolitics</b></td><td>geopolitics, iran, world, middle-east, war, ukraine, russia, us-iran, ukraine-peace-deal, israel, strait-of-hormuz, north-korea, lebanon, khamenei</td></tr>
-          <tr><td><b>elections</b></td><td>elections, world-elections, global-elections, french-elections, german-elections, slovenia-elections, denmark-elections, peru-elections, mayoral-elections, special-elections</td></tr>
-          <tr><td><b>tech</b></td><td>tech, ai, technology, ai-development, openai, open-ai, big-tech, gta-vi</td></tr>
-          <tr><td><b>weather</b></td><td>temperature, weather, daily, precipitation</td></tr>
-          <tr><td><b>culture</b></td><td>culture, entertainment, awards, mrbeast, youtube, prediction-markets, recurring</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Auto-Claim</div>
-    <div class="panel">
-      <table class="t">
-        <thead><tr><th>Rule</th><th>Value</th></tr></thead>
-        <tbody>
-          <tr><td><b>Interval</b></td><td>Every 30 minutes</td></tr>
-          <tr><td><b>Method</b></td><td>Builder Relayer API (gasless, Polymarket pays gas)</td></tr>
-          <tr><td><b>Contracts</b></td><td>CTF (regular) + NegRisk CTF Exchange (neg-risk markets)</td></tr>
-          <tr><td><b>Auth</b></td><td>Builder API credentials via Gnosis Safe</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Infrastructure</div>
-    <div class="panel">
-      <table class="t">
-        <thead><tr><th>Component</th><th>Detail</th></tr></thead>
-        <tbody>
-          <tr><td>Bot</td><td>ECS Fargate, eu-west-1 (single task, task-def rev 17)</td></tr>
-          <tr><td>Dashboard</td><td>Lambda + API Gateway + CloudFront, eu-west-1</td></tr>
-          <tr><td>Storage</td><td>DynamoDB, eu-west-1</td></tr>
-          <tr><td>AI</td><td>Bedrock: Haiku (Tier 1/2) + Sonnet 4 (Tier 0), eu-west-1</td></tr>
-          <tr><td>Processes</td><td>4: 5min bot, opportunity bot, dashboard, auto-claim</td></tr>
-          <tr><td>Tests</td><td id="rules-test-count">511 passing</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</div>
 </div>
 
 <script>
-let pnlChart = null, hourChart = null;
+let eqChart = null;
+let liveInterval = null;
 
-function showPage(name, btn) {
-  document.querySelectorAll('.page-content').forEach(p => p.classList.remove('active'));
+function showTab(name, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
   document.getElementById('page-' + name).classList.add('active');
   if (btn) btn.classList.add('active');
-  if (name === 'overview') refresh();
-  else if (name === 'trades') loadTrades();
-  else if (name === 'analytics') loadAnalytics();
-  else if (name === 'opportunities') loadOpportunities();
-  else if (name === 'early') loadEarlyEntry();
-  // 'rules' page is static — no data to load
+  if (name === 'live') startLive();
+  else if (name === 'overview') loadOverview();
 }
 
-function fmtTs(ts) {
-  if (!ts) return '—';
-  return new Date(parseFloat(ts)*1000).toLocaleTimeString('en-GB',{timeZone:'Europe/Amsterdam',hour12:false});
+function phaseClass(p) {
+  if (p === 'PRE-POSITION') return 'badge-pre';
+  if (p === 'CONFIRM' || p === 'ACCUMULATE') return 'badge-acc';
+  if (p === 'HOLD') return 'badge-hold';
+  return 'badge-open';
 }
 
-function assetTag(a) {
-  const cls = a === 'BTC' ? 'tag-btc' : a === 'SOL' ? 'tag-sol' : '';
-  return '<span class="tag '+cls+'">'+a+'</span>';
+function renderAssetCard(asset, d) {
+  const secs = d.seconds || 0;
+  const remaining = Math.max(300 - secs, 0);
+  const mm = Math.floor(remaining / 60);
+  const ss = Math.floor(remaining % 60);
+  const comb = d.combined_avg || 0;
+  const combClass = comb > 0 && comb < 1 ? 'green' : comb >= 1 ? 'red' : 'gray';
+  const margin = d.margin || 0;
+  const dir = d.direction || '—';
+  const dirColor = dir === 'UP' ? 'green' : dir === 'DOWN' ? 'red' : 'gray';
+
+  return `<div class="card">
+    <div class="card-header">
+      <span class="card-title">${asset}</span>
+      <span>
+        <span class="card-badge ${phaseClass(d.phase)}">${d.phase || 'WAITING'}</span>
+        <span style="margin-left:6px;font-size:12px;color:#64748b">${mm}:${ss.toString().padStart(2,'0')}</span>
+      </span>
+    </div>
+    <div class="stat-row"><span class="stat-label">Direction</span><span class="stat-value ${dirColor}">${dir}</span></div>
+    <div class="stat-row"><span class="stat-label">UP</span><span class="stat-value">${d.up_shares||0} sh @ $${(d.up_avg||0).toFixed(2)} = $${(d.up_cost||0).toFixed(2)}</span></div>
+    <div class="stat-row"><span class="stat-label">DOWN</span><span class="stat-value">${d.down_shares||0} sh @ $${(d.down_avg||0).toFixed(2)} = $${(d.down_cost||0).toFixed(2)}</span></div>
+    <div class="stat-row"><span class="stat-label">Combined Avg</span><span class="stat-value ${combClass}">$${comb.toFixed(3)}</span></div>
+    <div class="stat-row"><span class="stat-label">Margin</span><span class="stat-value ${margin>0?'green':'red'}">${margin.toFixed(1)}%</span></div>
+    <div class="stat-row"><span class="stat-label">Orders</span><span class="stat-value">${d.open_orders||0} open / ${d.filled_orders||0} filled</span></div>
+    <div class="stat-row"><span class="stat-label">Spent</span><span class="stat-value">$${((d.main_filled||0)+(d.hedge_filled||0)+(d.cheap_filled||0)).toFixed(2)}</span></div>
+    <div class="stat-row"><span class="stat-label">Orderbook</span><span class="stat-value gray" style="font-size:10px">YES ${(d.yes_bid||0).toFixed(2)}/${(d.yes_ask||0).toFixed(2)} | NO ${(d.no_bid||0).toFixed(2)}/${(d.no_ask||0).toFixed(2)}</span></div>
+  </div>`;
 }
 
-function wrBar(label, wins, total, color) {
-  const pct = total > 0 ? Math.round(wins/total*100) : 0;
-  const w = Math.max(3, pct);
-  return '<div class="wr-row"><span class="wr-label">'+label+'</span><div class="wr-bar-bg"><div class="wr-bar" style="width:'+w+'%;background:'+color+'">'+pct+'%</div></div><span class="wr-val">'+wins+'/'+total+'</span></div>';
-}
-
-async function refresh() {
+async function refreshLive() {
   try {
-    const [dataResp, balResp] = await Promise.all([fetch('/api/data'), fetch('/api/balance')]);
-    const data = await dataResp.json();
-    const bal = await balResp.json();
-    const s = data.stats;
-    const trades = (data.trades || []).filter(t => (t.asset||'') !== 'ETH');
-
-    // Stats — Polymarket is source of truth for P&L and portfolio
-    const pnl = bal.total_pnl || 0;
-    document.getElementById('s-pnl').textContent = (pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2);
-    document.getElementById('s-pnl').className = 'card-value '+(pnl>=0?'green':'red');
-    document.getElementById('s-pnl-sub').textContent = 'Deposited: \$'+(bal.total_deposited||0).toFixed(2);
-
-    document.getElementById('s-portfolio').textContent = '\$'+(bal.portfolio||0).toFixed(2);
-    document.getElementById('s-portfolio-sub').textContent = 'Cash: \$'+(bal.cash||0).toFixed(2)+(bal.positions > 0.01 ? ' + Positions: \$'+(bal.positions).toFixed(2) : '');
-
-    const wr = s.total_resolved > 0 ? Math.round(s.wins/s.total_resolved*100) : 0;
-    document.getElementById('s-wr').textContent = wr+'%';
-    document.getElementById('s-wr').className = 'card-value '+(wr>=55?'green':wr<45?'red':'');
-    document.getElementById('s-wr-sub').textContent = s.wins+'W / '+s.losses+'L';
-
-    document.getElementById('s-count').textContent = s.total_resolved + s.open_trades;
-    document.getElementById('s-count-sub').textContent = s.open_trades > 0 ? s.open_trades+' open' : 'all resolved';
-
-    // WR by asset
-    const sp = s.strategy_pnl || {};
-    let assetHtml = '';
-    for (const [pair, d] of Object.entries(sp)) {
-      const a = pair.split(' ')[0];
-      const c = d.wins/d.count >= 0.55 ? 'var(--green)' : d.wins/d.count < 0.45 ? 'var(--red)' : 'var(--blue)';
-      assetHtml += wrBar(a, d.wins, d.count, c);
+    const r = await fetch('/api/live-state');
+    const data = await r.json();
+    const grid = document.getElementById('live-grid');
+    let html = '';
+    for (const asset of ['BTC', 'ETH', 'SOL']) {
+      const d = (data.assets || {})[asset] || {};
+      html += renderAssetCard(asset, d);
     }
-    document.getElementById('wr-asset').innerHTML = assetHtml || '<div class="empty">No data yet</div>';
-
-    // WR by ask price bucket
-    const buckets = {'$0.60-0.70':{w:0,n:0},'$0.70-0.80':{w:0,n:0},'$0.80-0.95':{w:0,n:0}};
-    for (const t of trades) {
-      if (!t.resolved) continue;
-      const p = parseFloat(t.fill_price||t.price||0);
-      if (p < 0.60) continue;  // Below ask floor — historical, skip
-      const won = parseFloat(t.pnl||0) > 0;
-      let bk = p < 0.70 ? '$0.60-0.70' : p < 0.80 ? '$0.70-0.80' : '$0.80-0.95';
-      if (buckets[bk]) { buckets[bk].n++; if (won) buckets[bk].w++; }
-    }
-    let bkHtml = '';
-    for (const [lbl, d] of Object.entries(buckets)) {
-      if (d.n === 0) continue;
-      const c = d.w/d.n >= 0.55 ? 'var(--green)' : d.w/d.n < 0.45 ? 'var(--red)' : 'var(--blue)';
-      bkHtml += wrBar(lbl, d.w, d.n, c);
-    }
-    document.getElementById('wr-price').innerHTML = bkHtml || '<div class="empty">No data yet</div>';
-
-    // Recent trades (Scenario C only — exclude early entry)
-    const scenarioCTrades = trades.filter(t => !(['early_entry','early_exit','early_hedge_exit'].includes(t.source) || (t.window_slug||'').startsWith('early_')));
-    const tbody = document.getElementById('trades-body');
-    tbody.innerHTML = '';
-    if (!scenarioCTrades.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">No trades yet</td></tr>'; }
-    for (const t of scenarioCTrades.slice(0, 20)) {
-      const pnl = parseFloat(t.pnl||0);
-      const resolved = t.resolved && parseFloat(t.resolved) === 1;
-      const won = pnl > 0;
-      const verified = t.outcome_source === 'polymarket_verified' || t.outcome_source === 'manual_sell';
-      const result = !resolved ? '<span class="tag tag-open">OPEN</span>'
-        : verified ? (won ? '<span class="tag tag-win">WIN</span>' : '<span class="tag tag-loss">LOSS</span>')
-        : (won ? '<span class="tag tag-prov-win">WIN?</span>' : '<span class="tag tag-prov-loss">LOSS?</span>');
-      const dir = t.direction === 'up' || t.side === 'YES' ? '<span class="tag tag-up">UP</span>' : '<span class="tag tag-down">DOWN</span>';
-      const pnlStr = resolved ? (pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2) : '—';
-      const pnlCls = resolved ? (verified ? (won?'green':'red') : 'blue') : '';
-      const slug = t.window_slug || '';
-      const link = slug ? ' <a href="https://polymarket.com/market/'+slug+'" target="_blank" style="opacity:.4;text-decoration:none;font-size:11px">&#x1F517;</a>' : '';
-      tbody.innerHTML += '<tr><td style="white-space:nowrap">'+fmtTs(t.timestamp)+'</td><td>'+assetTag(t.asset||'')+'</td><td>'+dir+'</td><td>\$'+(parseFloat(t.fill_price||0)).toFixed(2)+'</td><td>\$'+(parseFloat(t.size_usd||0)).toFixed(2)+'</td><td class="'+pnlCls+'" style="font-weight:600">'+pnlStr+'</td><td>'+result+link+'</td></tr>';
-    }
-
-    // Equity curve from resolved trades
-    try {
-      const resolved = trades.filter(t => t.resolved && parseFloat(t.resolved) === 1).reverse();
-      if (resolved.length > 1) {
-        let cum = 0;
-        const labels = resolved.map(t => fmtTs(t.timestamp));
-        const points = resolved.map(t => { cum += parseFloat(t.pnl||0); return Math.round(cum*100)/100; });
-        const ctx = document.getElementById('pnl-chart').getContext('2d');
-        if (pnlChart) pnlChart.destroy();
-        pnlChart = new Chart(ctx, {
-          type: 'line',
-          data: { labels, datasets: [{ data: points, borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,.08)', fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 }] },
-          options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { x: { display: true, ticks: { maxTicksLimit: 8, font: { size: 10 } } }, y: { ticks: { callback: v => '\$'+v.toFixed(0), font: { size: 10 } } } } }
-        });
-      }
-    } catch(e) {}
-
-    document.getElementById('mode-badge').textContent = (s.mode||'live').toUpperCase();
-  } catch(e) { console.error('refresh error', e); }
+    grid.innerHTML = html;
+    document.getElementById('nav-ts').textContent = new Date().toLocaleTimeString('en-GB', {timeZone:'Europe/Amsterdam'});
+  } catch(e) { console.error('live error', e); }
 }
 
-async function loadTrades() {
-  try {
-    const resp = await fetch('/api/trades?limit=100');
-    const data = await resp.json();
-    const tbody = document.getElementById('tl-body');
-    tbody.innerHTML = '';
-    for (const t of (data.trades||[]).filter(t => (t.asset||'') !== 'ETH')) {
-      const pnl = parseFloat(t.pnl||0);
-      const resolved = t.resolved && parseFloat(t.resolved) === 1;
-      const won = pnl > 0;
-      const verified2 = t.outcome_source === 'polymarket_verified' || t.outcome_source === 'manual_sell';
-      const result = !resolved ? '<span class="tag tag-open">OPEN</span>'
-        : verified2 ? (won ? '<span class="tag tag-win">WIN</span>' : '<span class="tag tag-loss">LOSS</span>')
-        : (won ? '<span class="tag tag-prov-win">WIN?</span>' : '<span class="tag tag-prov-loss">LOSS?</span>');
-      const dir = t.direction === 'up' || t.side === 'YES' ? 'UP' : 'DOWN';
-      const slug2 = t.window_slug || '';
-      const link2 = slug2 ? ' <a href="https://polymarket.com/market/'+slug2+'" target="_blank" style="opacity:.4;text-decoration:none;font-size:11px">&#x1F517;</a>' : '';
-      const pnlCls2 = resolved ? (verified2 ? (won?'green':'red') : 'blue') : '';
-      tbody.innerHTML += '<tr><td style="white-space:nowrap">'+fmtTs(t.timestamp)+'</td><td>'+assetTag(t.asset||'')+'</td><td>'+t.side+'</td><td>'+dir+'</td><td>\$'+(parseFloat(t.fill_price||0)).toFixed(2)+'</td><td>\$'+(parseFloat(t.size_usd||0)).toFixed(2)+'</td><td class="'+pnlCls2+'" style="font-weight:600">'+(resolved?(pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2):'—')+'</td><td>'+result+link2+'</td></tr>';
-    }
-  } catch(e) {}
+function startLive() {
+  if (liveInterval) clearInterval(liveInterval);
+  refreshLive();
+  liveInterval = setInterval(refreshLive, 5000);
 }
 
-async function loadAnalytics() {
+async function loadOverview() {
+  if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
   try {
-    const resp = await fetch('/api/data');
-    const data = await resp.json();
-    const trades = (data.trades || []).filter(t => (t.asset||'') !== 'ETH');
-    const sp = data.stats.strategy_pnl || {};
+    const r = await fetch('/api/overview');
+    const data = await r.json();
+    const s = data.stats || {};
 
-    // PnL by asset
-    let ah = '';
-    for (const [pair, d] of Object.entries(sp)) {
-      const pnl = d.pnl || 0;
-      const wr = d.count > 0 ? Math.round(d.wins/d.count*100) : 0;
-      ah += '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f3f4f6"><span style="font-weight:600">'+pair+'</span><span><span class="'+(pnl>=0?'green':'red')+'" style="font-weight:700">'+(pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2)+'</span> <span style="color:var(--text3);font-size:12px">'+wr+'% WR ('+d.count+')</span></span></div>';
-    }
-    document.getElementById('pnl-asset').innerHTML = ah || '<div class="empty">No data</div>';
-
-    // PnL by bucket
-    const bk = {'$0.60-0.70':{pnl:0,n:0},'$0.70-0.80':{pnl:0,n:0},'$0.80-0.95':{pnl:0,n:0}};
-    for (const t of trades) {
-      if (!t.resolved) continue;
-      const p = parseFloat(t.fill_price||0);
-      if (p < 0.60) continue;
-      const tpnl = parseFloat(t.pnl||0);
-      let b = p < 0.70 ? '$0.60-0.70' : p < 0.80 ? '$0.70-0.80' : '$0.80-0.95';
-      if (bk[b]) { bk[b].pnl += tpnl; bk[b].n++; }
-    }
-    let bh = '';
-    for (const [lbl, d] of Object.entries(bk)) {
-      if (!d.n) continue;
-      bh += '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f3f4f6"><span>'+lbl+'</span><span class="'+(d.pnl>=0?'green':'red')+'" style="font-weight:700">'+(d.pnl>=0?'+':'')+'\$'+Math.abs(d.pnl).toFixed(2)+' ('+d.n+')</span></div>';
-    }
-    document.getElementById('pnl-bucket').innerHTML = bh || '<div class="empty">No data</div>';
-
-    // LightGBM stats
-    const lgbmTrades = trades.filter(t => t.resolved && parseFloat(t.model_prob||t.lgbm_prob||0) > 0);
-    const lgbmTraded = lgbmTrades.filter(t => parseFloat(t.model_prob||t.lgbm_prob||0) >= 0.62);
-    const lgbmBlocked = lgbmTrades.filter(t => parseFloat(t.model_prob||t.lgbm_prob||0) < 0.62);
-    let lh = '';
-    if (lgbmTrades.length > 0) {
-      const avgLgbm = lgbmTrades.reduce((s,t) => s + parseFloat(t.model_prob||t.lgbm_prob||0), 0) / lgbmTrades.length;
-      lh += '<div style="padding:6px 0;border-bottom:1px solid #f3f4f6"><span style="font-weight:600">Avg lgbm_prob:</span> ' + avgLgbm.toFixed(3) + '</div>';
-      lh += '<div style="padding:6px 0;border-bottom:1px solid #f3f4f6"><span style="font-weight:600">Gate (>= 0.62):</span> ' + lgbmTraded.length + ' passed</div>';
-      const gateWins = lgbmTraded.filter(t => parseFloat(t.pnl||0) > 0).length;
-      const gateLosses = lgbmTraded.filter(t => parseFloat(t.pnl||0) < 0).length;
-      if (gateWins + gateLosses > 0) {
-        const gateWR = Math.round(gateWins / (gateWins + gateLosses) * 100);
-        lh += '<div style="padding:6px 0;border-bottom:1px solid #f3f4f6"><span style="font-weight:600">Gate WR:</span> <span class="'+(gateWR>=60?'green':'red')+'">'+gateWR+'%</span> ('+gateWins+'W/'+gateLosses+'L)</div>';
-      }
-    } else {
-      lh = '<div class="empty">No lgbm data yet</div>';
-    }
-    document.getElementById('lgbm-stats').innerHTML = lh;
-
-    // Skip reasons (from signals — approximate from trade data)
-    const skipCounts = {};
-    for (const t of (data.trades||[])) {
-      const skip = t.skip_reason || t.rejection_reason || '';
-      if (skip && skip !== 'TRADE') {
-        skipCounts[skip] = (skipCounts[skip]||0) + 1;
-      }
-    }
-    let sh = '';
-    const sortedSkips = Object.entries(skipCounts).sort((a,b) => b[1]-a[1]);
-    for (const [reason, count] of sortedSkips.slice(0, 8)) {
-      sh += '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f3f4f6;font-size:13px"><span>'+reason+'</span><span style="font-weight:600">'+count+'</span></div>';
-    }
-    document.getElementById('skip-reasons').innerHTML = sh || '<div class="empty">No skip data</div>';
-
-    // Hourly P&L chart (Amsterdam/CET time)
-    function getCETHour(ts) {
-      return parseInt(new Date(parseFloat(ts)*1000).toLocaleString('en-GB',{timeZone:'Europe/Amsterdam',hour:'numeric',hour12:false}));
-    }
-    const hours = {};
-    for (const t of trades) {
-      if (!t.resolved) continue;
-      const h = getCETHour(t.timestamp);
-      if (!hours[h]) hours[h] = 0;
-      hours[h] += parseFloat(t.pnl||0);
-    }
-    const hLabels = Array.from({length:24},(_,i)=>i+':00');
-    const hData = hLabels.map((_,i)=>hours[i]||0);
-    const hColors = hData.map(v=>v>=0?'rgba(16,185,129,.7)':'rgba(239,68,68,.7)');
-    const ctx = document.getElementById('hour-chart').getContext('2d');
-    if (hourChart) hourChart.destroy();
-    hourChart = new Chart(ctx, {
-      type: 'bar',
-      data: { labels: hLabels, datasets: [{ data: hData, backgroundColor: hColors, borderRadius: 4 }] },
-      options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { y: { ticks: { callback: v => '\$'+v.toFixed(0), font: { size: 10 } } }, x: { ticks: { font: { size: 9 } } } } }
-    });
-  } catch(e) { console.error('analytics error', e); }
-}
-
-async function loadOpportunities() {
-  try {
-    // Force-resolve any trades past end_date before loading
-    try {
-      const resolveResp = await fetch('/api/opportunities/resolve', {method:'POST'});
-      const resolveData = await resolveResp.json().catch(() => ({}));
-      if (resolveData.resolved > 0) console.log('Resolved '+resolveData.resolved+' trades');
-    } catch(e) {
-      // Try direct API Gateway if CloudFront blocks POST
-      try {
-        const r2 = await fetch('https://mwdbfw44q0.execute-api.eu-west-1.amazonaws.com/api/opportunities/resolve', {method:'POST'});
-        const d2 = await r2.json().catch(() => ({}));
-        if (d2.resolved > 0) console.log('Resolved '+d2.resolved+' trades (direct)');
-      } catch(e2) {}
-    }
-
-    const resp = await fetch('/api/opportunities');
-    const data = await resp.json();
     // KPIs
-    document.getElementById('opp-deployed').textContent = '$'+(data.deployed_today||0).toFixed(2);
-    document.getElementById('opp-wr').textContent = (data.win_rate||0).toFixed(0)+'%';
-    document.getElementById('opp-pnl').textContent = (data.total_pnl>=0?'+':'')+'\$'+(data.total_pnl||0).toFixed(2);
-    document.getElementById('opp-pnl').className = 'card-value '+(data.total_pnl>=0?'green':'red');
-    document.getElementById('opp-count').textContent = data.trades_today||0;
-    // Active trades — with 3 status states
-    let ah = '';
-    const now = Date.now();
-    for (const t of (data.active||[])) {
-      const aSlug = t.slug||'';
-      const aLink = aSlug ? ' <a href="https://polymarket.com/market/'+aSlug+'" target="_blank" style="opacity:0.4">&#x1F517;</a>' : '';
-      let aTimeStr = '—';
-      let pastEnd = false;
-      if (t.end_date) {
-        const endMs = new Date(t.end_date).getTime();
-        pastEnd = endMs < now;
-        const aHrs = Math.max(0,(endMs-now)/3600000);
-        const aH = Math.floor(aHrs); const aM = Math.round((aHrs-aH)*60);
-        aTimeStr = pastEnd ? 'Ended' : aH > 0 ? aH+'h '+aM+'m' : aM+'m';
-      }
-      const invested = parseFloat(t.size_usd||0);
-      const shares = parseFloat(t.shares||0);
-      const toWin = shares > 0 ? (shares - invested).toFixed(2) : '—';
-      const statusBadge = pastEnd
-        ? '<span class="badge badge-verifying">Verifying</span>'
-        : '<span class="badge badge-pending">Pending</span>';
-      const reasoning = (t.ai_reasoning||'');
-      const aiShort = reasoning.slice(0,30) + (reasoning.length > 30 ? '...' : '');
-      const aiCell = reasoning ? '<span class="q-cell" style="font-size:12px;color:#64748b">' + aiShort + '<span class="q-tip">' + reasoning + '</span></span>' : '—';
-      ah += '<tr><td>'+'<span class="q-cell">'+t.question.slice(0,45)+'<span class="q-tip">'+t.question+'</span></span>'+aLink+'</td><td>'+t.side+'</td><td>$'+parseFloat(t.ask_price).toFixed(2)+'</td><td>$'+invested.toFixed(2)+'</td><td class="green">$'+toWin+'</td><td>'+aiCell+'</td><td>'+aTimeStr+'</td><td>'+statusBadge+'</td></tr>';
-    }
-    document.getElementById('opp-active').innerHTML = ah || '<tr><td colspan="8" class="empty">No active trades</td></tr>';
-    // Resolved trades
-    let rh = '';
-    for (const t of (data.resolved||[])) {
-      const pnl = parseFloat(t.pnl||0);
-      const won = pnl > 0;
-      const rSlug = t.slug||'';
-      const rLink = rSlug ? ' <a href="https://polymarket.com/market/'+rSlug+'" target="_blank" style="opacity:0.4">&#x1F517;</a>' : '';
-      const invested = parseFloat(t.size_usd||0);
-      const rTs = t.timestamp ? new Date(parseFloat(t.timestamp)*1000).toLocaleString('en-GB',{timeZone:'Europe/Amsterdam',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:false}) : '—';
-      rh += '<tr style="background:'+(won?'#f0fdf4':'#fef2f2')+'"><td>'+'<span class="q-cell">'+t.question.slice(0,45)+'<span class="q-tip">'+t.question+'</span></span>'+rLink+'</td><td>'+t.side+'</td><td>$'+parseFloat(t.ask_price).toFixed(2)+'</td><td>$'+invested.toFixed(2)+'</td><td><span class="badge badge-'+(won?'win':'loss')+'">'+(won?'WON':'LOST')+'</span></td><td class="'+(won?'green':'red')+'" style="font-weight:700">'+(pnl>=0?'+':'')+'\$'+Math.abs(pnl).toFixed(2)+'</td><td style="font-size:12px;color:#64748b">'+rTs+'</td></tr>';
-    }
-    document.getElementById('opp-resolved').innerHTML = rh || '<tr><td colspan="7" class="empty">No resolved trades yet</td></tr>';
-  } catch(e) { console.error('opportunities error', e); }
-}
-
-let eeChart = null;
-let eeInterval = null;
-
-async function loadEarlyEntry() {
-  try {
-    const resp = await fetch('/api/early-entry');
-    const data = await resp.json();
-    const s = data.stats;
-
-    // Stats
-    document.getElementById('ee-stat-trades').textContent = s.trades + ' (' + s.open + ' open)';
-    const wrEl = document.getElementById('ee-stat-wr');
-    wrEl.textContent = s.wr + '%';
-    wrEl.className = 'card-value ' + (s.wr >= 60 ? 'green' : s.wr < 50 ? 'red' : '');
-    const pnlEl = document.getElementById('ee-stat-pnl');
-    pnlEl.textContent = (s.pnl >= 0 ? '+' : '') + '$' + Math.abs(s.pnl).toFixed(2);
-    pnlEl.className = 'card-value ' + (s.pnl >= 0 ? 'green' : 'red');
-    document.getElementById('ee-stat-streak').textContent = s.streak;
-    document.getElementById('ee-stat-entry').textContent = '$' + s.avg_entry.toFixed(3);
-    document.getElementById('ee-stat-prob').textContent = s.avg_prob.toFixed(3);
-    document.getElementById('ee-stat-ev').textContent = s.avg_ev.toFixed(3);
-    document.getElementById('ee-stat-limit').textContent = s.limit_fill_rate + '%';
-    document.getElementById('ee-stat-limit').title = s.makers + ' maker / ' + s.takers + ' taker / ' + s.fallbacks + ' fallback';
-
-    document.getElementById('ee-updated').textContent = 'Last updated: ' + new Date().toLocaleTimeString('en-GB', {timeZone: 'Europe/Amsterdam'});
+    const pnlClass = s.total_pnl >= 0 ? 'green' : 'red';
+    document.getElementById('ov-kpis').innerHTML = `
+      <div class="kpi"><div class="kpi-label">P&L</div><div class="kpi-value ${pnlClass}">${s.total_pnl>=0?'+':''}$${Math.abs(s.total_pnl||0).toFixed(2)}</div></div>
+      <div class="kpi"><div class="kpi-label">Win Rate</div><div class="kpi-value">${s.wr||0}%</div></div>
+      <div class="kpi"><div class="kpi-label">Windows</div><div class="kpi-value">${s.windows||0}</div></div>
+      <div class="kpi"><div class="kpi-label">W/L</div><div class="kpi-value">${s.wins||0}/${s.losses||0}</div></div>
+      <div class="kpi"><div class="kpi-label">Portfolio</div><div class="kpi-value">$${(s.portfolio||0).toFixed(0)}</div></div>
+    `;
 
     // Equity curve
-    if (data.curve && data.curve.length > 0) {
-      const labels = data.curve.map(c => new Date(c.ts * 1000).toLocaleTimeString('en-GB', {timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit'}));
-      const values = data.curve.map(c => c.pnl);
-      const ctx = document.getElementById('ee-chart').getContext('2d');
-      if (eeChart) eeChart.destroy();
-      eeChart = new Chart(ctx, {
+    const curve = data.curve || [];
+    if (curve.length > 0) {
+      const labels = curve.map((_,i) => i+1);
+      const values = curve;
+      const ctx = document.getElementById('eq-chart').getContext('2d');
+      if (eqChart) eqChart.destroy();
+      eqChart = new Chart(ctx, {
         type: 'line',
-        data: {labels, datasets: [{data: values, borderColor: values[values.length-1] >= 0 ? '#10b981' : '#ef4444', backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, tension: 0.1}]},
-        options: {responsive: true, maintainAspectRatio: false, animation: false, plugins: {legend: {display: false}}, scales: {y: {ticks: {callback: v => '$' + v.toFixed(2), font: {size: 10}}}, x: {ticks: {font: {size: 9}, maxTicksLimit: 12}}}}
+        data: {labels, datasets: [{data: values, borderColor: values[0]>=0?'#10b981':'#ef4444', backgroundColor:'transparent', borderWidth:2, pointRadius:0, tension:0.1}]},
+        options: {responsive:true, maintainAspectRatio:false, animation:false, plugins:{legend:{display:false}}, scales:{y:{ticks:{callback:v=>'$'+v,color:'#64748b',font:{size:10}},grid:{color:'#1e2030'}},x:{ticks:{color:'#64748b',font:{size:9},maxTicksLimit:10},grid:{color:'#1e2030'}}}}
       });
     }
 
-    // Trade table
-    let html = '';
-    const nowMs = Date.now();
-    for (const t of (data.trades || [])) {
-      // Time column: "2m ago" + actual timestamp
-      const tradeMs = t.timestamp ? t.timestamp * 1000 : 0;
-      const agoSec = tradeMs ? Math.floor((nowMs - tradeMs) / 1000) : 0;
-      let agoStr = '—';
-      if (agoSec > 0) {
-        if (agoSec < 60) agoStr = agoSec + 's ago';
-        else if (agoSec < 3600) agoStr = Math.floor(agoSec / 60) + 'm ago';
-        else agoStr = Math.floor(agoSec / 3600) + 'h ago';
-      }
-      const tsStr = tradeMs ? new Date(tradeMs).toLocaleString('en-GB', {timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false}) : '';
-
-      // Window liveness: extract open_ts from slug (e.g. early_sol-updown-5m-1774172700)
-      const slugParts = (t.slug || '').split('-');
-      const openTs = parseInt(slugParts[slugParts.length - 1]) || 0;
-      const windowEndMs = openTs ? (openTs + 300) * 1000 : 0;
-      const isLive = !t.resolved && windowEndMs > nowMs;
-
-      const pnl = t.pnl || 0;
-      let bg, status;
-      if (t.resolved) {
-        bg = t.won ? '#f0fdf4' : '#fef2f2';
-        status = t.won ? '<span class="badge badge-win">WON</span>' : '<span class="badge badge-loss">LOST</span>';
-      } else if (isLive) {
-        bg = '#eff6ff';
-        status = '<span class="badge" style="background:#3b82f6;color:#fff">LIVE</span>';
-      } else {
-        bg = '#fffbeb';
-        status = '<span class="badge badge-pending">OPEN</span>';
-      }
-      const pnlStr = t.resolved ? '<span class="' + (pnl >= 0 ? 'green' : 'red') + '" style="font-weight:700">' + (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2) + '</span>' : '—';
-      const rawSlug = (t.slug || '').replace('early_', '');
-      const link = rawSlug ? ' <a href="https://polymarket.com/event/' + rawSlug + '" target="_blank" style="opacity:0.4;font-size:11px">&#x1F517;</a>' : '';
-      html += '<tr style="background:' + bg + '"><td style="font-size:11px"><b>' + agoStr + '</b><br><span style="color:#94a3b8">' + tsStr + '</span></td><td>' + t.asset + '</td><td>' + t.side + '</td><td>$' + t.fill_price.toFixed(2) + '</td><td>$' + t.size_usd.toFixed(2) + '</td><td>' + t.model_prob.toFixed(3) + '</td><td>' + t.ev.toFixed(3) + '</td><td>' + pnlStr + '</td><td>' + status + link + '</td></tr>';
+    // Asset breakdown
+    const assets = data.assets || {};
+    let ah = '';
+    for (const a of ['BTC','ETH','SOL']) {
+      const ad = assets[a] || {wins:0,losses:0,pnl:0};
+      const total = ad.wins + ad.losses;
+      const wr = total > 0 ? Math.round(ad.wins/total*100) : 0;
+      const pc = ad.pnl >= 0 ? 'green' : 'red';
+      ah += `<div class="kpi" style="flex:1"><div class="kpi-label">${a}</div><div class="kpi-value ${pc}">${ad.pnl>=0?'+':''}$${Math.abs(ad.pnl).toFixed(2)}</div><div style="font-size:10px;color:#64748b">${wr}% WR (${total})</div></div>`;
     }
-    document.getElementById('ee-tbody').innerHTML = html || '<tr><td colspan="10" class="empty">No early entry trades yet</td></tr>';
+    document.getElementById('ov-assets').innerHTML = ah;
 
-    // Auto-refresh every 30s
-    if (eeInterval) clearInterval(eeInterval);
-    eeInterval = setInterval(loadEarlyEntry, 30000);
-  } catch(e) { console.error('early entry error', e); }
+    // Windows table
+    let wh = '';
+    for (const w of (data.windows || [])) {
+      const rc = w.net > 0.5 ? 'win-row' : w.net < -0.5 ? 'loss-row' : '';
+      const badge = w.net > 0.5 ? '<span class="green">WIN</span>' : w.net < -0.5 ? '<span class="red">LOSS</span>' : '<span class="gray">—</span>';
+      wh += `<tr class="${rc}"><td>${w.title}</td><td>${w.asset}</td><td>$${w.buys.toFixed(2)}</td><td>$${w.sells.toFixed(2)}</td><td>$${w.redeems.toFixed(2)}</td><td class="${w.net>=0?'green':'red'}" style="font-weight:700">${w.net>=0?'+':''}$${Math.abs(w.net).toFixed(2)}</td><td>${badge}</td></tr>`;
+    }
+    document.getElementById('ov-windows').innerHTML = wh || '<tr><td colspan="7" style="text-align:center;color:#64748b">No data yet</td></tr>';
+  } catch(e) { console.error('overview error', e); }
 }
 
-async function manualTrade(slug, side, price) {
-  if (!confirm('Place $2 FOK trade on '+slug+' ('+side+' at $'+price.toFixed(2)+')?')) return;
-  const btn = event.target;
-  btn.disabled = true;
-  btn.textContent = '...';
-  try {
-    let resp;
-    try {
-      resp = await fetch('/api/opportunities/trade?slug='+encodeURIComponent(slug)+'&side='+side+'&price='+price, {method:'POST'});
-    } catch(fetchErr) {
-      // CloudFront may block POST — try direct API Gateway
-      resp = await fetch('https://mwdbfw44q0.execute-api.eu-west-1.amazonaws.com/api/opportunities/trade?slug='+encodeURIComponent(slug)+'&side='+side+'&price='+price, {method:'POST'});
-    }
-    const txt = await resp.text();
-    let data;
-    try { data = JSON.parse(txt); } catch(e) {
-      // CloudFront returned HTML — retry via direct API Gateway
-      const resp2 = await fetch('https://mwdbfw44q0.execute-api.eu-west-1.amazonaws.com/api/opportunities/trade?slug='+encodeURIComponent(slug)+'&side='+side+'&price='+price, {method:'POST'});
-      data = await resp2.json();
-    }
-    if (data.success) {
-      btn.textContent = 'Filled $'+data.cost.toFixed(2);
-      btn.style.background = '#22c55e';
-      setTimeout(() => loadOpportunities(), 2000);
-    } else {
-      btn.textContent = 'Failed';
-      btn.style.background = '#ef4444';
-      alert('Trade failed: '+(data.error||'unknown'));
-      setTimeout(() => { btn.textContent = 'Trade $2'; btn.disabled = false; btn.style.background = ''; }, 3000);
-    }
-  } catch(e) {
-    btn.textContent = 'Error';
-    alert('Error: '+e.message);
-    setTimeout(() => { btn.textContent = 'Trade $2'; btn.disabled = false; btn.style.background = ''; }, 3000);
-  }
-}
-
-// Sortable tables
-document.addEventListener('click', function(e) {
-  const th = e.target.closest('th[data-sort]');
-  if (!th) return;
-  const table = th.closest('table');
-  const tbody = table.querySelector('tbody');
-  const idx = Array.from(th.parentNode.children).indexOf(th);
-  const type = th.dataset.sort; // "str" or "num"
-  const isAsc = th.classList.contains('sort-asc');
-  // Reset all headers in this table
-  th.parentNode.querySelectorAll('th').forEach(h => h.classList.remove('sort-asc','sort-desc'));
-  th.classList.add(isAsc ? 'sort-desc' : 'sort-asc');
-  const dir = isAsc ? -1 : 1;
-  const rows = Array.from(tbody.querySelectorAll('tr'));
-  rows.sort((a, b) => {
-    let av = a.children[idx]?.textContent?.trim() || '';
-    let bv = b.children[idx]?.textContent?.trim() || '';
-    if (type === 'num') {
-      av = parseFloat(av.replace(/[^0-9.\-]/g, '')) || 0;
-      bv = parseFloat(bv.replace(/[^0-9.\-]/g, '')) || 0;
-      return (av - bv) * dir;
-    }
-    return av.localeCompare(bv) * dir;
-  });
-  rows.forEach(r => tbody.appendChild(r));
-});
-
-// Load Early Entry as default page
-loadEarlyEntry();
+// Start
+startLive();
 </script>
 </body>
 </html>"""

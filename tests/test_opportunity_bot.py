@@ -401,11 +401,11 @@ class TestSmoke:
         with open(path) as f:
             assert "opportunity_bot.py" in f.read()
 
-    def test_dashboard_tab(self):
+    def test_dashboard_api(self):
         path = os.path.join(os.path.dirname(__file__), "..", "scripts", "dashboard.py")
         with open(path) as f:
             c = f.read()
-        assert "page-opportunities" in c and "/api/opportunities" in c
+        assert "/api/live-state" in c and "/api/overview" in c
 
     def test_no_dry_run_mode(self):
         """Spec says remove dry-run — always trade live."""

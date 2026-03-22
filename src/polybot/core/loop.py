@@ -429,6 +429,10 @@ class TradingLoop:
         seconds_since_open = time.time() - window.open_ts
         state.window_tick_count += 1
 
+        # Write live state every 5s (async, non-blocking)
+        if self.settings.early_entry_enabled and int(seconds_since_open) % 5 == 0:
+            self._write_live_state_async(state, price, seconds_since_open)
+
         # Log progress every 60s for debugging
         if int(seconds_since_open) % 60 == 0 and int(seconds_since_open) > 0:
             logger.debug("tick_progress", asset=state.asset, seconds=int(seconds_since_open),
@@ -2661,6 +2665,70 @@ class TradingLoop:
             logger.warning("auto_claim_failed", error=str(e)[:100])
 
     # 134 lines removed (dead method)
+
+    def _write_live_state_async(self, state: AssetState, price: float, seconds_since_open: float):
+        """Write current state to DynamoDB for dashboard. Fire-and-forget."""
+        try:
+            if not self.dynamo or not self.dynamo._available:
+                return
+            from decimal import Decimal
+            import boto3
+            pos = state.early_position
+            window = state.tracker.current
+
+            # Determine phase
+            if seconds_since_open < 0:
+                phase = "WAITING"
+            elif seconds_since_open < 15:
+                phase = "PRE-POSITION"
+            elif seconds_since_open < 30:
+                phase = "CONFIRM"
+            elif seconds_since_open < 270:
+                phase = "ACCUMULATE"
+            else:
+                phase = "HOLD"
+
+            # Compute combined avg
+            up_avg = (state.early_up_cost / state.early_up_shares) if state.early_up_shares > 0 else 0
+            down_avg = (state.early_down_cost / state.early_down_shares) if state.early_down_shares > 0 else 0
+            combined = up_avg + down_avg if up_avg > 0 and down_avg > 0 else 0
+            margin = round((1 - combined) * 100, 1) if 0 < combined < 1 else 0
+
+            item = {
+                "asset": state.asset,
+                "timestamp": Decimal(str(round(time.time(), 1))),
+                "price": Decimal(str(round(price, 2))),
+                "seconds": Decimal(str(int(seconds_since_open))),
+                "phase": phase,
+                "slug": (window.slug if window else "") or "",
+                "direction": ("UP" if pos["direction_up"] else "DOWN") if pos else "",
+                "lgbm_prob": Decimal(str(round(self.model_server.predict(f"{state.asset}_5m", {}) if False else 0, 3))),
+                "up_shares": Decimal(str(int(state.early_up_shares))),
+                "up_cost": Decimal(str(round(state.early_up_cost, 2))),
+                "up_avg": Decimal(str(round(up_avg, 4))),
+                "down_shares": Decimal(str(int(state.early_down_shares))),
+                "down_cost": Decimal(str(round(state.early_down_cost, 2))),
+                "down_avg": Decimal(str(round(down_avg, 4))),
+                "combined_avg": Decimal(str(round(combined, 4))),
+                "margin": Decimal(str(margin)),
+                "yes_ask": Decimal(str(round(state.orderbook.yes_best_ask, 4))),
+                "yes_bid": Decimal(str(round(state.orderbook.yes_best_bid, 4))),
+                "no_ask": Decimal(str(round(state.orderbook.no_best_ask, 4))),
+                "no_bid": Decimal(str(round(state.orderbook.no_best_bid, 4))),
+                "open_orders": Decimal(str(len([o for o in state.early_dca_orders if not o.get("filled")]))),
+                "filled_orders": Decimal(str(len([o for o in state.early_dca_orders if o.get("filled")]))),
+                "main_filled": Decimal(str(round(state.early_main_filled, 2))),
+                "hedge_filled": Decimal(str(round(state.early_hedge_filled, 2))),
+                "cheap_filled": Decimal(str(round(state.early_cheap_filled, 2))),
+                "has_position": 1 if pos else 0,
+            }
+
+            # Fire and forget
+            profile = "playground" if not os.getenv("AWS_EXECUTION_ENV") else None
+            _live_table = boto3.Session(profile_name=profile, region_name="eu-west-1").resource("dynamodb").Table("polymarket-bot-live-state")
+            _live_table.put_item(Item=item)
+        except Exception:
+            pass  # Never slow down trading
 
     def _get_macro_features(self) -> dict:
         """Get macro features for training data. Never fails — returns defaults if API down."""
