@@ -475,17 +475,22 @@ class TradingLoop:
             # Cutoff: cancel unfilled + stop trading. 270s for 5m, 3540s for 1h.
             cutoff = win_secs - 30
 
+            # PHASE 1: Open both sides at T+5–15s (wait for orderbook to form)
+            if (not state.early_entry_traded and not state.early_position
+                    and 5 <= seconds_since_open <= 15):
+                await self._v2_open_position(state, price)
+
             # PHASE 2: Confirm direction at T+15-20s (once per window)
             if state.early_position and 15 <= seconds_since_open <= 20 and not state.early_confirm_done:
                 state.early_confirm_done = True
                 await self._v2_confirm(state, price)
 
-            # PHASE 3: Accumulate every 3s from T+0 to T+cutoff + poll fills
-            if state.early_position and 0 <= seconds_since_open <= cutoff:
+            # PHASE 3: Accumulate every 3s from T+5 to T+cutoff + poll fills
+            if state.early_position and 5 <= seconds_since_open <= cutoff:
                 tick_3s = int(seconds_since_open // 3)
                 if tick_3s not in state.early_accum_ticks:
                     state.early_accum_ticks.add(tick_3s)
-                    await self._v2_accumulate_cheap(state, price)
+                    await self._v2_accumulate_cheap(state, price, seconds_since_open)
                     await self._v2_poll_fills(state)
 
             # PHASE 4: Hard stop — expensive entries only, T+30 to T+240, down 25%+
@@ -1130,8 +1135,15 @@ class TradingLoop:
         # Budget: EARLY_ENTRY_MAX_BET / number of active 5m assets
         num_5m_assets = len([k for k in self.asset_states if "_1h" not in k])
         per_asset = self.settings.early_entry_max_bet / max(num_5m_assets, 1)
-        main_size = round(per_asset * 0.60, 2)   # 60% of per-asset budget ($3 at $5)
-        hedge_size = round(per_asset * 0.40, 2)  # 40% of per-asset budget ($2 at $5)
+        # K9 LGBM confidence split: high confidence → heavier main side
+        if lgbm_raw >= 0.60:
+            main_pct, hedge_pct = 0.70, 0.30   # $3.50 / $1.50
+        elif lgbm_raw >= 0.52:
+            main_pct, hedge_pct = 0.60, 0.40   # $3.00 / $2.00
+        else:
+            main_pct, hedge_pct = 0.50, 0.50   # $2.50 / $2.50
+        main_size = round(per_asset * main_pct, 2)
+        hedge_size = round(per_asset * hedge_pct, 2)
 
         logger.info("v2_open_orderbook", asset=state.asset,
                     direction="UP" if direction_up else "DOWN",
@@ -1289,13 +1301,16 @@ class TradingLoop:
             logger.warning("v2_confirm_error", asset=state.asset, error=str(e)[:200])
 
     # ── V2 ACCUMULATE CHEAP + POLL FILLS ─────────────────────────────────
-    async def _v2_accumulate_cheap(self, state: AssetState, price: float):
+    async def _v2_accumulate_cheap(self, state: AssetState, price: float, seconds_since_open: float = 0.0):
         """Every 3s: post GTC ladders on BOTH sides below current bid.
 
-        K9 strategy: tighter 1¢ steps, $0.50/level, capped per-asset budget.
-        Cheap side (bid ≤ 0.35): 5 levels at bid, -1¢, -2¢, -4¢, -6¢
-        Expensive side (bid > 0.35): 3 levels at bid, -3¢, -6¢
-        Orders sit in book unfilled (cost $0). Cap is on actual fills only.
+        K9 4-tier ladder (from spec, 3,500 trades):
+          bid <= 0.15 (lottery zone):    7 levels [0,1,2,3,4,5,6¢], $0.50 each
+          bid 0.15-0.35 (cheap zone):    5 levels [0,1,2,4,6¢],      $0.35 each
+          bid 0.35-0.60 (mid zone):      3 levels [0,2,5¢],           $0.25 each
+          bid > 0.60 (winning side):     2 levels [0,3¢],             $0.50 each — only after T+60s
+
+        Orders cost $0 until filled. Cap is on actual fills only.
         """
         pos = state.early_position
         if not pos or self.settings.mode != "live":
@@ -1320,17 +1335,30 @@ class TradingLoop:
             if not bid or bid <= 0:
                 continue
 
-            # K9 ladder: tighter spacing, smaller sizes per level
-            if bid <= 0.35:
+            # K9 4-tier ladder
+            if bid <= 0.15:
+                # Lottery zone: 7 levels, $0.50 each (14x+ return if wins)
+                offsets = [0.00, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
+                size = 0.50
+            elif bid <= 0.35:
+                # Cheap accumulation zone: 5 levels, $0.35 each
                 offsets = [0.00, 0.01, 0.02, 0.04, 0.06]
+                size = 0.35
+            elif bid <= 0.60:
+                # Mid / baseline zone: 3 levels, $0.25 each
+                offsets = [0.00, 0.02, 0.05]
+                size = 0.25
             else:
-                offsets = [0.00, 0.03, 0.06]
+                # Winning side (bid > 0.60): 2 levels, $0.50 each, only after T+60s
+                if seconds_since_open < 60:
+                    continue
+                offsets = [0.00, 0.03]
+                size = 0.50
 
             for offset in offsets:
                 post_price = round(bid - offset, 2)
                 if post_price < 0.01 or post_price > 0.98:
                     continue
-                size = 0.50
                 # Skip if actual fills have hit the per-asset budget
                 if state.early_cheap_filled + size > max_bet_per_asset:
                     continue
@@ -1343,7 +1371,7 @@ class TradingLoop:
             await asyncio.gather(*order_tasks, return_exceptions=True)
             logger.info("v2_accumulate_tick", asset=state.asset,
                         orders=len(order_tasks), filled=round(state.early_cheap_filled, 2),
-                        max_bet=max_bet_per_asset)
+                        seconds=int(seconds_since_open), max_bet=max_bet_per_asset)
 
     async def _post_cheap_order(self, state: AssetState, token_id: str, post_price: float,
                                 shares: int, size: float, side_up: bool, options) -> None:
@@ -1812,8 +1840,6 @@ class TradingLoop:
         except Exception as e:
             logger.error("market_resolve_failed", asset=state.asset, slug=window.slug, error=str(e))
         await self._refresh_orderbook(state)
-        if self.settings.early_entry_enabled:
-            await self._v2_open_position(state, price)
 
     async def _on_window_close(self, state: AssetState, price: float):
         window = state.prev_window

@@ -271,8 +271,9 @@ class TestBothSidesAccumulation:
             return {"signed": "x"}
         bot.trader.client.create_order = track_create
 
+        # T+90s: after T+60s gate, winning side (no_bid=0.68) fires
         with patch.object(bot, "_log_activity", MagicMock()):
-            await bot._v2_accumulate_cheap(state, 50_000.0)
+            await bot._v2_accumulate_cheap(state, 50_000.0, seconds_since_open=90.0)
 
         assert "yes_acc" in posted_tokens, "YES token must be in accumulation"
         assert "no_acc" in posted_tokens, "NO token must be in accumulation"
@@ -329,16 +330,16 @@ class TestBothSidesAccumulation:
         yes_prices = [p for t, p in posted_prices if t == "yes_cheap"]
         assert len(yes_prices) == 5, f"Expected 5 levels for cheap YES side, got {len(yes_prices)}"
 
-    async def test_expensive_side_gets_3_levels(self):
-        """Bid > 0.35 → 3 offset levels."""
+    async def test_mid_zone_gets_3_levels(self):
+        """Bid 0.35-0.60 (mid/baseline zone) → 3 offset levels at $0.25 each."""
         bot = _make_bot()
-        window = _make_window(yes="yes_exp", no="no_exp")
+        window = _make_window(yes="yes_mid", no="no_mid")
         state = _make_state(window=window)
-        state.orderbook = _make_orderbook(yes_bid=0.68, no_bid=0.32)
+        state.orderbook = _make_orderbook(yes_bid=0.45, no_bid=0.55)
         state.early_position = {
             "direction_up": True,
-            "entry_price": 0.69,
-            "hedge_entry_price": 0.33,
+            "entry_price": 0.46,
+            "hedge_entry_price": 0.56,
             "slug": "early_test",
             "shares": 10,
             "side": "YES",
@@ -356,8 +357,100 @@ class TestBothSidesAccumulation:
         with patch.object(bot, "_log_activity", MagicMock()):
             await bot._v2_accumulate_cheap(state, 50_000.0)
 
-        yes_prices = [p for t, p in posted_prices if t == "yes_exp"]
-        assert len(yes_prices) == 3, f"Expected 3 levels for expensive YES side, got {len(yes_prices)}"
+        yes_prices = [p for t, p in posted_prices if t == "yes_mid"]
+        assert len(yes_prices) == 3, f"Expected 3 levels for mid YES side (bid=0.45), got {len(yes_prices)}"
+
+    async def test_very_cheap_gets_7_levels(self):
+        """Bid <= 0.15 (lottery zone) → 7 offset levels at $0.50 each."""
+        bot = _make_bot()
+        window = _make_window(yes="yes_lottery", no="no_lottery")
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.10, no_bid=0.90)
+        state.early_position = {
+            "direction_up": True,
+            "entry_price": 0.11,
+            "hedge_entry_price": 0.91,
+            "slug": "early_test",
+            "shares": 10,
+            "side": "YES",
+            "size": 6.0,
+        }
+        bot._refresh_orderbook = _noop_refresh
+        posted_prices = []
+
+        def track_create(args, options):
+            posted_prices.append((args.token_id, args.price))
+            return {"signed": "x"}
+        bot.trader.client.create_order = track_create
+        bot.trader.client.post_order = MagicMock(return_value={"orderID": "oid"})
+
+        with patch.object(bot, "_log_activity", MagicMock()):
+            await bot._v2_accumulate_cheap(state, 50_000.0)
+
+        yes_prices = [p for t, p in posted_prices if t == "yes_lottery"]
+        assert len(yes_prices) == 7, f"Expected 7 levels for lottery YES side (bid=0.10), got {len(yes_prices)}"
+
+    async def test_winning_side_blocked_before_t60(self):
+        """Bid > 0.60 → 0 orders before T+60s (must wait for direction to be clear)."""
+        bot = _make_bot()
+        window = _make_window(yes="yes_win", no="no_win")
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.75, no_bid=0.25)
+        state.early_position = {
+            "direction_up": True,
+            "entry_price": 0.76,
+            "hedge_entry_price": 0.26,
+            "slug": "early_test",
+            "shares": 10,
+            "side": "YES",
+            "size": 6.0,
+        }
+        bot._refresh_orderbook = _noop_refresh
+        posted_prices = []
+
+        def track_create(args, options):
+            posted_prices.append((args.token_id, args.price))
+            return {"signed": "x"}
+        bot.trader.client.create_order = track_create
+        bot.trader.client.post_order = MagicMock(return_value={"orderID": "oid"})
+
+        # seconds_since_open = 30 (before T+60s)
+        with patch.object(bot, "_log_activity", MagicMock()):
+            await bot._v2_accumulate_cheap(state, 50_000.0, seconds_since_open=30.0)
+
+        yes_prices = [p for t, p in posted_prices if t == "yes_win"]
+        assert len(yes_prices) == 0, f"Winning side must be blocked before T+60s, got {len(yes_prices)}"
+
+    async def test_winning_side_gets_2_levels_after_t60(self):
+        """Bid > 0.60 → 2 levels at bid, bid-3¢ after T+60s."""
+        bot = _make_bot()
+        window = _make_window(yes="yes_win2", no="no_win2")
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.75, no_bid=0.25)
+        state.early_position = {
+            "direction_up": True,
+            "entry_price": 0.76,
+            "hedge_entry_price": 0.26,
+            "slug": "early_test",
+            "shares": 10,
+            "side": "YES",
+            "size": 6.0,
+        }
+        bot._refresh_orderbook = _noop_refresh
+        posted_prices = []
+
+        def track_create(args, options):
+            posted_prices.append((args.token_id, args.price))
+            return {"signed": "x"}
+        bot.trader.client.create_order = track_create
+        bot.trader.client.post_order = MagicMock(return_value={"orderID": "oid"})
+
+        # seconds_since_open = 90 (after T+60s)
+        with patch.object(bot, "_log_activity", MagicMock()):
+            await bot._v2_accumulate_cheap(state, 50_000.0, seconds_since_open=90.0)
+
+        yes_prices = [p for t, p in posted_prices if t == "yes_win2"]
+        assert len(yes_prices) == 2, f"Expected 2 levels for winning side after T+60s, got {len(yes_prices)}"
 
 
 # ── 3. BudgetCap ─────────────────────────────────────────────────────────────
@@ -681,21 +774,37 @@ class TestFillPollingDirection:
 class TestLadderPricing:
     """Orders must be placed AT or BELOW current bid (not above)."""
 
-    def test_cheap_side_offsets(self):
-        """bid <= 0.35 → offsets [0, 0.03, 0.05, 0.08, 0.10]."""
+    def test_cheap_zone_offsets(self):
+        """bid 0.15-0.35 → offsets [0, 1¢, 2¢, 4¢, 6¢], $0.35/level."""
         bid = 0.30
-        offsets = [0.00, 0.03, 0.05, 0.08, 0.10]
+        offsets = [0.00, 0.01, 0.02, 0.04, 0.06]
         prices = [round(bid - o, 2) for o in offsets]
         assert all(p <= bid for p in prices), "All prices must be <= bid"
-        assert prices == [0.30, 0.27, 0.25, 0.22, 0.20]
+        assert prices == [0.30, 0.29, 0.28, 0.26, 0.24]
 
-    def test_expensive_side_offsets(self):
-        """bid > 0.35 → offsets [0, 0.05, 0.10]."""
-        bid = 0.68
-        offsets = [0.00, 0.05, 0.10]
+    def test_mid_zone_offsets(self):
+        """bid 0.35-0.60 → offsets [0, 2¢, 5¢], $0.25/level."""
+        bid = 0.50
+        offsets = [0.00, 0.02, 0.05]
         prices = [round(bid - o, 2) for o in offsets]
         assert all(p <= bid for p in prices), "All prices must be <= bid"
-        assert prices == [0.68, 0.63, 0.58]
+        assert prices == [0.50, 0.48, 0.45]
+
+    def test_winning_side_offsets(self):
+        """bid > 0.60 → offsets [0, 3¢], $0.50/level, only after T+60s."""
+        bid = 0.75
+        offsets = [0.00, 0.03]
+        prices = [round(bid - o, 2) for o in offsets]
+        assert all(p <= bid for p in prices), "All prices must be <= bid"
+        assert prices == [0.75, 0.72]
+
+    def test_lottery_zone_offsets(self):
+        """bid <= 0.15 → offsets [0, 1¢, 2¢, 3¢, 4¢, 5¢, 6¢], $0.50/level."""
+        bid = 0.10
+        offsets = [0.00, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
+        prices = [p for o in offsets for p in [round(bid - o, 2)] if p >= 0.01]
+        assert all(p >= 0.01 for p in prices)
+        assert len(prices) == 7
 
     def test_prices_below_001_skipped(self):
         """Prices < 0.01 must be filtered out."""
@@ -868,6 +977,103 @@ class TestCombinedAvgMath:
         assert round(down_avg, 3) == 0.330
 
 
+# ── 11a. LGBMConfidenceSplit ─────────────────────────────────────────────────
+
+class TestLGBMConfidenceSplit:
+    """K9 spec: lgbm >= 0.60 → 70/30, 0.52-0.60 → 60/40, < 0.52 → 50/50."""
+
+    async def _open_and_get_sizes(self, lgbm_val):
+        bot = _make_bot(max_bet=20.0)
+        bot.model_server.predict = MagicMock(return_value=lgbm_val)
+        window = _make_window()
+        state = _make_state(window=window)
+        bot._refresh_orderbook = _noop_refresh
+
+        sizes = {}
+        def track_create(args, options):
+            return {"signed": "x"}
+        def track_post(signed, order_type):
+            # orders are placed in order: main then hedge
+            idx = len(sizes)
+            sizes[idx] = getattr(signed, "size", None)
+            return {"orderID": f"oid_{idx}"}
+
+        # Capture sizes from early_dca_orders after call
+        with patch.object(bot, "_log_activity"):
+            await bot._v2_open_position(state, 50_000.0)
+        return state
+
+    async def test_high_confidence_gives_70_30(self):
+        """lgbm >= 0.60 → main 70%, hedge 30%."""
+        bot = _make_bot(max_bet=20.0)
+        bot.model_server.predict = MagicMock(return_value=0.72)
+        window = _make_window()
+        state = _make_state(window=window)
+        bot._refresh_orderbook = _noop_refresh
+        with patch.object(bot, "_log_activity"):
+            await bot._v2_open_position(state, 50_000.0)
+        orders = state.early_dca_orders
+        main_sz = next((o["size"] for o in orders if o.get("side") == "main"), None)
+        hedge_sz = next((o["size"] for o in orders if o.get("side") == "hedge"), None)
+        assert main_sz is not None and hedge_sz is not None
+        per_asset = 20.0 / 4  # $5
+        assert abs(main_sz - per_asset * 0.70) < 0.01, f"main={main_sz}, expected {per_asset*0.70}"
+        assert abs(hedge_sz - per_asset * 0.30) < 0.01, f"hedge={hedge_sz}, expected {per_asset*0.30}"
+
+    async def test_medium_confidence_gives_60_40(self):
+        """lgbm 0.52-0.60 → main 60%, hedge 40%."""
+        bot = _make_bot(max_bet=20.0)
+        bot.model_server.predict = MagicMock(return_value=0.56)
+        window = _make_window()
+        state = _make_state(window=window)
+        bot._refresh_orderbook = _noop_refresh
+        with patch.object(bot, "_log_activity"):
+            await bot._v2_open_position(state, 50_000.0)
+        orders = state.early_dca_orders
+        main_sz = next((o["size"] for o in orders if o.get("side") == "main"), None)
+        hedge_sz = next((o["size"] for o in orders if o.get("side") == "hedge"), None)
+        per_asset = 20.0 / 4
+        assert abs(main_sz - per_asset * 0.60) < 0.01, f"main={main_sz}, expected {per_asset*0.60}"
+        assert abs(hedge_sz - per_asset * 0.40) < 0.01, f"hedge={hedge_sz}, expected {per_asset*0.40}"
+
+    async def test_low_confidence_gives_50_50(self):
+        """lgbm < 0.52 → main 50%, hedge 50%."""
+        bot = _make_bot(max_bet=20.0)
+        bot.model_server.predict = MagicMock(return_value=0.48)
+        window = _make_window()
+        state = _make_state(window=window)
+        bot._refresh_orderbook = _noop_refresh
+        with patch.object(bot, "_log_activity"):
+            await bot._v2_open_position(state, 50_000.0)
+        orders = state.early_dca_orders
+        main_sz = next((o["size"] for o in orders if o.get("side") == "main"), None)
+        hedge_sz = next((o["size"] for o in orders if o.get("side") == "hedge"), None)
+        per_asset = 20.0 / 4
+        assert abs(main_sz - per_asset * 0.50) < 0.01, f"main={main_sz}, expected {per_asset*0.50}"
+        assert abs(hedge_sz - per_asset * 0.50) < 0.01, f"hedge={hedge_sz}, expected {per_asset*0.50}"
+
+
+# ── 11b. OpenTimingT5s ────────────────────────────────────────────────────────
+
+class TestOpenTimingT5s:
+    """K9 spec: open position at T+5-15s, not T+0 (wait for orderbook to form)."""
+
+    def test_phase1_fires_at_t5(self):
+        """Tick loop triggers _v2_open_position only when 5 <= seconds <= 15."""
+        import inspect
+        from polybot.core.loop import TradingLoop
+        source = inspect.getsource(TradingLoop._tick_asset)
+        # Phase 1 gate in the tick loop
+        assert "5 <= seconds_since_open <= 15" in source
+
+    def test_v2_open_not_called_from_on_window_open(self):
+        """_on_window_open must NOT directly call _v2_open_position (T+0 is wrong)."""
+        import inspect
+        from polybot.core.loop import TradingLoop
+        source = inspect.getsource(TradingLoop._on_window_open)
+        assert "_v2_open_position" not in source
+
+
 # ── 11. ETHModelFallback ─────────────────────────────────────────────────────
 
 class TestETHModelFallback:
@@ -1031,8 +1237,9 @@ class TestFullWindowSimulation:
         bot.trader.client.create_order = track_create
         bot.trader.client.post_order = MagicMock(return_value={"orderID": "oid"})
 
+        # T+90s: after T+60s gate so winning side (no_bid=0.70) fires
         with patch.object(bot, "_log_activity", MagicMock()):
-            await bot._v2_accumulate_cheap(state, 50_000.0)
+            await bot._v2_accumulate_cheap(state, 50_000.0, seconds_since_open=90.0)
 
         assert "yes_sim2" in posted_tokens, "YES token must be posted"
         assert "no_sim2" in posted_tokens, "NO token must be posted"
