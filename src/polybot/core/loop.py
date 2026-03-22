@@ -1300,6 +1300,21 @@ class TradingLoop:
         state.early_entry_traded = True
         state.early_entry_evaluated = True
 
+        # Store position for checkpoint monitoring (only if a fill happened)
+        if not state.early_position and state.early_entry_traded:
+            _shares_filled = round(size / current_ask) if current_ask > 0 else 5
+            state.early_position = {
+                "slug": early_slug,
+                "token_id": token_id,
+                "shares": max(_shares_filled, 5),
+                "entry_price": current_ask,
+                "direction_up": direction_up,
+                "side": side,
+                "size": size,
+            }
+            logger.info("early_position_opened", asset=state.asset, slug=early_slug,
+                        entry_price=current_ask, shares=state.early_position["shares"])
+
     # ── EARLY ENTRY CHECKPOINTS (T+60, T+120, T+180) ────────────────────────
     async def _early_checkpoint(self, state: AssetState, price: float, seconds_since_open: float, checkpoint: int):
         """Re-evaluate early entry position. Sell if model flipped or profit target hit."""
@@ -1451,19 +1466,6 @@ class TradingLoop:
 
         except Exception as e:
             logger.error("early_sell_error", error=str(e))
-
-        # Store position for checkpoint monitoring
-        if not state.early_position:
-            _shares_filled = round(size / current_ask) if current_ask > 0 else 5
-            state.early_position = {
-                "slug": early_slug,
-                "token_id": token_id,
-                "shares": max(_shares_filled, 5),
-                "entry_price": current_ask,
-                "direction_up": direction_up,
-                "side": side,
-                "size": size,
-            }
 
     def _log_early_trade(self, state, window, side, fill_price, size, lgbm_prob, ev,
                          entry_type, limit_price, limit_filled, limit_wait_ms, order_id):
