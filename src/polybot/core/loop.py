@@ -1165,12 +1165,14 @@ class TradingLoop:
 
         # Always set position so accumulation loop fires even if orders failed
         state.early_entry_traded = True
+        hedge_entry_price = round((hedge_bid or 0.50) + 0.01, 2)
         state.early_position = {
             "slug": early_slug,
             "token_id": main_token,
             "hedge_token": hedge_token,
             "shares": max(round(main_size / 0.50), 5),
             "entry_price": round((main_bid or 0.50) + 0.01, 2),
+            "hedge_entry_price": hedge_entry_price,
             "direction_up": direction_up,
             "side": "YES" if direction_up else "NO",
             "size": main_size,
@@ -1183,22 +1185,12 @@ class TradingLoop:
 
     # ── V2 ACCUMULATE CHEAP + POLL FILLS ─────────────────────────────────
     async def _v2_accumulate_cheap(self, state: AssetState, price: float):
-        """Every 3s: post order ladder on both sides. $12 budget per window."""
-        window = state.tracker.current
-        seconds_since_open = time.time() - window.open_ts if window else 0
-        logger.info("v2_accumulate_attempt", asset=state.asset, seconds=int(seconds_since_open))
-        logger.info("v2_accumulate_tick", asset=state.asset, seconds=int(seconds_since_open),
-                    has_position=state.early_position is not None,
-                    cheap_posted=round(state.early_cheap_posted, 2))
+        """Every 3s: post order ladder on BOTH sides. No total cap — runs full 270s."""
         pos = state.early_position
         if not pos or self.settings.mode != "live":
             return
         window = state.tracker.current
         if not window:
-            return
-
-        cheap_budget = 12.0
-        if state.early_cheap_posted >= cheap_budget:
             return
 
         await self._refresh_orderbook(state)
@@ -1215,28 +1207,29 @@ class TradingLoop:
             if not ask or ask <= 0:
                 continue
 
-            # Price ladder based on current ask
+            # Price ladder: 3-5 levels on cheap side, 1 level on expensive side
             if ask <= 0.10:
-                levels = [(0.04, 3.5), (0.05, 3.5), (0.06, 3.5), (0.07, 3.5), (0.08, 3.5)]
+                levels = [(0.04, 1.0), (0.05, 1.0), (0.06, 1.0), (0.07, 1.0), (0.08, 1.0)]
             elif ask <= 0.15:
-                levels = [(0.08, 2.5), (0.10, 2.5), (0.12, 2.5)]
+                levels = [(0.08, 1.0), (0.10, 1.0), (0.12, 1.0)]
             elif ask <= 0.20:
-                levels = [(0.12, 1.75), (0.15, 1.75), (0.18, 1.75)]
+                levels = [(0.12, 1.0), (0.15, 1.0), (0.18, 1.0)]
             elif ask <= 0.25:
                 levels = [(0.18, 1.0), (0.20, 1.0), (0.23, 1.0)]
-            else:
-                # ask 25¢–40¢: post BOTH sides at bid+1¢
-                if ask > 0.40:
-                    continue
+            elif ask <= 0.40:
                 if not bid or bid <= 0:
                     continue
-                levels = [(round(bid + 0.01, 2), 2.0)]
+                levels = [(round(bid + 0.01, 2), 1.0), (round(bid + 0.02, 2), 1.0), (round(bid + 0.03, 2), 1.0)]
+            else:
+                # Expensive side (ask > 0.40): post 1 level at bid+1¢ to maintain exposure
+                if not bid or bid <= 0:
+                    continue
+                post_price = round(bid + 0.01, 2)
+                if post_price <= 0 or post_price >= 1.0:
+                    continue
+                levels = [(post_price, 1.0)]
 
             for post_price, size in levels:
-                remaining = cheap_budget - state.early_cheap_posted
-                if remaining < 0.50:
-                    break
-                size = min(size, remaining)
                 shares = max(round(size / post_price), 5)
                 order_tasks.append(
                     self._post_cheap_order(state, token_id, post_price, shares, size, side_up, options)
@@ -1244,6 +1237,8 @@ class TradingLoop:
 
         if order_tasks:
             await asyncio.gather(*order_tasks, return_exceptions=True)
+            logger.info("v2_accumulate_tick", asset=state.asset,
+                        orders=len(order_tasks), cheap_posted=round(state.early_cheap_posted, 2))
 
     async def _post_cheap_order(self, state: AssetState, token_id: str, post_price: float,
                                 shares: int, size: float, side_up: bool, options) -> None:
@@ -1270,8 +1265,10 @@ class TradingLoop:
 
     async def _v2_poll_fills(self, state: AssetState):
         """Check fill status of all tracked GTC orders, update state totals."""
-        if not state.early_dca_orders or self.settings.mode != "live":
+        if not state.early_dca_orders:
             return
+        pos = state.early_position or {}
+        direction_up = pos.get("direction_up", True)
         for order in state.early_dca_orders:
             if order.get("filled"):
                 continue
@@ -1279,25 +1276,30 @@ class TradingLoop:
             if not oid:
                 continue
             try:
-                status = self.trader.client.get_order(oid).get("status", "")
+                resp = self.trader.client.get_order(oid)
+                status = resp.get("status", "") if isinstance(resp, dict) else ""
+                logger.info("v2_poll_order", asset=state.asset, oid=oid[:16],
+                            status=status, side=order.get("side", ""))
                 if status in ("MATCHED", "FILLED"):
                     order["filled"] = True
                     sz = order.get("size", 0)
                     side = order.get("side", "")
                     price = order.get("price", 0)
                     state.early_cheap_filled += sz
-                    # Track per-side shares
+                    # Track per-side shares — resolve "main"/"hedge" using direction
                     shares = round(sz / price) if price > 0 else 0
-                    if side in ("UP", "main"):
+                    is_up = (side == "UP") or (side == "main" and direction_up) or (side == "hedge" and not direction_up)
+                    if is_up:
                         state.early_up_shares += shares
                         state.early_up_cost += sz
-                    elif side in ("DOWN", "hedge"):
+                    else:
                         state.early_down_shares += shares
                         state.early_down_cost += sz
-                    logger.info("v2_fill_detected", side=side, price=price, size=sz, shares=shares)
+                    logger.info("v2_fill_detected", asset=state.asset, side=side,
+                                is_up=is_up, price=price, size=sz, shares=shares)
                     self._log_activity(state, f"FILL {side} ${price:.2f}", f"${sz:.2f} ({shares} shares)")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.info("v2_poll_error", asset=state.asset, oid=oid[:16], error=str(e)[:80])
 
     # ── EARLY ENTRY (T+14-18s, independent strategy) ────────────────────────
     async def _early_entry_tick(self, state: AssetState, price: float, seconds_since_open: float):
@@ -2073,6 +2075,11 @@ class TradingLoop:
                 else:
                     logger.info("early_rotate_skip", slug=pos["slug"], ask=main_ask)
         elif sell_target == "hedge":
+            # Never sell hedge bought cheap (< 40¢) — hold to resolution
+            hedge_entry = pos.get("hedge_entry_price", 1.0)
+            if hedge_entry < 0.40:
+                logger.info("early_hedge_hold_cheap", asset=state.asset, hedge_entry=hedge_entry)
+                return
             hedge_token = (window.no_token_id if pos["direction_up"] else window.yes_token_id) if window else ""
             if hedge_token and hedge_bid and hedge_bid > 0.02:
                 sell_proceeds = await self._early_sell_hedge(state, pos, hedge_token, hedge_bid, window)
