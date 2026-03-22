@@ -15,6 +15,13 @@ const { privateKeyToAccount } = require("viem/accounts");
 const { polygon } = require("viem/chains");
 const { encodeFunctionData } = require("viem");
 
+// Load .env FIRST so all env vars are available
+try {
+    require("dotenv").config();
+} catch (e) {
+    // dotenv optional — env vars come from ECS Secrets Manager on prod
+}
+
 // Config — Builder API credentials
 const CHAIN_ID = 137;
 const USDC_E = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
@@ -24,20 +31,9 @@ const NEG_RISK_CTF_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a";
 const POLY_BUILDER_API_KEY = process.env.POLY_BUILDER_API_KEY || "";
 const POLY_BUILDER_SECRET = process.env.POLY_BUILDER_SECRET || "";
 const POLY_BUILDER_PASSPHRASE = process.env.POLY_BUILDER_PASSPHRASE || "";
-
-// Load private key and funder from environment or .env
-let PRIVATE_KEY = process.env.POLYMARKET_PRIVATE_KEY || "";
-let FUNDER_ADDRESS = process.env.POLYMARKET_FUNDER || "0x5ca439d661c9b44337E91fC681ec4b006C473610";
+const PRIVATE_KEY = process.env.POLYMARKET_PRIVATE_KEY || "";
+const FUNDER_ADDRESS = process.env.POLYMARKET_FUNDER || "0x5ca439d661c9b44337E91fC681ec4b006C473610";
 const POLYGON_RPC = process.env.POLYGON_RPC || "https://polygon-rpc.com";
-
-// Try loading from .env file
-try {
-    require("dotenv").config();
-    PRIVATE_KEY = process.env.POLYMARKET_PRIVATE_KEY || PRIVATE_KEY;
-    FUNDER_ADDRESS = process.env.POLYMARKET_FUNDER || FUNDER_ADDRESS;
-} catch (e) {
-    // dotenv optional
-}
 
 const REDEEM_ABI = [
     {
