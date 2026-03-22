@@ -1400,14 +1400,19 @@ class TradingLoop:
             resp = self.dynamo._trades.scan(
                 FilterExpression=Attr("window_slug").eq(early_slug),
             )
-            for t in resp.get("Items", []):
-                if t.get("source") == "early_exit":
-                    continue  # Already manually resolved
+            all_items = resp.get("Items", [])
+            has_exit = any(i.get("source") in ("early_exit", "early_hedge_exit") for i in all_items)
+            for t in all_items:
+                if t.get("source") in ("early_exit", "early_hedge_exit"):
+                    continue  # Sell trade — P&L already recorded
                 side = t.get("side", "")
                 fill = float(t.get("fill_price", 0) or 0)
                 size = float(t.get("size_usd", 0) or 0)
-                won = (side == "YES" and went_up) or (side == "NO" and not went_up)
-                pnl = round((size / fill) - size, 2) if won and fill > 0 else round(-size, 2)
+                if has_exit:
+                    pnl = 0  # Position was sold — real P&L in the exit trade
+                else:
+                    won = (side == "YES" and went_up) or (side == "NO" and not went_up)
+                    pnl = round((size / fill) - size, 2) if won and fill > 0 else round(-size, 2)
                 self.dynamo._trades.update_item(
                     Key={"id": t["id"]},
                     UpdateExpression="SET resolved=:r, pnl=:p, outcome_source=:s",
@@ -1415,7 +1420,7 @@ class TradingLoop:
                         ":r": 1, ":p": Decimal(str(pnl)), ":s": "polymarket_verified",
                     },
                 )
-                logger.info("early_trade_verified", slug=early_slug, side=side, won=won, pnl=pnl)
+                logger.info("early_trade_verified", slug=early_slug, side=side, pnl=pnl, had_exit=has_exit)
         except Exception as e:
             logger.warning("early_verify_update_failed", error=str(e)[:60])
 
@@ -1428,19 +1433,34 @@ class TradingLoop:
             from boto3.dynamodb.conditions import Attr
             # Scan for unresolved early trades matching this window
             early_slug = f"early_{window_slug}"
-            resp = self.dynamo._trades.scan(
-                FilterExpression=Attr("window_slug").eq(early_slug) & Attr("resolved").eq(0),
+            # Check if position was already sold (early_exit exists for this window)
+            all_resp = self.dynamo._trades.scan(
+                FilterExpression=Attr("window_slug").eq(early_slug),
             )
-            items = resp.get("Items", [])
-            for t in items:
+            all_items = all_resp.get("Items", [])
+            has_exit = any(i.get("source") in ("early_exit", "early_hedge_exit") for i in all_items)
+
+            unresolved = [t for t in all_items if int(t.get("resolved", 0)) == 0 and t.get("source") == "early_entry"]
+            for t in unresolved:
                 side = t.get("side", "")
                 fill = float(t.get("fill_price", 0) or 0)
                 size = float(t.get("size_usd", 0) or 0)
-                won = (side == "YES" and went_up) or (side == "NO" and not went_up)
-                if won and fill > 0:
-                    pnl = round((size / fill) - size, 2)
+
+                if has_exit:
+                    # Position was sold mid-window — P&L already recorded in the sell
+                    pnl = 0
+                    logger.info("early_trade_resolved_with_exit", slug=early_slug, side=side,
+                                pnl=0, note="P&L in early_exit trade")
                 else:
-                    pnl = round(-size, 2)
+                    # Position held to resolution
+                    won = (side == "YES" and went_up) or (side == "NO" and not went_up)
+                    if won and fill > 0:
+                        pnl = round((size / fill) - size, 2)
+                    else:
+                        pnl = round(-size, 2)
+                    logger.info("early_trade_resolved", slug=early_slug, side=side,
+                                won=won, pnl=pnl, source="coinbase")
+
                 self.dynamo._trades.update_item(
                     Key={"id": t["id"]},
                     UpdateExpression="SET resolved=:r, pnl=:p, outcome_source=:s",
@@ -1450,8 +1470,6 @@ class TradingLoop:
                         ":s": "coinbase_provisional",
                     },
                 )
-                logger.info("early_trade_resolved", slug=early_slug, side=side,
-                            won=won, pnl=pnl, source="coinbase")
         except Exception as e:
             logger.warning("early_resolve_failed", slug=window_slug, error=str(e)[:80])
 
@@ -1633,6 +1651,10 @@ class TradingLoop:
         await self._refresh_orderbook(state)
         main_bid = state.orderbook.yes_best_bid if pos["direction_up"] else state.orderbook.no_best_bid
         hedge_bid = state.orderbook.no_best_bid if pos["direction_up"] else state.orderbook.yes_best_bid
+        if not main_bid or main_bid <= 0:
+            logger.warning("early_checkpoint_no_bid", asset=state.asset, slug=pos["slug"],
+                           checkpoint=checkpoint, main_bid=main_bid)
+            return
         position_value_pct = ((main_bid - pos["entry_price"]) / pos["entry_price"] * 100) if pos["entry_price"] > 0 else 0
 
         # Estimate hedge value
