@@ -42,6 +42,12 @@ MAX_BUDGET = 1_250.00  # Total max deployed across all opportunity trades
 SKIP_SLUGS = {"5m", "15m", "updown"}
 SKIP_KEYWORDS = {"esports", "lol", "league-of-legends", "dota", "cs2", "valorant", "gaming"}
 
+# Data-driven filters (from opportunity_analysis.txt)
+MIN_ASK_OPP = 0.85       # Below $0.85 loses money (71% WR, -$3.42)
+MAX_ASK_OPP = 0.94       # Above $0.94 margin too thin (-$3.60)
+SKIP_HOURS_UTC = {6, 7, 8, 9, 10, 11}  # Morning 06-12 UTC: 76% WR, -$12.12
+SKIP_RESOLVE_HOURS = (6, 12)  # 6-12h resolution window: 80% WR, -$8.90
+
 # Tag IDs from Gamma /tags endpoint (cached at startup)
 WORKER_TAGS: dict[str, list[str]] = {}
 
@@ -67,6 +73,16 @@ WORKER_TAG_SLUGS = {
     "weather": ["temperature", "weather", "daily", "precipitation"],
     "culture": ["culture", "entertainment", "awards", "mrbeast", "youtube",
                 "prediction-markets", "recurring"],
+    "economics": ["cpi", "inflation", "unemployment", "gdp", "jobs", "fed-decision",
+                  "interest-rates", "economic-data"],
+    "companies": ["earnings", "apple", "tesla", "nvidia", "amazon", "google",
+                  "microsoft", "meta", "stock-price", "revenue", "ipo"],
+    "health": ["fda", "cdc", "outbreak", "approval", "clinical-trial",
+               "disease", "pandemic", "measles", "bird-flu"],
+    "iran": ["iran", "khamenei", "irgc", "tehran", "ceasefire-iran",
+             "hormuz", "oil-strike"],
+    "whitehouse": ["white-house", "lid", "briefing", "executive-order",
+                   "trump-action", "cabinet", "press-secretary"],
 }
 
 ESPN_NBA = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
@@ -262,9 +278,9 @@ def parse_opps(events: list[dict], worker: str) -> list[Opp]:
                 continue
 
             yp, np = float(prices[0]), float(prices[1])
-            if yp >= np and 0.65 <= yp <= 0.95:
+            if yp >= np and MIN_ASK_OPP <= yp <= MAX_ASK_OPP:
                 side, price = "YES", yp
-            elif 0.65 <= np <= 0.95:
+            elif MIN_ASK_OPP <= np <= MAX_ASK_OPP:
                 side, price = "NO", np
             else:
                 continue
@@ -282,12 +298,16 @@ def parse_opps(events: list[dict], worker: str) -> list[Opp]:
             if hrs < 0.5:
                 continue
 
+            # Skip 6-12h resolution window (80% WR, -$8.90)
+            if SKIP_RESOLVE_HOURS[0] <= hrs < SKIP_RESOLVE_HOURS[1]:
+                continue
+
             # Tier (0 = $10 high-conviction, 1 = $5 auto, 2 = $2.50 AI-checked)
             if price >= 0.93 and hrs <= 6 and vol >= 5_000:
                 tier = 0
-            elif 0.85 <= price <= 0.95 and hrs <= 24:
+            elif MIN_ASK_OPP <= price <= MAX_ASK_OPP and hrs <= 24:
                 tier = 1
-            elif (0.65 <= price < 0.85 and hrs <= 24) or (0.85 <= price <= 0.95 and 24 < hrs <= 48):
+            elif MIN_ASK_OPP <= price <= MAX_ASK_OPP and 24 < hrs <= 48:
                 tier = 2
             else:
                 continue
@@ -480,8 +500,8 @@ async def place_fok(client: ClobClient, opp: Opp) -> dict:
     avail = float(best["size"])
     if price <= 0 or price >= 1:
         return {"success": False, "error": f"Bad ask: {price}"}
-    if price > 0.95:
-        return {"success": False, "error": f"Ask {price} > $0.95 cap"}
+    if price > MAX_ASK_OPP:
+        return {"success": False, "error": f"Ask {price} > ${MAX_ASK_OPP} cap"}
 
     shares = max(round(size / price, 0), MIN_SHARES)
     if shares > avail:
@@ -740,6 +760,13 @@ async def get_context(opp: Opp, crypto_prices: dict) -> str:
 
 async def run_scan():
     global _total_deployed
+
+    # Skip morning 06-12 UTC (76% WR, -$12.12 from analysis)
+    utc_hour = datetime.now(timezone.utc).hour
+    if utc_hour in SKIP_HOURS_UTC:
+        logger.info("scan_skipped_morning", utc_hour=utc_hour)
+        return
+
     logger.info("scan_start", workers=len(WORKER_TAG_SLUGS))
 
     table = _dynamo()
@@ -858,7 +885,7 @@ async def run_scan():
             context = await get_context(opp, crypto_prices)
             opp = await ai_assess(opp, bedrock, context)
 
-            if opp.ai_trade and opp.ai_confidence >= 0.80 and opp.ai_edge >= 0.15:
+            if opp.ai_trade and opp.ai_confidence >= 0.85 and opp.ai_edge >= 0.15:
                 if not client or _total_deployed >= MAX_BUDGET:
                     continue
                 if not dedup_put(table, opp, {"price": opp.price, "cost": 0, "shares": 0, "order_id": ""}):

@@ -9,14 +9,15 @@ import pytest
 
 
 class TestWorkerConfig:
-    def test_8_workers(self):
+    def test_13_workers(self):
         from opportunity_bot import WORKER_TAG_SLUGS
-        assert len(WORKER_TAG_SLUGS) == 8
+        assert len(WORKER_TAG_SLUGS) == 13
 
     def test_worker_names(self):
         from opportunity_bot import WORKER_TAG_SLUGS
         expected = {"crypto", "finance", "fed", "geopolitics",
-                    "elections", "tech", "weather", "culture"}
+                    "elections", "tech", "weather", "culture",
+                    "economics", "companies", "health", "iran", "whitehouse"}
         assert set(WORKER_TAG_SLUGS.keys()) == expected
         assert "tweets" not in WORKER_TAG_SLUGS
         assert "basketball" not in WORKER_TAG_SLUGS
@@ -41,6 +42,14 @@ class TestWorkerConfig:
         from opportunity_bot import SKIP_SLUGS
         assert SKIP_SLUGS == {"5m", "15m", "updown"}
 
+    def test_data_driven_filters(self):
+        """Data-driven filters from opportunity analysis."""
+        from opportunity_bot import MIN_ASK_OPP, MAX_ASK_OPP, SKIP_HOURS_UTC, SKIP_RESOLVE_HOURS
+        assert MIN_ASK_OPP == 0.85  # Below loses money
+        assert MAX_ASK_OPP == 0.94  # Above margin too thin
+        assert SKIP_HOURS_UTC == {6, 7, 8, 9, 10, 11}  # Morning UTC
+        assert SKIP_RESOLVE_HOURS == (6, 12)  # 6-12h resolve window
+
 
 class TestTiers:
     def test_tier_sizes(self):
@@ -51,19 +60,19 @@ class TestTiers:
 
     def test_tier2_gate_passes(self):
         from opportunity_bot import Opp
-        o = Opp(question="t", slug="t", condition_id="0x", side="YES", price=0.75,
-                yes_price=0.75, no_price=0.25, yes_token="t1", no_token="t2",
+        o = Opp(question="t", slug="t", condition_id="0x", side="YES", price=0.88,
+                yes_price=0.88, no_price=0.12, yes_token="t1", no_token="t2",
                 volume=5000, hours_left=10, category="Crypto", end_date="2026-01-01T00:00:00Z", neg_risk=False)
-        o.ai_trade, o.ai_confidence, o.ai_edge = True, 0.85, 0.20
-        assert o.ai_trade and o.ai_confidence >= 0.80 and o.ai_edge >= 0.15
+        o.ai_trade, o.ai_confidence, o.ai_edge = True, 0.90, 0.20
+        assert o.ai_trade and o.ai_confidence >= 0.85 and o.ai_edge >= 0.15
 
     def test_tier2_gate_fails_confidence(self):
         from opportunity_bot import Opp
-        o = Opp(question="t", slug="t", condition_id="0x", side="YES", price=0.75,
-                yes_price=0.75, no_price=0.25, yes_token="t1", no_token="t2",
+        o = Opp(question="t", slug="t", condition_id="0x", side="YES", price=0.88,
+                yes_price=0.88, no_price=0.12, yes_token="t1", no_token="t2",
                 volume=5000, hours_left=10, category="Crypto", end_date="2026-01-01T00:00:00Z", neg_risk=False)
-        o.ai_trade, o.ai_confidence, o.ai_edge = True, 0.70, 0.20
-        assert not (o.ai_trade and o.ai_confidence >= 0.80 and o.ai_edge >= 0.15)
+        o.ai_trade, o.ai_confidence, o.ai_edge = True, 0.80, 0.20
+        assert not (o.ai_trade and o.ai_confidence >= 0.85 and o.ai_edge >= 0.15)
 
     def test_tier2_gate_fails_edge(self):
         from opportunity_bot import Opp
@@ -121,14 +130,14 @@ class TestParseOpps:
     def test_tier0_needs_short_window(self):
         """Tier 0 requires <=6h — falls back to Tier 1 if >6h."""
         from opportunity_bot import parse_opps
-        events = [self._make_event(yes_price=0.94, hours_from_now=10, volume=10000)]
+        events = [self._make_event(yes_price=0.94, hours_from_now=14, volume=10000)]
         opps = parse_opps(events, "crypto")
         assert len(opps) == 1
         assert opps[0].tier == 1  # Not tier 0 — too far out
 
     def test_tier1_classification(self):
         from opportunity_bot import parse_opps
-        events = [self._make_event(yes_price=0.90, hours_from_now=10)]
+        events = [self._make_event(yes_price=0.90, hours_from_now=14)]
         opps = parse_opps(events, "crypto")
         assert len(opps) == 1
         assert opps[0].tier == 1
@@ -136,7 +145,7 @@ class TestParseOpps:
 
     def test_tier2_classification(self):
         from opportunity_bot import parse_opps
-        events = [self._make_event(yes_price=0.75, hours_from_now=10)]
+        events = [self._make_event(yes_price=0.90, hours_from_now=30)]  # 24-48h → Tier 2
         opps = parse_opps(events, "crypto")
         assert len(opps) == 1
         assert opps[0].tier == 2
@@ -145,7 +154,21 @@ class TestParseOpps:
         from opportunity_bot import parse_opps
         events = [self._make_event(yes_price=0.50, hours_from_now=10)]
         opps = parse_opps(events, "crypto")
-        assert len(opps) == 0  # Below $0.65
+        assert len(opps) == 0  # Below MIN_ASK_OPP $0.85
+
+    def test_skip_below_085(self):
+        """Ask $0.75 should be skipped — below $0.85 loses money."""
+        from opportunity_bot import parse_opps
+        events = [self._make_event(yes_price=0.75, hours_from_now=10)]
+        opps = parse_opps(events, "crypto")
+        assert len(opps) == 0
+
+    def test_skip_above_094(self):
+        """Ask $0.95 should be skipped — above $0.94 margin too thin."""
+        from opportunity_bot import parse_opps
+        events = [self._make_event(yes_price=0.95, hours_from_now=10)]
+        opps = parse_opps(events, "crypto")
+        assert len(opps) == 0
 
     def test_skip_low_volume(self):
         from opportunity_bot import parse_opps
@@ -167,38 +190,39 @@ class TestParseOpps:
 
     def test_dedup_same_slug(self):
         from opportunity_bot import parse_opps
-        ev = self._make_event()
+        ev = self._make_event(hours_from_now=14)
         opps = parse_opps([ev, ev], "crypto")
         assert len(opps) == 1
 
-    def test_no_side_picks_highest(self):
-        """Should pick YES if yes_price >= no_price."""
+    def test_yes_side_picked(self):
+        """Should pick YES if yes_price in ask range."""
         from opportunity_bot import parse_opps
-        events = [self._make_event(yes_price=0.85)]
+        events = [self._make_event(yes_price=0.90, hours_from_now=14)]
         opps = parse_opps(events, "crypto")
         assert opps[0].side == "YES"
-        assert opps[0].price == 0.85
+        assert opps[0].price == 0.90
 
     def test_no_side_when_no_higher(self):
+        """NO side picked when no_price is in range and yes_price is not."""
         from opportunity_bot import parse_opps
-        # yes=0.30, no=0.70
-        end = (datetime.now(timezone.utc) + timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # yes=0.10, no=0.90 → NO side at $0.90
+        end = (datetime.now(timezone.utc) + timedelta(hours=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
         events = [{"tags": [{"label": "Crypto"}], "endDate": end, "negRisk": False,
                    "markets": [{"question": "t", "slug": "t", "conditionId": "0x",
-                                "outcomePrices": '["0.30", "0.70"]', "volume": "5000",
+                                "outcomePrices": '["0.10", "0.90"]', "volume": "5000",
                                 "clobTokenIds": '["ty", "tn"]', "endDate": end, "negRisk": False}]}]
         opps = parse_opps(events, "crypto")
         assert opps[0].side == "NO"
-        assert opps[0].price == 0.70
+        assert opps[0].price == 0.90
 
     def test_tier1_resolves_24h_boundary(self):
-        """Exactly 24h → Tier 1. Over 24h → Tier 2."""
+        """Under 24h (outside 6-12h skip) → Tier 1. Over 24h → Tier 2."""
         from opportunity_bot import parse_opps
-        # 23h → Tier 1
-        events = [self._make_event(yes_price=0.90, hours_from_now=23)]
+        # 14h → Tier 1 (outside 6-12h skip)
+        events = [self._make_event(yes_price=0.90, hours_from_now=14)]
         assert parse_opps(events, "crypto")[0].tier == 1
 
-        # 25h → Tier 2 (ask 0.90, >24h)
+        # 25h → Tier 2
         events = [self._make_event(yes_price=0.90, hours_from_now=25, slug="s2", cid="0xdef")]
         assert parse_opps(events, "crypto")[0].tier == 2
 
