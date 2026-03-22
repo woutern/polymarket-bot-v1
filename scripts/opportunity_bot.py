@@ -40,6 +40,7 @@ MIN_SHARES = 5
 MIN_VOLUME = 1_000
 MAX_BUDGET = 1_250.00  # Total max deployed across all opportunity trades
 SKIP_SLUGS = {"5m", "15m", "updown"}
+SKIP_KEYWORDS = {"esports", "lol", "league-of-legends", "dota", "cs2", "valorant", "gaming"}
 
 # Tag IDs from Gamma /tags endpoint (cached at startup)
 WORKER_TAGS: dict[str, list[str]] = {}
@@ -52,8 +53,7 @@ WORKER_TAG_SLUGS = {
                 "finance-updown", "tsla", "nvda", "nflx", "aapl", "meta"],
     "fed": ["fed", "fed-rates", "fomc", "federal-reserve", "jerome-powell", "fed-chair",
             "economic-policy"],
-    "politics": ["politics", "us-politics", "trump", "elections", "government", "trump-approval",
-                 "world-elections", "global-elections", "presidential-election"],
+    # politics worker removed — -$7.91 all-time, Trump tweet markets not AI-predictable
     # tweets worker removed — too noisy, low edge
     "geopolitics": ["geopolitics", "iran", "world", "middle-east", "war", "ukraine", "russia",
                     "us-iran", "ukraine-peace-deal", "israel", "strait-of-hormuz",
@@ -247,6 +247,8 @@ def parse_opps(events: list[dict], worker: str) -> list[Opp]:
             seen.add(slug)
 
             if any(s in slug.lower() for s in SKIP_SLUGS):
+                continue
+            if any(k in slug.lower() for k in SKIP_KEYWORDS):
                 continue
             vol = float(m.get("volume") or 0)
             if vol < MIN_VOLUME:
@@ -815,7 +817,7 @@ async def run_scan():
             if bedrock:
                 context = await get_context(opp, crypto_prices)
                 opp = await ai_sanity_check(opp, bedrock, context)
-                haiku_gate = 0.90 if opp.tier == 0 else 0.75
+                haiku_gate = 0.90 if opp.tier == 0 else 0.80
                 if not opp.ai_trade or opp.ai_confidence < haiku_gate:
                     logger.info("haiku_veto", tier=opp.tier, q=opp.question[:35],
                                 conf=opp.ai_confidence, reasoning=opp.ai_reasoning[:60])

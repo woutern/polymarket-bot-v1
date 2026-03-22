@@ -9,26 +9,33 @@ import pytest
 
 
 class TestWorkerConfig:
-    def test_9_workers(self):
+    def test_8_workers(self):
         from opportunity_bot import WORKER_TAG_SLUGS
-        assert len(WORKER_TAG_SLUGS) == 9
+        assert len(WORKER_TAG_SLUGS) == 8
 
     def test_worker_names(self):
         from opportunity_bot import WORKER_TAG_SLUGS
-        expected = {"crypto", "finance", "fed", "politics", "geopolitics",
+        expected = {"crypto", "finance", "fed", "geopolitics",
                     "elections", "tech", "weather", "culture"}
         assert set(WORKER_TAG_SLUGS.keys()) == expected
         assert "tweets" not in WORKER_TAG_SLUGS
         assert "basketball" not in WORKER_TAG_SLUGS
+        assert "politics" not in WORKER_TAG_SLUGS
 
-    def test_no_other_sports(self):
-        """Only basketball — no soccer, NFL, NHL, golf, esports."""
+    def test_no_sports_or_esports(self):
+        """No sports, esports, or gaming workers."""
         from opportunity_bot import WORKER_TAG_SLUGS
         all_slugs = []
         for slugs in WORKER_TAG_SLUGS.values():
             all_slugs.extend(slugs)
-        for banned in ["soccer", "nfl", "nhl", "baseball", "golf", "esports", "hockey", "tennis"]:
+        for banned in ["soccer", "nfl", "nhl", "baseball", "golf", "esports", "hockey", "tennis", "lol"]:
             assert banned not in all_slugs, f"{banned} should not be in workers"
+
+    def test_skip_keywords_esports(self):
+        """Esports/gaming keywords must be in skip filter."""
+        from opportunity_bot import SKIP_KEYWORDS
+        for kw in ["esports", "lol", "valorant", "cs2", "dota", "gaming"]:
+            assert kw in SKIP_KEYWORDS, f"{kw} must be in SKIP_KEYWORDS"
 
     def test_skip_slugs(self):
         from opportunity_bot import SKIP_SLUGS
