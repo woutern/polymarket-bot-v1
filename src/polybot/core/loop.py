@@ -85,6 +85,9 @@ class AssetState:
     # Early entry state (T+14-18s, independent strategy)
     early_entry_evaluated: bool = False
     early_entry_traded: bool = False
+    # Early entry position tracking (for checkpoints at T+60/120/180s)
+    early_position: dict | None = None  # {slug, token_id, shares, entry_price, direction_up, side}
+    early_checkpoints_done: set = field(default_factory=set)  # {60, 120, 180}
 
 
 # ── Binance long/short ratio bias (free, no API key) ─────────────────────────
@@ -424,6 +427,14 @@ class TradingLoop:
                 and not state.early_entry_evaluated
                 and 14 <= seconds_since_open <= 18):
             await self._early_entry_tick(state, price, seconds_since_open)
+
+        # Early entry checkpoints: T+60, T+120, T+180
+        if state.early_position:
+            for cp in (60, 120, 180):
+                if cp not in state.early_checkpoints_done and abs(seconds_since_open - cp) < 1.5:
+                    state.early_checkpoints_done.add(cp)
+                    await self._early_checkpoint(state, price, seconds_since_open, cp)
+                    break
 
         if not state.late_entry_evaluated and not state.traded_this_window:
             await self._scan_tick(state, price, seconds_since_open)
@@ -1283,6 +1294,171 @@ class TradingLoop:
         state.early_entry_traded = True
         state.early_entry_evaluated = True
 
+    # ── EARLY ENTRY CHECKPOINTS (T+60, T+120, T+180) ────────────────────────
+    async def _early_checkpoint(self, state: AssetState, price: float, seconds_since_open: float, checkpoint: int):
+        """Re-evaluate early entry position. Sell if model flipped or profit target hit."""
+        pos = state.early_position
+        if not pos:
+            return
+
+        window = state.tracker.current
+        if not window or not window.open_price:
+            return
+
+        # Re-run LightGBM with current data
+        import math as _math
+        from datetime import datetime as _dt3, timezone as _tz3
+        _now = _dt3.now(_tz3.utc)
+        pct_move = ((price - window.open_price) / window.open_price * 100) if window.open_price > 0 else 0
+        vol = compute_realized_vol(list(state.price_history))
+        vol_ma = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol
+        features = {
+            "move_pct_15s": pct_move,
+            "realized_vol_5m": vol,
+            "vol_ratio": vol / vol_ma if vol_ma > 0 else 1.0,
+            "body_ratio": abs(price - window.open_price) / max(state.window_high - state.window_low, 0.001),
+            "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price
+                and state.prev_window.open_price and state.prev_window.close_price >= state.prev_window.open_price else -1)
+                if state.prev_window else 0,
+            "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price)
+                / state.prev_window.open_price * 100) if state.prev_window and state.prev_window.open_price
+                and state.prev_window.close_price else 0,
+            "hour_sin": _math.sin(2 * _math.pi * _now.hour / 24),
+            "hour_cos": _math.cos(2 * _math.pi * _now.hour / 24),
+            "dow_sin": _math.sin(2 * _math.pi * _now.weekday() / 7),
+            "dow_cos": _math.cos(2 * _math.pi * _now.weekday() / 7),
+            "signal_move_pct": abs(pct_move),
+            "signal_ask_price": pos["entry_price"],
+            "signal_seconds": seconds_since_open,
+            "signal_ev": 0,
+        }
+        lgbm_raw = self.model_server.predict(f"{state.asset}_5m", features)
+        dir_prob = lgbm_raw if pos["direction_up"] else (1 - lgbm_raw)
+
+        # Current market value
+        await self._refresh_orderbook(state)
+        current_bid = state.orderbook.yes_best_bid if pos["direction_up"] else state.orderbook.no_best_bid
+        position_value_pct = ((current_bid - pos["entry_price"]) / pos["entry_price"] * 100) if pos["entry_price"] > 0 else 0
+
+        # Decision
+        action = "HOLD"
+        if dir_prob < 0.40:
+            action = "SELL_LOSS"
+        elif position_value_pct >= 30:
+            action = "SELL_PROFIT"
+
+        logger.info(
+            "early_checkpoint",
+            asset=state.asset, slug=pos["slug"], checkpoint=checkpoint,
+            direction="UP" if pos["direction_up"] else "DOWN",
+            entry_price=round(pos["entry_price"], 3),
+            current_bid=round(current_bid, 3) if current_bid else 0,
+            position_value_pct=round(position_value_pct, 1),
+            directional_prob=round(dir_prob, 4),
+            lgbm_raw=round(lgbm_raw, 4),
+            action=action,
+        )
+
+        if action.startswith("SELL"):
+            await self._early_sell(state, pos, current_bid, action)
+
+    async def _early_sell(self, state: AssetState, pos: dict, current_bid: float, reason: str):
+        """Sell early entry position."""
+        if self.settings.mode != "live":
+            logger.info("early_sell_paper", asset=state.asset, reason=reason)
+            state.early_position = None
+            return
+
+        try:
+            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
+            from py_clob_client.order_builder.constants import SELL
+            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
+
+            token_id = pos["token_id"]
+            shares = pos["shares"]
+
+            # Try FOK at current bid
+            order_args = OrderArgs(price=current_bid, size=shares, side=SELL, token_id=token_id)
+            signed = self.trader.client.create_order(order_args, options)
+            resp = self.trader.client.post_order(signed, OrderType.FOK)
+            order_id = resp.get("orderID", "")
+
+            if order_id:
+                sell_proceeds = shares * current_bid
+                pnl = sell_proceeds - pos["size"]
+                logger.info("early_sell_filled", slug=pos["slug"], reason=reason,
+                            bid=current_bid, pnl=round(pnl, 2))
+                # Log to DynamoDB
+                try:
+                    from decimal import Decimal
+                    import uuid
+                    self.dynamo._trades.put_item(Item={
+                        "id": str(uuid.uuid4()),
+                        "window_slug": pos["slug"],
+                        "asset": state.asset, "timeframe": "5m",
+                        "side": "SELL", "source": "early_exit",
+                        "fill_price": Decimal(str(round(current_bid, 4))),
+                        "size_usd": Decimal(str(round(sell_proceeds, 2))),
+                        "shares": Decimal(str(shares)),
+                        "pnl": Decimal(str(round(pnl, 2))),
+                        "timestamp": Decimal(str(round(time.time(), 3))),
+                        "entry_type": reason, "resolved": 1,
+                    })
+                except Exception:
+                    pass
+                state.early_position = None
+                return
+
+            # FOK failed — try GTC at bid+1¢
+            logger.info("early_sell_fok_failed", slug=pos["slug"], trying_gtc=True)
+            gtc_price = round(current_bid + 0.01, 2)
+            gtc_args = OrderArgs(price=gtc_price, size=shares, side=SELL, token_id=token_id)
+            gtc_signed = self.trader.client.create_order(gtc_args, options)
+            gtc_resp = self.trader.client.post_order(gtc_signed, OrderType.GTC)
+            gtc_id = gtc_resp.get("orderID", "")
+
+            if gtc_id:
+                import asyncio as _aio
+                filled = False
+                for _ in range(3):
+                    await _aio.sleep(1.0)
+                    try:
+                        status = self.trader.client.get_order(gtc_id).get("status", "")
+                        if status in ("MATCHED", "FILLED"):
+                            filled = True
+                            break
+                    except Exception:
+                        break
+                if not filled:
+                    try:
+                        self.trader.client.cancel(gtc_id)
+                    except Exception:
+                        pass
+                    logger.info("early_sell_gtc_timeout", slug=pos["slug"])
+                    # Hold to resolution — don't panic
+                    return
+                # GTC filled
+                sell_proceeds = shares * gtc_price
+                pnl = sell_proceeds - pos["size"]
+                logger.info("early_sell_gtc_filled", slug=pos["slug"], reason=reason, pnl=round(pnl, 2))
+                state.early_position = None
+
+        except Exception as e:
+            logger.error("early_sell_error", error=str(e))
+
+        # Store position for checkpoint monitoring
+        if not state.early_position:
+            _shares_filled = round(size / current_ask) if current_ask > 0 else 5
+            state.early_position = {
+                "slug": early_slug,
+                "token_id": token_id,
+                "shares": max(_shares_filled, 5),
+                "entry_price": current_ask,
+                "direction_up": direction_up,
+                "side": side,
+                "size": size,
+            }
+
     def _log_early_trade(self, state, window, side, fill_price, size, lgbm_prob, ev,
                          entry_type, limit_price, limit_filled, limit_wait_ms, order_id):
         """Log early entry trade to DynamoDB."""
@@ -1341,6 +1517,8 @@ class TradingLoop:
         state.scan_last_checked = None
         state.early_entry_evaluated = False
         state.early_entry_traded = False
+        state.early_position = None
+        state.early_checkpoints_done = set()
         logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
         state.bayesian.reset(price, 0.5)
         try:
