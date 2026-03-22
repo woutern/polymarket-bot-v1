@@ -19,6 +19,7 @@ ASSET_PRODUCTS = {
     "BTC": "BTC-USD",
     "ETH": "ETH-USD",
     "SOL": "SOL-USD",
+    "XRP": "XRP-USD",
 }
 
 

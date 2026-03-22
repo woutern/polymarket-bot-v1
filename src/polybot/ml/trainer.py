@@ -31,7 +31,7 @@ FEATURE_COLUMNS = [
     # NOTE: move_pct_60s and move_pct_300s EXCLUDED — they are look-ahead features
 ]
 
-PAIRS = ["BTC_5m", "ETH_5m", "SOL_5m"]
+PAIRS = ["BTC_5m", "ETH_5m", "SOL_5m", "XRP_5m"]
 
 
 @dataclass
