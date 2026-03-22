@@ -1017,8 +1017,8 @@ class TradingLoop:
 
         # LightGBM prediction
         import math as _math
-        from datetime import datetime as _dt2
-        _now_utc = _dt2.now(timezone.utc)
+        from datetime import datetime as _dt2, timezone as _tz2
+        _now_utc = _dt2.now(_tz2.utc)
         vol = compute_realized_vol(list(state.price_history))
         vol_ma = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol
         vol_ratio = vol / vol_ma if vol_ma > 0 else 1.0
