@@ -1000,6 +1000,10 @@ class TradingLoop:
         )
 
         t_start = time.time()
+        if not self.settings.scenario_c_enabled:
+            logger.info("scenario_c_paused", asset=state.asset, slug=window.slug,
+                        entry_type=entry_type, ask=round(market_price, 3), lgbm=round(lgbm_prob, 4))
+            return
         if entry_type in ("taker", "override"):
             # FOK at market ask — override uses same execution as taker
             signal_ms = (time.time() - t_start) * 1000

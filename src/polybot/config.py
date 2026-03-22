@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     directional_entry_seconds: int = 120  # T-120s — Tier B primary entry
     directional_min_move_pct: float = 0.03  # default; overridden per-asset below
     max_market_price: float = 0.88  # Late-entry: allow up to $0.88
+    scenario_c_enabled: bool = False  # Disable Scenario C order execution (keep scan for data)
     late_entry_seconds: int = 210   # Enter at T+3.5min (210s into 5min window)
     late_entry_min_ask: float = 0.50  # Follow whichever side is higher
     late_entry_max_ask: float = 0.78  # Don't buy fully-priced moves
