@@ -4,7 +4,7 @@ Algorithmic trading system for Polymarket prediction markets.
 
 **Status:** LIVE on AWS ECS (eu-west-1)
 **Dashboard:** https://d2rj5lnnfnptd.cloudfront.net/
-**Tests:** 526 passing
+**Tests:** 538 passing
 
 ## Two Trading Strategies
 
@@ -23,6 +23,7 @@ Algorithmic trading system for Polymarket prediction markets.
 - Tier 1 ($0.85–$0.94, ≤24h): $5 FOK — Haiku sanity check (conf >= 0.80)
 - Tier 2 ($0.85–$0.94, 24-48h): $2.50 FOK — full Haiku AI assessment (conf >= 0.85)
 - Data-driven filters: skip morning 06-12 UTC, skip 6-12h resolve window
+- Pause flag: `OPPORTUNITY_BOT_PAUSED=true` skips order execution, keeps scanning
 - $1,250 max total deployed, FOK taker orders only, sorted by resolve time
 
 ## Architecture

@@ -822,6 +822,11 @@ async def run_scan():
     # Crypto prices (shared across all markets)
     crypto_prices = await get_crypto_prices()
 
+    # Check pause flag
+    opp_paused = os.getenv("OPPORTUNITY_BOT_PAUSED", "").lower() == "true"
+    if opp_paused:
+        logger.info("opportunity_paused_mode", total=len(all_opps))
+
     # Step 4: Iterate in order — trade until budget hit
     traded = 0
     t0_count = 0
@@ -854,6 +859,11 @@ async def run_scan():
                     opp = await ai_sonnet_confirm(opp, bedrock, context)
                     if not opp.ai_trade:
                         continue
+            if opp_paused:
+                logger.info("opportunity_paused", tier=opp.tier, w=opp.worker,
+                            q=opp.question[:35], s=opp.side, p=opp.price,
+                            conf=opp.ai_confidence, model=opp.ai_model)
+                continue
             if not dedup_put(table, opp, {"price": opp.price, "cost": 0, "shares": 0, "order_id": ""}):
                 continue
             result = await place_fok(client, opp)
@@ -886,6 +896,11 @@ async def run_scan():
             opp = await ai_assess(opp, bedrock, context)
 
             if opp.ai_trade and opp.ai_confidence >= 0.85 and opp.ai_edge >= 0.15:
+                if opp_paused:
+                    logger.info("opportunity_paused", tier=2, w=opp.worker,
+                                q=opp.question[:35], s=opp.side, p=opp.price,
+                                conf=opp.ai_confidence, edge=opp.ai_edge)
+                    continue
                 if not client or _total_deployed >= MAX_BUDGET:
                     continue
                 if not dedup_put(table, opp, {"price": opp.price, "cost": 0, "shares": 0, "order_id": ""}):
