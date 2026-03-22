@@ -17,8 +17,8 @@ echo "Starting Opportunity Scanner (every 30min)..."
 PYTHONPATH=src .venv/bin/python scripts/opportunity_bot.py &
 OPP_PID=$!
 
-echo "Starting Auto-Claim (every 30min)..."
-(while true; do node scripts/claim_winnings.js 2>&1 || true; sleep 1800; done) &
+echo "Starting Auto-Claim (every 2h)..."
+(while true; do node scripts/claim_winnings.js 2>&1 || true; sleep 7200; done) &
 CLAIM_PID=$!
 
 # If any process dies, kill the others and exit so ECS restarts the task
