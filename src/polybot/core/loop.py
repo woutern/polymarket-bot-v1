@@ -1492,6 +1492,10 @@ class TradingLoop:
             return
 
         dca_price = round(main_bid + 0.01, 2)
+        if dca_price > self.settings.early_entry_max_ask:
+            logger.info("early_dca_skip_max_ask", dca_t=dca_t, price=dca_price,
+                        max_ask=self.settings.early_entry_max_ask)
+            return
         token_id = pos["token_id"]
         dca_shares = max(round(dca_size / dca_price), 5)
 
