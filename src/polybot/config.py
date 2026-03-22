@@ -40,13 +40,19 @@ class Settings(BaseSettings):
 
     # Early entry strategy (T+14-18s, independent from Scenario C)
     early_entry_enabled: bool = False
-    early_entry_max_bet: float = 2.00
+    early_entry_max_bet: float = 4.20       # Total budget per window (main + hedge)
     early_entry_lgbm_threshold: float = 0.62
     early_entry_max_ask: float = 0.55
     early_entry_min_ask: float = 0.40
     early_entry_use_limit: bool = True
     early_entry_limit_offset: float = 0.02  # post at best_bid + this
     early_entry_limit_wait_seconds: float = 8.0
+    # DCA + hedge config
+    early_entry_main_pct: float = 0.83      # 83% of budget on main ($3.50 of $4.20)
+    early_entry_hedge_pct: float = 0.17     # 17% on hedge ($0.70 of $4.20)
+    early_entry_dca_t1_pct: float = 0.57    # T+15s initial buy: 57% of main ($2.00)
+    early_entry_dca_t2_pct: float = 0.23    # T+45s dip buy: 23% of main ($0.80)
+    early_entry_dca_t3_pct: float = 0.20    # T+90s remainder: 20% of main ($0.70)
 
     # Per-asset move thresholds (T+2s-T+15s early entry with quality filters)
     min_move_btc_5m: float = 0.02   # BTC 5m: lowered to see more signals

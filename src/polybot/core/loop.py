@@ -88,6 +88,12 @@ class AssetState:
     # Early entry position tracking (for checkpoints at T+60/120/180s)
     early_position: dict | None = None  # {slug, token_id, shares, entry_price, direction_up, side}
     early_checkpoints_done: set = field(default_factory=set)  # {60, 120, 180}
+    # DCA + hedge tracking
+    early_dca_orders: list = field(default_factory=list)   # [{order_id, side, price, size, filled}]
+    early_hedge_order_id: str | None = None
+    early_main_filled: float = 0.0    # total USD filled on main side
+    early_hedge_filled: float = 0.0   # total USD filled on hedge side
+    early_dca_done: set = field(default_factory=set)  # {15, 45, 90} — which DCA rounds fired
 
 
 # ── Binance long/short ratio bias (free, no API key) ─────────────────────────
@@ -427,6 +433,18 @@ class TradingLoop:
                 and not state.early_entry_evaluated
                 and 14 <= seconds_since_open <= 18):
             await self._early_entry_tick(state, price, seconds_since_open)
+
+        # Early entry DCA: T+45s and T+90s additional limit orders on main side
+        if state.early_position and self.settings.early_entry_enabled:
+            for dca_t in (45, 90):
+                if dca_t not in state.early_dca_done and abs(seconds_since_open - dca_t) < 1.5:
+                    state.early_dca_done.add(dca_t)
+                    await self._early_dca_round(state, price, seconds_since_open, dca_t)
+                    break
+
+        # Cancel unfilled DCA/hedge at T+180s
+        if state.early_position and abs(seconds_since_open - 180) < 1.5 and 180 not in state.early_checkpoints_done:
+            await self._early_cancel_unfilled(state)
 
         # Early entry checkpoints: T+60, T+120, T+180
         if state.early_position:
@@ -1127,7 +1145,10 @@ class TradingLoop:
             return
         self._early_traded_slugs.add(early_slug)
 
-        size = self.settings.early_entry_max_bet
+        # DCA T+15s: initial buy = main_pct × dca_t1_pct of total budget
+        total_budget = self.settings.early_entry_max_bet
+        main_budget = total_budget * self.settings.early_entry_main_pct
+        size = round(main_budget * self.settings.early_entry_dca_t1_pct, 2)
 
         side = "YES" if direction_up else "NO"
         yes_id = window.yes_token_id if window else ""
@@ -1312,8 +1333,114 @@ class TradingLoop:
                 "side": side,
                 "size": size,
             }
+            state.early_main_filled = size
+            state.early_dca_done.add(15)
             logger.info("early_position_opened", asset=state.asset, slug=early_slug,
-                        entry_price=current_ask, shares=state.early_position["shares"])
+                        entry_price=current_ask, shares=state.early_position["shares"],
+                        main_filled=size, budget_remaining=round(main_budget - size, 2))
+
+            # Post hedge order on opposite side
+            try:
+                hedge_budget = round(total_budget * self.settings.early_entry_hedge_pct, 2)
+                hedge_token = (window.no_token_id if direction_up else window.yes_token_id) if window else ""
+                hedge_bid = state.orderbook.no_best_bid if direction_up else state.orderbook.yes_best_bid
+                if hedge_token and hedge_bid and hedge_bid > 0.10 and self.settings.mode == "live":
+                    from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
+                    from py_clob_client.order_builder.constants import BUY
+                    options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
+                    hedge_price = round(hedge_bid + 0.01, 2)
+                    hedge_shares = max(round(hedge_budget / hedge_price), 5)
+                    hedge_args = OrderArgs(price=hedge_price, size=hedge_shares, side=BUY, token_id=hedge_token)
+                    hedge_signed = self.trader.client.create_order(hedge_args, options)
+                    hedge_resp = self.trader.client.post_order(hedge_signed, OrderType.GTC)
+                    state.early_hedge_order_id = hedge_resp.get("orderID", "")
+                    hedge_side = "NO" if direction_up else "YES"
+                    logger.info("early_hedge_posted", asset=state.asset, slug=early_slug,
+                                side=hedge_side, price=hedge_price, size=hedge_budget,
+                                order_id=state.early_hedge_order_id or "failed")
+            except Exception as he:
+                logger.warning("early_hedge_failed", error=str(he)[:80])
+
+    # ── EARLY DCA ROUNDS (T+45s, T+90s) ──────────────────────────────────────
+    async def _early_dca_round(self, state: AssetState, price: float, seconds_since_open: float, dca_t: int):
+        """Post additional limit order on main side at current bid."""
+        pos = state.early_position
+        if not pos or self.settings.mode != "live":
+            return
+
+        window = state.tracker.current
+        if not window:
+            return
+
+        total_budget = self.settings.early_entry_max_bet
+        main_budget = total_budget * self.settings.early_entry_main_pct
+        remaining = main_budget - state.early_main_filled
+        if remaining < 0.50:
+            return  # Already filled enough
+
+        # DCA allocation
+        if dca_t == 45:
+            dca_size = round(main_budget * self.settings.early_entry_dca_t2_pct, 2)
+        else:  # 90
+            dca_size = round(main_budget * self.settings.early_entry_dca_t3_pct, 2)
+        dca_size = min(dca_size, remaining)
+
+        if dca_size < 0.50:
+            return
+
+        await self._refresh_orderbook(state)
+        main_bid = state.orderbook.yes_best_bid if pos["direction_up"] else state.orderbook.no_best_bid
+        if not main_bid or main_bid <= 0:
+            return
+
+        dca_price = round(main_bid + 0.01, 2)
+        token_id = pos["token_id"]
+        dca_shares = max(round(dca_size / dca_price), 5)
+
+        try:
+            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
+            from py_clob_client.order_builder.constants import BUY
+            options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
+            args = OrderArgs(price=dca_price, size=dca_shares, side=BUY, token_id=token_id)
+            signed = self.trader.client.create_order(args, options)
+            resp = self.trader.client.post_order(signed, OrderType.GTC)
+            order_id = resp.get("orderID", "")
+            if order_id:
+                state.early_dca_orders.append({"order_id": order_id, "price": dca_price, "size": dca_size})
+                logger.info("early_dca_posted", asset=state.asset, slug=pos["slug"],
+                            dca_t=dca_t, price=dca_price, size=dca_size, order_id=order_id)
+            else:
+                logger.warning("early_dca_post_failed", dca_t=dca_t, resp=str(resp)[:80])
+        except Exception as e:
+            logger.warning("early_dca_error", dca_t=dca_t, error=str(e)[:80])
+
+    async def _early_cancel_unfilled(self, state: AssetState):
+        """Cancel all unfilled DCA and hedge orders at T+180s."""
+        cancelled = 0
+        # Cancel DCA orders
+        for order in state.early_dca_orders:
+            oid = order.get("order_id")
+            if oid:
+                try:
+                    self.trader.client.cancel(oid)
+                    cancelled += 1
+                except Exception:
+                    pass
+        # Cancel hedge
+        if state.early_hedge_order_id:
+            try:
+                self.trader.client.cancel(state.early_hedge_order_id)
+                cancelled += 1
+            except Exception:
+                pass
+            state.early_hedge_order_id = None
+
+        if cancelled:
+            logger.info("early_cancel_unfilled", asset=state.asset,
+                        slug=state.early_position["slug"] if state.early_position else "",
+                        cancelled=cancelled, main_filled=state.early_main_filled,
+                        hedge_filled=state.early_hedge_filled)
+        state.early_dca_orders = []
 
     # ── EARLY ENTRY CHECKPOINTS (T+60, T+120, T+180) ────────────────────────
     async def _early_checkpoint(self, state: AssetState, price: float, seconds_since_open: float, checkpoint: int):
@@ -1527,6 +1654,11 @@ class TradingLoop:
         state.early_entry_traded = False
         state.early_position = None
         state.early_checkpoints_done = set()
+        state.early_dca_orders = []
+        state.early_hedge_order_id = None
+        state.early_main_filled = 0.0
+        state.early_hedge_filled = 0.0
+        state.early_dca_done = set()
         logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
         state.bayesian.reset(price, 0.5)
         try:

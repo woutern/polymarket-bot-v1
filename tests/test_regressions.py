@@ -829,13 +829,15 @@ class TestEarlyEntry:
         """Early entry config has correct defaults."""
         from polybot.config import Settings
         s = Settings()
-        assert s.early_entry_max_bet == 2.00
+        assert s.early_entry_max_bet == 4.20
         assert s.early_entry_lgbm_threshold == 0.62
         assert s.early_entry_max_ask == 0.55
         assert s.early_entry_min_ask == 0.40
         assert s.early_entry_use_limit is True
         assert s.early_entry_limit_offset == 0.02
         assert s.early_entry_limit_wait_seconds == 8.0
+        assert s.early_entry_main_pct == 0.83
+        assert s.early_entry_hedge_pct == 0.17
 
     def test_early_entry_method_exists(self):
         """TradingLoop must have _early_entry_tick method."""
