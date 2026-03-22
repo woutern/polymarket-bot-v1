@@ -1091,6 +1091,7 @@ class TradingLoop:
             state._early_logged_slug = window.slug
             try:
                 self.dynamo.put_training_data({
+                    "window_id": f"early_{state.asset}_5m_{window.slug}",
                     "slug": f"early_{window.slug}",
                     "asset": state.asset, "timeframe": "5m",
                     "timestamp": time.time(),
@@ -1626,6 +1627,29 @@ class TradingLoop:
                 logger.debug("training_data_logged", asset=state.asset, slug=window.slug, outcome=outcome)
             except Exception as e:
                 logger.debug("training_data_failed", error=str(e))
+
+        # Backfill outcome on early entry training data (logged at T+15s without outcome)
+        try:
+            outcome = 1 if went_up else 0
+            early_window_id = f"early_{state.asset}_5m_{window.slug}"
+            from decimal import Decimal as _Dec
+            self.dynamo._training.update_item(
+                Key={"window_id": early_window_id},
+                UpdateExpression="SET outcome = :o, close_price = :cp, pct_move_final = :pm",
+                ExpressionAttributeValues={
+                    ":o": outcome,
+                    ":cp": _Dec(str(round(window.close_price, 4))) if window.close_price else _Dec("0"),
+                    ":pm": _Dec(str(round(
+                        (window.close_price - window.open_price) / window.open_price * 100, 6
+                    ))) if window.open_price and window.close_price else _Dec("0"),
+                },
+                ConditionExpression="attribute_exists(window_id)",
+            )
+            logger.debug("early_training_outcome_set", slug=window.slug, outcome=outcome)
+        except self.dynamo._training.meta.client.exceptions.ConditionalCheckFailedException:
+            pass  # No early entry training data for this window — normal
+        except Exception as e:
+            logger.debug("early_training_outcome_failed", error=str(e)[:60])
 
     async def _verify_outcome_after_delay(self, window_slug: str, delay_seconds: int = 90):
         """Wait 90s, then query Gamma API. Retry up to 5 times every 60s."""
