@@ -1441,7 +1441,7 @@ async function refreshLive() {
 function startLive() {
   if (liveInterval) clearInterval(liveInterval);
   refreshLive();
-  liveInterval = setInterval(refreshLive, 5000);
+  liveInterval = setInterval(refreshLive, 1000);
 }
 
 async function loadOverview() {
