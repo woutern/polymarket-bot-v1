@@ -1087,71 +1087,61 @@ class TradingLoop:
             return
         self._early_traded_slugs.add(early_slug)
 
+        # Determine direction via LGBM (neutral fallback if no model)
+        import math as _math
+        from datetime import datetime as _dt, timezone as _tz
+        _now = _dt.now(_tz.utc)
+        vol = compute_realized_vol(list(state.price_history))
+        features = {
+            "move_pct_15s": 0.0, "realized_vol_5m": vol,
+            "vol_ratio": 1.0, "body_ratio": 0.5,
+            "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price
+                and state.prev_window.open_price
+                and state.prev_window.close_price >= state.prev_window.open_price else -1)
+                if state.prev_window else 0,
+            "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price)
+                / state.prev_window.open_price * 100) if state.prev_window
+                and state.prev_window.open_price and state.prev_window.close_price else 0,
+            "hour_sin": _math.sin(2 * _math.pi * _now.hour / 24),
+            "hour_cos": _math.cos(2 * _math.pi * _now.hour / 24),
+            "dow_sin": _math.sin(2 * _math.pi * _now.weekday() / 7),
+            "dow_cos": _math.cos(2 * _math.pi * _now.weekday() / 7),
+            "signal_move_pct": 0.0, "signal_ask_price": 0.50,
+            "signal_seconds": 0, "signal_ev": 0,
+        }
         try:
-            # Run LGBM for direction
-            import math as _math
-            from datetime import datetime as _dt, timezone as _tz
-            _now = _dt.now(_tz.utc)
-            pct_move = 0.0  # Window just opened, no move yet
-            vol = compute_realized_vol(list(state.price_history))
-            features = {
-                "move_pct_15s": pct_move, "realized_vol_5m": vol,
-                "vol_ratio": 1.0, "body_ratio": 0.5,
-                "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price
-                    and state.prev_window.open_price
-                    and state.prev_window.close_price >= state.prev_window.open_price else -1)
-                    if state.prev_window else 0,
-                "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price)
-                    / state.prev_window.open_price * 100) if state.prev_window
-                    and state.prev_window.open_price and state.prev_window.close_price else 0,
-                "hour_sin": _math.sin(2 * _math.pi * _now.hour / 24),
-                "hour_cos": _math.cos(2 * _math.pi * _now.hour / 24),
-                "dow_sin": _math.sin(2 * _math.pi * _now.weekday() / 7),
-                "dow_cos": _math.cos(2 * _math.pi * _now.weekday() / 7),
-                "signal_move_pct": 0.0, "signal_ask_price": 0.50,
-                "signal_seconds": 0, "signal_ev": 0,
-            }
             lgbm_raw = self.model_server.predict(f"{state.asset}_5m", features)
-            direction_up = lgbm_raw >= 0.50
-            dir_prob = lgbm_raw if direction_up else (1 - lgbm_raw)
+        except Exception as model_err:
+            logger.info("v2_open_model_fallback", asset=state.asset, error=str(model_err)[:60])
+            lgbm_raw = 0.50
+        direction_up = lgbm_raw >= 0.50
 
-            # Fixed split: $6 main / $3 hedge (load heavy at open)
-            main_size = 6.0
-            hedge_size = 3.0
+        main_token = window.yes_token_id if direction_up else window.no_token_id
+        hedge_token = window.no_token_id if direction_up else window.yes_token_id
+        main_bid = state.orderbook.yes_best_bid if direction_up else state.orderbook.no_best_bid
+        hedge_bid = state.orderbook.no_best_bid if direction_up else state.orderbook.yes_best_bid
+        main_size = 6.0
+        hedge_size = 3.0
 
-            # Post GTC on both sides
+        logger.info("v2_open_orderbook", asset=state.asset,
+                    direction="UP" if direction_up else "DOWN",
+                    yes_bid=round(state.orderbook.yes_best_bid, 3),
+                    no_bid=round(state.orderbook.no_best_bid, 3),
+                    yes_ask=round(state.orderbook.yes_best_ask, 3),
+                    no_ask=round(state.orderbook.no_best_ask, 3))
+
+        # Post GTC on both sides (order failures are caught individually)
+        try:
             from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
             from py_clob_client.order_builder.constants import BUY
             options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
-
-            main_token = window.yes_token_id if direction_up else window.no_token_id
-            hedge_token = window.no_token_id if direction_up else window.yes_token_id
-            main_bid = state.orderbook.yes_best_bid if direction_up else state.orderbook.no_best_bid
-            hedge_bid = state.orderbook.no_best_bid if direction_up else state.orderbook.yes_best_bid
-
-            logger.info("v2_open_orderbook", asset=state.asset,
-                        direction="UP" if direction_up else "DOWN",
-                        main_bid=round(main_bid, 3) if main_bid else 0,
-                        hedge_bid=round(hedge_bid, 3) if hedge_bid else 0,
-                        yes_bid=round(state.orderbook.yes_best_bid, 3),
-                        no_bid=round(state.orderbook.no_best_bid, 3),
-                        yes_ask=round(state.orderbook.yes_best_ask, 3),
-                        no_ask=round(state.orderbook.no_best_ask, 3))
-
             for token, bid, sz, label in [
                 (main_token, main_bid, main_size, "main"),
                 (hedge_token, hedge_bid, hedge_size, "hedge"),
             ]:
-                if sz < 0.50:
-                    logger.warning("v2_open_skip_size", asset=state.asset, side=label, sz=sz)
+                post_price = round(bid + 0.01, 2) if bid and bid > 0 else 0.49
+                if post_price <= 0 or post_price >= 1.0:
                     continue
-                # Zero-bid fallback: orderbook not yet live → post at $0.49
-                if not bid or bid <= 0:
-                    post_price = 0.49
-                    logger.info("v2_open_zerobid_fallback", asset=state.asset, side=label,
-                                bid=bid, post_price=post_price)
-                else:
-                    post_price = round(bid + 0.01, 2)
                 shares = max(round(sz / post_price), 5)
                 try:
                     logger.info("v2_open_placing", asset=state.asset, side=label,
@@ -1169,28 +1159,27 @@ class TradingLoop:
                     else:
                         logger.warning("v2_open_no_order_id", asset=state.asset, side=label, resp=str(resp)[:200])
                 except Exception as e:
-                    logger.warning("v2_open_error", side=label, error=str(e)[:200])
-
-            # Store position
-            state.early_entry_traded = True
-            state.early_position = {
-                "slug": early_slug,
-                "token_id": main_token,
-                "hedge_token": hedge_token,
-                "shares": max(round(main_size / 0.50), 5),
-                "entry_price": round((main_bid or 0.50) + 0.01, 2),
-                "direction_up": direction_up,
-                "side": "YES" if direction_up else "NO",
-                "size": main_size,
-            }
-            logger.info("v2_open_complete", asset=state.asset, slug=early_slug,
-                        direction="UP" if direction_up else "DOWN", lgbm=round(lgbm_raw, 3),
-                        main=main_size, hedge=hedge_size)
-            dir_str = "UP" if direction_up else "DOWN"
-            self._log_activity(state, f"OPEN {dir_str}", f"main=${main_size} hedge=${hedge_size} lgbm={lgbm_raw:.2f}")
-
+                    logger.warning("v2_open_error", asset=state.asset, side=label, error=str(e)[:200])
         except Exception as e:
-            logger.warning("v2_open_failed", asset=state.asset, error=str(e)[:80])
+            logger.warning("v2_open_import_error", asset=state.asset, error=str(e)[:200])
+
+        # Always set position so accumulation loop fires even if orders failed
+        state.early_entry_traded = True
+        state.early_position = {
+            "slug": early_slug,
+            "token_id": main_token,
+            "hedge_token": hedge_token,
+            "shares": max(round(main_size / 0.50), 5),
+            "entry_price": round((main_bid or 0.50) + 0.01, 2),
+            "direction_up": direction_up,
+            "side": "YES" if direction_up else "NO",
+            "size": main_size,
+        }
+        logger.info("v2_open_complete", asset=state.asset, slug=early_slug,
+                    direction="UP" if direction_up else "DOWN", lgbm=round(lgbm_raw, 3),
+                    main=main_size, hedge=hedge_size)
+        self._log_activity(state, f"OPEN {'UP' if direction_up else 'DOWN'}",
+                           f"main=${main_size} hedge=${hedge_size} lgbm={lgbm_raw:.2f}")
 
     # ── V2 ACCUMULATE CHEAP + POLL FILLS ─────────────────────────────────
     async def _v2_accumulate_cheap(self, state: AssetState, price: float):
@@ -1236,9 +1225,7 @@ class TradingLoop:
             elif ask <= 0.25:
                 levels = [(0.18, 1.0), (0.20, 1.0), (0.23, 1.0)]
             else:
-                # ask > 25¢ and <= 40¢: post main direction only at bid+1¢
-                if side_up != pos["direction_up"]:
-                    continue
+                # ask 25¢–40¢: post BOTH sides at bid+1¢
                 if ask > 0.40:
                     continue
                 if not bid or bid <= 0:
@@ -2018,7 +2005,10 @@ class TradingLoop:
             "signal_seconds": seconds_since_open,
             "signal_ev": 0,
         }
-        lgbm_raw = self.model_server.predict(f"{state.asset}_5m", features)
+        try:
+            lgbm_raw = self.model_server.predict(f"{state.asset}_5m", features)
+        except Exception:
+            lgbm_raw = 0.50
         dir_prob = lgbm_raw if pos["direction_up"] else (1 - lgbm_raw)
 
         # Current market value for BOTH sides
