@@ -427,6 +427,13 @@ class TradingLoop:
         if not window:
             return
 
+        _sso = time.time() - window.open_ts
+        logger.info("tick", asset=state.asset, seconds=int(_sso),
+                    early_enabled=self.settings.early_entry_enabled,
+                    has_position=bool(state.early_position),
+                    early_traded=state.early_entry_traded,
+                    early_evaluated=state.early_entry_evaluated)
+
         # Track price history for realized vol calculation
         state.price_history.append(price)
         # Track high/low for body_ratio
@@ -1058,13 +1065,16 @@ class TradingLoop:
     # ── V2 OPEN POSITION (at window open, T+0) ───────────────────────────────
     async def _v2_open_position(self, state: AssetState, price: float):
         """Post GTC limits on both sides immediately when window opens. No Gamma API fetch."""
+        logger.info("v2_open_attempt", asset=state.asset, mode=self.settings.mode)
         if self.settings.mode != "live":
             return
 
         window = state.tracker.current
         if not window or not window.yes_token_id or not window.no_token_id:
-            logger.debug("v2_open_no_tokens", asset=state.asset,
-                         slug=window.slug if window else "none")
+            logger.info("v2_open_no_tokens", asset=state.asset,
+                        slug=window.slug if window else "none",
+                        yes_token=window.yes_token_id[:12] if window and window.yes_token_id else "",
+                        no_token=window.no_token_id[:12] if window and window.no_token_id else "")
             return
 
         early_slug = f"early_{window.slug}"
@@ -1073,6 +1083,7 @@ class TradingLoop:
         if not hasattr(self, '_early_traded_slugs'):
             self._early_traded_slugs = set()
         if early_slug in self._early_traded_slugs:
+            logger.info("v2_open_dedup", asset=state.asset, slug=early_slug)
             return
         self._early_traded_slugs.add(early_slug)
 
@@ -1186,6 +1197,7 @@ class TradingLoop:
         """Every 3s: post order ladder on both sides. $12 budget per window."""
         window = state.tracker.current
         seconds_since_open = time.time() - window.open_ts if window else 0
+        logger.info("v2_accumulate_attempt", asset=state.asset, seconds=int(seconds_since_open))
         logger.info("v2_accumulate_tick", asset=state.asset, seconds=int(seconds_since_open),
                     has_position=state.early_position is not None,
                     cheap_posted=round(state.early_cheap_posted, 2))
