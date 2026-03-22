@@ -1919,7 +1919,8 @@ async function loadEarlyEntry() {
     document.getElementById('ee-stat-entry').textContent = '$' + s.avg_entry.toFixed(3);
     document.getElementById('ee-stat-prob').textContent = s.avg_prob.toFixed(3);
     document.getElementById('ee-stat-ev').textContent = s.avg_ev.toFixed(3);
-    document.getElementById('ee-stat-limit').textContent = s.limit_fill_rate + '% (' + s.makers + 'M/' + s.takers + 'T/' + s.fallbacks + 'F)';
+    document.getElementById('ee-stat-limit').textContent = s.limit_fill_rate + '%';
+    document.getElementById('ee-stat-limit').title = s.makers + ' maker / ' + s.takers + ' taker / ' + s.fallbacks + ' fallback';
 
     document.getElementById('ee-updated').textContent = 'Last updated: ' + new Date().toLocaleTimeString('en-GB', {timeZone: 'Europe/Amsterdam'});
 
