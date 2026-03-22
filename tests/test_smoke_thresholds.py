@@ -55,3 +55,42 @@ class TestThresholdGuards:
         assert "max_market_price" in result.passed
         assert "min_ev_threshold" in result.passed
         assert "min_lgbm_prob" in result.passed
+
+
+class TestModelLoadingSmokeTest:
+    """Smoke test must verify models load and produce non-0.5 predictions."""
+
+    def test_smoke_test_checks_model_loading(self):
+        """Smoke test must include model_load check."""
+        import inspect
+        from polybot.core.smoke_test import run_smoke_tests
+        source = inspect.getsource(run_smoke_tests)
+        assert "model_load" in source
+        assert "has_model" in source
+
+    def test_smoke_test_checks_model_prediction(self):
+        """Smoke test must verify predictions are not the 0.5 fallback."""
+        import inspect
+        from polybot.core.smoke_test import run_smoke_tests
+        source = inspect.getsource(run_smoke_tests)
+        assert "model_predict" in source
+        assert "0.5" in source  # checks for the 0.5 fallback
+
+    def test_smoke_test_fails_on_broken_model(self):
+        """If model returns 0.5, smoke test must FAIL (not warn)."""
+        import inspect
+        from polybot.core.smoke_test import run_smoke_tests
+        source = inspect.getsource(run_smoke_tests)
+        # Must use result.fail, not result.warn for model issues
+        assert 'result.fail(f"model_load_' in source or 'result.fail(f"model_predict_' in source
+
+    def test_model_server_region_matches_ssm_smoke_test(self):
+        """ModelServer and SSM smoke test must use same region."""
+        import inspect
+        from polybot.ml.server import ModelServer
+        from polybot.core.smoke_test import run_smoke_tests
+        server_source = inspect.getsource(ModelServer.__init__)
+        smoke_source = inspect.getsource(run_smoke_tests)
+        # Both must reference eu-west-1
+        assert "eu-west-1" in server_source
+        assert "eu-west-1" in smoke_source

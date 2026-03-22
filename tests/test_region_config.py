@@ -58,3 +58,28 @@ class TestAllInEuWest1:
         source = inspect.getsource(bs)
         # Must have eu-west-1 somewhere in the module
         assert "eu-west-1" in source
+
+    def test_model_server_region_euw1(self):
+        """ModelServer must default to eu-west-1 for SSM + S3."""
+        from polybot.ml.server import ModelServer
+        ms = ModelServer()
+        assert ms._region == "eu-west-1"
+
+    def test_model_server_ssm_uses_bot_region(self):
+        """SSM client in load_models must use the same region as the bot."""
+        source = inspect.getsource(__import__("polybot.ml.server", fromlist=["ModelServer"]).ModelServer.load_models)
+        # SSM client must be created with self._region, not a hardcoded region
+        assert "self._region" in source
+        assert "us-east-1" not in source
+
+    def test_ssm_paths_use_polymarket_prefix(self):
+        """SSM parameter paths must use /polymarket/models/ prefix."""
+        source = inspect.getsource(__import__("polybot.ml.server", fromlist=["ModelServer"]).ModelServer.load_models)
+        assert "/polymarket/models/" in source
+
+    def test_trainer_no_us_east_1_client(self):
+        """Trainer must not create us-east-1 boto3 clients in executable code."""
+        from polybot.ml import trainer
+        source = inspect.getsource(trainer.train_all)
+        # S3 is global — no need for us-east-1 client
+        assert "us-east-1" not in source

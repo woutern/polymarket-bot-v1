@@ -182,6 +182,37 @@ async def run_smoke_tests(settings) -> SmokeTestResult:
     except Exception:
         result.warn("model_health", "Could not check model ages")
 
+    # 9b. Model loading + prediction smoke test (CRITICAL — bot is useless without models)
+    try:
+        from polybot.ml.server import ModelServer
+        _ms = ModelServer(region="eu-west-1")
+        _ms.load_models()
+        _models_ok = True
+        for _pair in ["BTC_5m", "SOL_5m"]:
+            if not _ms.has_model(_pair):
+                result.fail(f"model_load_{_pair}", f"Model not loaded — lgbm gate will block ALL trades")
+                _models_ok = False
+            else:
+                # Test prediction with dummy features
+                _test_features = {
+                    "move_pct_15s": 0.05, "realized_vol_5m": 0.0003, "vol_ratio": 1.0,
+                    "body_ratio": 0.5, "prev_window_direction": 0.5, "prev_window_move_pct": 0.0,
+                    "hour_sin": 0.0, "hour_cos": 1.0, "dow_sin": 0.0, "dow_cos": 1.0,
+                    "signal_move_pct": 0.05, "signal_ask_price": 0.70, "signal_seconds": 210.0,
+                    "signal_ev": 0.05,
+                }
+                _test_prob = _ms.predict(_pair, _test_features)
+                if _test_prob == 0.5:
+                    result.fail(f"model_predict_{_pair}", "Model returns 0.5 — not actually predicting")
+                    _models_ok = False
+                else:
+                    result.ok(f"model_predict_{_pair}")
+                    logger.info("model_smoke_test", pair=_pair, test_prob=round(_test_prob, 4))
+        if _models_ok:
+            result.ok("model_loading")
+    except Exception as e:
+        result.fail("model_loading", f"Model smoke test failed: {str(e)[:80]}")
+
     # 10. Mode sanity check
     if settings.mode in ("paper", "live"):
         result.ok(f"mode_{settings.mode}")
