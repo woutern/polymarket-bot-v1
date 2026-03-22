@@ -104,6 +104,7 @@ class AssetState:
     early_accum_ticks: set = field(default_factory=set)   # which 3s ticks fired accumulation
     early_status_logged: set = field(default_factory=set)  # which 15s intervals logged status
     early_cheap_posted: float = 0.0   # total USD posted for cheap accumulation (budget cap)
+    early_cheap_filled: float = 0.0   # total USD actually filled (fill-based budget cap)
 
 
 # ── Binance long/short ratio bias (free, no API key) ─────────────────────────
