@@ -639,6 +639,14 @@ class TradingLoop:
             return 1.04, 1.50
         return 1.06, 2.00
 
+    def _v2_expensive_side_price_cap(self, seconds_since_open: float) -> float:
+        """Tighten the maximum acceptable rich-side price later in the window."""
+        if seconds_since_open >= 180:
+            return 0.75
+        if seconds_since_open >= 120:
+            return 0.78
+        return 0.82
+
     def _v2_projected_pair_metrics(
         self,
         state: AssetState,
@@ -2325,6 +2333,11 @@ class TradingLoop:
                 side_shares = int(state.early_up_shares) if side_up else int(state.early_down_shares)
                 other_shares = int(state.early_down_shares) if side_up else int(state.early_up_shares)
                 lagging_side = side_shares < other_shares
+                other_avg = current_down_avg if side_up else current_up_avg
+                expensive_side_cap = self._v2_expensive_side_price_cap(seconds_since_open)
+                if other_avg > 0 and post_price > other_avg and post_price > expensive_side_cap:
+                    pair_guard_skipped += 1
+                    continue
                 projected = self._v2_projected_pair_metrics(
                     state,
                     current_filled=current_filled,
