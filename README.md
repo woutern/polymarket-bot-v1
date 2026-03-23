@@ -4,7 +4,7 @@ Algorithmic trading system for Polymarket prediction markets.
 
 **Status:** Deployed on AWS ECS (eu-west-1)
 **Dashboard:** https://d2rj5lnnfnptd.cloudfront.net/
-**Tests:** 635 passing
+**Tests:** 639 passing
 **V2 both-sides:** gated by `EARLY_ENTRY_ENABLED=true` and pair-level `PAIRS`
 
 ## Three Trading Strategies
@@ -21,6 +21,7 @@ Current live focus is `BTC_5m`, with other pairs enabled only after pair-specifi
 - **Phase 2 — Main deploy (T+15s to T+180s):** accumulate both sides, recycle selectively
   - smooth budget curve ramps from 10% to 82% of budget by `T+180`
   - confidence scaling reduces spend in weak windows and allows fuller deployment in stronger ones
+  - strong windows can top up the favored side more aggressively, but only if the projected position still has non-negative model-weighted EV
   - limited sell-and-recycle can start at `T+45` when inventory above the payout floor can be sold at a favorable bid
 - **Phase 3 — Buy-only (T+180s to T+250s):**
   - frozen allocation split
@@ -37,6 +38,8 @@ Current live focus is `BTC_5m`, with other pairs enabled only after pair-specifi
   - rich-side buys are capped later in the window
   - incomplete pairs do not keep averaging the filled side while the missing side drifts expensive
   - new adds are blocked when projected `combined_avg` / payout-floor pressure would worsen a bad state
+  - projected pair states are checked against model-weighted expected value, not just share balance
+  - reserved open orders count toward pair risk, so one resting rich-side order cannot "hide" risk from the next one
 - **Budget / accounting:** all risk is based on executable USD notional, never on target size alone
   - `actual_notional_usd = actual_shares * actual_price`
   - `reserved_open_order_usd + filled_position_cost_usd + new_actual_notional_usd <= $50` per asset per window
@@ -70,7 +73,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete system diagram.
 | Bot | ECS Fargate, eu-west-1 |
 | Dashboard | Lambda + CloudFront, eu-west-1 |
 | Storage | DynamoDB, eu-west-1 |
-| Models | S3 eu-west-1 (LightGBM BTC/ETH/SOL live-loaded for 5m; retrain pipeline also supports XRP_5m) |
+| Models | S3 eu-west-1 (LightGBM BTC/ETH/SOL live-loaded for 5m; retrain pipeline supports XRP_5m when enough data exists) |
 | AI | Bedrock (Haiku + Sonnet 4), eu-west-1 |
 | Secrets | AWS Secrets Manager, eu-west-1 |
 
@@ -111,7 +114,7 @@ Deployments use `scripts/deploy_aws.sh`, which now registers a fresh ECS task de
 
 ```bash
 # Local development
-uv run pytest tests/          # 635 tests
+uv run pytest tests/          # 639 tests
 uv run python scripts/run.py  # Start 5min bot
 
 # Deploy to AWS
@@ -127,8 +130,9 @@ PYTHONPATH=src uv run python scripts/opportunity_bot.py
 ### Immediate
 - Keep refining `BTC_5m` as the control profile until live windows are consistently sane
 - Tighten payout-floor-based recycle rules without reintroducing churn
-- Keep weak/sideways windows small and deploy harder only in strong mid-window setups
+- Keep weak/sideways windows small, deploy harder only in strong mid-window setups, and spend extra only on the favored side
 - Fix runtime Secrets Manager refresh permissions so `EARLY_ENTRY_ENABLED=false` can finish the current window and skip the next one reliably
+- Keep retraining healthy across all live pairs; BTC/SOL are currently fresh, while ETH/XRP still need enough rows to refresh cleanly
 
 ### Next 5m rollout
 - Add per-pair strategy profiles instead of assuming one `5m` parameter set works everywhere
