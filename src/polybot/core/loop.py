@@ -2322,29 +2322,44 @@ class TradingLoop:
                 if notional > side_budget:
                     continue
 
-                if current_payout_floor >= 5:
-                    side_shares = int(state.early_up_shares) if side_up else int(state.early_down_shares)
-                    other_shares = int(state.early_down_shares) if side_up else int(state.early_up_shares)
-                    lagging_side = side_shares < other_shares
-                    projected = self._v2_projected_pair_metrics(
-                        state,
-                        current_filled=current_filled,
-                        side_up=side_up,
-                        shares=base_shares,
-                        notional=notional,
-                    )
-                    projected_combined = float(projected["combined_avg"])
-                    projected_cost_above_floor = float(projected["cost_above_floor"])
+                side_shares = int(state.early_up_shares) if side_up else int(state.early_down_shares)
+                other_shares = int(state.early_down_shares) if side_up else int(state.early_up_shares)
+                lagging_side = side_shares < other_shares
+                projected = self._v2_projected_pair_metrics(
+                    state,
+                    current_filled=current_filled,
+                    side_up=side_up,
+                    shares=base_shares,
+                    notional=notional,
+                )
+                projected_combined = float(projected["combined_avg"])
+                projected_cost_above_floor = float(projected["cost_above_floor"])
+                projected_pair_exists = int(projected["payout_floor"]) >= 5
+
+                # If only one side has filled, freeze additional buys on that side until
+                # the missing side catches up at an acceptable starter-pair price.
+                if current_payout_floor <= 0 and side_shares >= 5 and other_shares <= 0:
+                    pair_guard_skipped += 1
+                    continue
+
+                # As soon as a candidate buy would complete the pair, enforce the same
+                # pair-quality guardrails. This blocks "catch-up" fills like buying the
+                # missing side at 0.65 against an existing 0.52 fill in a weak-signal window.
+                if projected_pair_exists:
                     bad_state_now = (
-                        current_combined_avg > max_combined_avg + 1e-9
-                        or current_cost_above_floor > max_cost_above_floor + 1e-9
+                        current_payout_floor >= 5
+                        and (
+                            current_combined_avg > max_combined_avg + 1e-9
+                            or current_cost_above_floor > max_cost_above_floor + 1e-9
+                        )
                     )
                     projected_within_limits = (
                         projected_combined <= max_combined_avg + 1e-9
                         and projected_cost_above_floor <= max_cost_above_floor + 1e-9
                     )
                     improving_bad_state = (
-                        lagging_side
+                        current_payout_floor >= 5
+                        and lagging_side
                         and projected_combined <= current_combined_avg + 1e-9
                         and projected_cost_above_floor <= current_cost_above_floor + 1e-9
                     )

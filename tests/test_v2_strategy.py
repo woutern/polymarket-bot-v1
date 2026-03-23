@@ -1801,6 +1801,37 @@ class TestExecutionSafety:
 
         bot._post_cheap_order.assert_not_awaited()
 
+    async def test_execution_tick_blocks_expensive_catch_up_when_pair_is_incomplete(self):
+        bot = _make_bot(max_bet=50.0)
+        bot._v2_check_secrets_refresh = AsyncMock()
+        bot._refresh_orderbook = _noop_refresh
+        bot._post_cheap_order = AsyncMock()
+        bot.model_server.predict = MagicMock(return_value=0.52)
+        window = _make_window()
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.65, no_bid=0.52, yes_ask=0.66, no_ask=0.53)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "yes123",
+            "hedge_token": "no456",
+            "shares": 5,
+            "entry_price": 0.49,
+            "hedge_entry_price": 0.52,
+            "direction_up": True,
+            "side": "YES",
+            "size": 2.60,
+        }
+        state.early_up_shares = 0
+        state.early_up_cost = 0.0
+        state.early_down_shares = 5
+        state.early_down_cost = 2.60
+        state.filled_position_cost_usd = 2.60
+        state.early_filled_notional = 2.60
+
+        await bot._v2_execution_tick(state, 50_000.0, 90.0)
+
+        bot._post_cheap_order.assert_not_awaited()
+
 
 class TestSellInventory:
     async def test_partial_sell_decrements_source_lot_inventory(self):
