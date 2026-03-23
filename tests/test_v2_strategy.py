@@ -1564,6 +1564,11 @@ class TestBudgetCurve:
         assert bot._v2_pair_risk_limits(0.59) == (1.04, 1.50)
         assert bot._v2_pair_risk_limits(0.68) == (1.06, 2.00)
 
+    def test_expected_position_ev_uses_model_weighted_payout(self):
+        bot = _make_bot()
+        assert bot._v2_expected_position_ev(0.55, up_shares=10, down_shares=5, net_cost=7.5) == 0.25
+        assert bot._v2_expected_position_ev(0.52, up_shares=5, down_shares=5, net_cost=5.2) == -0.2
+
 
 class TestExecutionSafety:
     async def test_scan_tick_blocked_after_early_trade(self):
@@ -1713,6 +1718,116 @@ class TestExecutionSafety:
         state.early_down_cost = 2.4
         state.filled_position_cost_usd = 14.4
         state.early_filled_notional = 14.4
+
+        await bot._v2_execution_tick(state, 50_000.0, 120.0)
+
+        posted_tokens = [call.args[1] for call in bot._post_cheap_order.await_args_list]
+        assert "no456" in posted_tokens
+
+    async def test_execution_tick_blocks_negative_ev_rich_side_add(self):
+        bot = _make_bot(max_bet=50.0)
+        bot._v2_check_secrets_refresh = AsyncMock()
+        bot._refresh_orderbook = _noop_refresh
+        bot._post_cheap_order = AsyncMock()
+        bot.model_server.predict = MagicMock(return_value=0.55)
+        window = _make_window()
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.75, no_bid=0.25, yes_ask=0.76, no_ask=0.26)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "yes123",
+            "hedge_token": "no456",
+            "shares": 10,
+            "entry_price": 0.49,
+            "hedge_entry_price": 0.49,
+            "direction_up": True,
+            "side": "YES",
+            "size": 4.9,
+        }
+        state.early_up_shares = 5
+        state.early_up_cost = 2.45
+        state.early_down_shares = 5
+        state.early_down_cost = 2.45
+        state.filled_position_cost_usd = 4.9
+        state.early_filled_notional = 4.9
+
+        await bot._v2_execution_tick(state, 50_000.0, 120.0)
+
+        posted_tokens = [call.args[1] for call in bot._post_cheap_order.await_args_list]
+        assert "yes123" not in posted_tokens
+        assert bot._post_cheap_order.await_count == 0
+
+    async def test_execution_tick_counts_reserved_orders_in_pair_risk(self):
+        bot = _make_bot(max_bet=50.0)
+        bot._v2_check_secrets_refresh = AsyncMock()
+        bot._refresh_orderbook = _noop_refresh
+        bot._post_cheap_order = AsyncMock()
+        bot.model_server.predict = MagicMock(return_value=0.68)
+        window = _make_window()
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.70, no_bid=0.28, yes_ask=0.71, no_ask=0.29)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "yes123",
+            "hedge_token": "no456",
+            "shares": 85,
+            "entry_price": 0.60,
+            "hedge_entry_price": 0.33,
+            "direction_up": True,
+            "side": "YES",
+            "size": 39.75,
+        }
+        state.early_up_shares = 45
+        state.early_up_cost = 26.69
+        state.early_down_shares = 40
+        state.early_down_cost = 13.06
+        state.filled_position_cost_usd = 39.75
+        state.early_filled_notional = 39.75
+        open_up_order = bot._build_v2_tracked_order(
+            order_id="open_up",
+            actual_shares=5,
+            actual_price=0.69,
+            actual_notional_usd=3.45,
+            side="UP",
+            target_size=3.45,
+        )
+        open_up_order["filled"] = False
+        open_up_order["closed"] = False
+        open_up_order["reserved_notional_usd_remaining"] = 3.45
+        state.early_dca_orders = [open_up_order]
+        state.reserved_open_order_usd = 3.45
+        state.early_reserved_notional = 3.45
+
+        await bot._v2_execution_tick(state, 50_000.0, 220.0)
+
+        assert bot._post_cheap_order.await_count == 0
+
+    async def test_execution_tick_allows_strong_favored_side_below_hold_value(self):
+        bot = _make_bot(max_bet=50.0)
+        bot._v2_check_secrets_refresh = AsyncMock()
+        bot._refresh_orderbook = _noop_refresh
+        bot._post_cheap_order = AsyncMock()
+        bot.model_server.predict = MagicMock(return_value=0.35)
+        window = _make_window()
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.34, no_bid=0.64, yes_ask=0.35, no_ask=0.65)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "yes123",
+            "hedge_token": "no456",
+            "shares": 10,
+            "entry_price": 0.52,
+            "hedge_entry_price": 0.48,
+            "direction_up": False,
+            "side": "NO",
+            "size": 5.0,
+        }
+        state.early_up_shares = 5
+        state.early_up_cost = 2.6
+        state.early_down_shares = 5
+        state.early_down_cost = 2.4
+        state.filled_position_cost_usd = 5.0
+        state.early_filled_notional = 5.0
 
         await bot._v2_execution_tick(state, 50_000.0, 120.0)
 

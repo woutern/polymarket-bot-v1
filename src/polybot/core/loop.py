@@ -647,10 +647,21 @@ class TradingLoop:
             return 0.78
         return 0.82
 
+    def _v2_expected_position_ev(
+        self,
+        prob_up: float,
+        up_shares: int,
+        down_shares: int,
+        net_cost: float,
+    ) -> float:
+        expected_payout = (prob_up * up_shares) + ((1.0 - prob_up) * down_shares)
+        return round(expected_payout - net_cost, 2)
+
     def _v2_projected_pair_metrics(
         self,
         state: AssetState,
-        current_filled: float,
+        prob_up: float,
+        current_total_notional: float,
         side_up: bool,
         shares: int,
         notional: float,
@@ -663,12 +674,19 @@ class TradingLoop:
         new_down_avg = (new_down_cost / new_down_shares) if new_down_shares > 0 else 0.0
         new_combined = (new_up_avg + new_down_avg) if (new_up_shares > 0 and new_down_shares > 0) else 0.0
         payout_floor = min(new_up_shares, new_down_shares)
-        projected_filled = round(current_filled + notional, 2)
-        cost_above_floor = max(round(projected_filled - payout_floor, 2), 0.0)
+        projected_total = round(current_total_notional + notional, 2)
+        cost_above_floor = max(round(projected_total - payout_floor, 2), 0.0)
+        expected_ev = self._v2_expected_position_ev(
+            prob_up=prob_up,
+            up_shares=new_up_shares,
+            down_shares=new_down_shares,
+            net_cost=projected_total,
+        )
         return {
             "combined_avg": round(new_combined, 4),
             "payout_floor": payout_floor,
             "cost_above_floor": round(cost_above_floor, 2),
+            "expected_ev": expected_ev,
         }
 
     def _v2_budget_curve_pct(self, seconds_since_open: float) -> float:
@@ -2235,6 +2253,7 @@ class TradingLoop:
         max_deploy_pct = self._v2_budget_curve_pct(seconds_since_open)
         max_deploy_usd = max_bet * max_deploy_pct * budget_scale
         current_filled = self._v2_filled_position_cost_usd(state)
+        current_total_notional = self._v2_current_total_notional(state)
         budget_curve_remaining = max(max_deploy_usd - current_filled, 0)
 
         desired_prices_by_side: dict[str, list[float]] = {"UP": [], "DOWN": []}
@@ -2293,7 +2312,13 @@ class TradingLoop:
             else 0.0
         )
         current_payout_floor = min(int(state.early_up_shares), int(state.early_down_shares))
-        current_cost_above_floor = max(round(current_filled - current_payout_floor, 2), 0.0)
+        current_cost_above_floor = max(round(current_total_notional - current_payout_floor, 2), 0.0)
+        current_position_ev = self._v2_expected_position_ev(
+            prob_up=prob_up,
+            up_shares=int(state.early_up_shares),
+            down_shares=int(state.early_down_shares),
+            net_cost=current_total_notional,
+        )
         max_combined_avg, max_cost_above_floor = self._v2_pair_risk_limits(prob_up)
 
         from py_clob_client.clob_types import CreateOrderOptions
@@ -2340,7 +2365,8 @@ class TradingLoop:
                     continue
                 projected = self._v2_projected_pair_metrics(
                     state,
-                    current_filled=current_filled,
+                    prob_up=prob_up,
+                    current_total_notional=current_total_notional,
                     side_up=side_up,
                     shares=base_shares,
                     notional=notional,
@@ -2348,6 +2374,7 @@ class TradingLoop:
                 projected_combined = float(projected["combined_avg"])
                 projected_cost_above_floor = float(projected["cost_above_floor"])
                 projected_pair_exists = int(projected["payout_floor"]) >= 5
+                projected_position_ev = float(projected["expected_ev"])
 
                 # If only one side has filled, freeze additional buys on that side until
                 # the missing side catches up at an acceptable starter-pair price.
@@ -2359,25 +2386,39 @@ class TradingLoop:
                 # pair-quality guardrails. This blocks "catch-up" fills like buying the
                 # missing side at 0.65 against an existing 0.52 fill in a weak-signal window.
                 if projected_pair_exists:
+                    strong_directional_edge = abs(prob_up - 0.50) >= 0.10
+                    favored_side = (prob_up >= 0.50 and side_up) or (prob_up < 0.50 and not side_up)
+                    favored_hold_value = self._v2_side_hold_value(prob_up, side_up)
                     bad_state_now = (
                         current_payout_floor >= 5
                         and (
                             current_combined_avg > max_combined_avg + 1e-9
                             or current_cost_above_floor > max_cost_above_floor + 1e-9
+                            or current_position_ev < -0.01
                         )
                     )
                     projected_within_limits = (
                         projected_combined <= max_combined_avg + 1e-9
                         and projected_cost_above_floor <= max_cost_above_floor + 1e-9
+                        and projected_position_ev >= -0.01
                     )
                     improving_bad_state = (
                         current_payout_floor >= 5
                         and lagging_side
                         and projected_combined <= current_combined_avg + 1e-9
                         and projected_cost_above_floor <= current_cost_above_floor + 1e-9
+                        and projected_position_ev >= current_position_ev - 1e-9
+                    )
+                    favored_directional_topup = (
+                        current_payout_floor >= 5
+                        and not bad_state_now
+                        and strong_directional_edge
+                        and favored_side
+                        and post_price <= favored_hold_value + 1e-9
+                        and projected_position_ev >= -0.01
                     )
                     if (bad_state_now and not improving_bad_state) or (
-                        not bad_state_now and not projected_within_limits
+                        not bad_state_now and not projected_within_limits and not favored_directional_topup
                     ):
                         pair_guard_skipped += 1
                         continue
