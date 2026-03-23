@@ -80,3 +80,18 @@ async def test_circuit_breaker_blocks():
     sig = _make_signal()
     result = await trader.execute(sig)
     assert result is None
+
+
+def test_v2_paper_client_tracks_order_lifecycle():
+    """PaperTrader exposes a minimal order client for V2 verification flows."""
+    trader = _make_trader()
+    args = MagicMock(price=0.49, size=5, token_id="token_123", side="BUY")
+
+    signed = trader.client.create_order(args, options=None)
+    resp = trader.client.post_order(signed, order_type="GTC")
+    order_id = resp["orderID"]
+
+    assert trader.client.get_order(order_id)["status"] == "LIVE"
+
+    trader.client.mark_filled(order_id, 5)
+    assert trader.client.get_order(order_id)["status"] == "FILLED"

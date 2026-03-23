@@ -103,8 +103,12 @@ class AssetState:
     early_activity_log: list = field(default_factory=list)  # last 20 actions for dashboard
     early_accum_ticks: set = field(default_factory=set)   # which 3s ticks fired accumulation
     early_status_logged: set = field(default_factory=set)  # which 15s intervals logged status
-    early_cheap_posted: float = 0.0   # total USD posted for cheap accumulation (budget cap)
-    early_cheap_filled: float = 0.0   # total USD actually filled (fill-based budget cap)
+    early_cheap_posted: float = 0.0   # cumulative USD successfully posted this window
+    early_cheap_filled: float = 0.0   # compatibility alias for filled_position_cost_usd
+    reserved_open_order_usd: float = 0.0  # reserved USD on open early-entry orders
+    filled_position_cost_usd: float = 0.0  # actual filled USD on early-entry orders
+    early_reserved_notional: float = 0.0  # compatibility alias for reserved_open_order_usd
+    early_filled_notional: float = 0.0  # compatibility alias for filled_position_cost_usd
     early_confirm_done: bool = False  # Phase 2 T+15s confirm fired for this window
 
 
@@ -351,6 +355,470 @@ class TradingLoop:
         await self.db.close()
         logger.info("loop_stopped")
 
+    def _v2_max_bet_per_asset(self) -> float:
+        max_bet_per_asset = 50.0
+        return max_bet_per_asset
+
+    def _v2_reserved_open_order_usd(self, state: AssetState) -> float:
+        return round(max(state.reserved_open_order_usd, state.early_reserved_notional), 2)
+
+    def _set_v2_reserved_open_order_usd(self, state: AssetState, amount: float) -> None:
+        reserved = round(max(amount, 0.0), 2)
+        state.reserved_open_order_usd = reserved
+        state.early_reserved_notional = reserved
+
+    def _v2_filled_position_cost_usd(self, state: AssetState) -> float:
+        return round(max(state.filled_position_cost_usd, state.early_filled_notional, state.early_cheap_filled), 2)
+
+    def _set_v2_filled_position_cost_usd(self, state: AssetState, amount: float) -> None:
+        filled = round(max(amount, 0.0), 2)
+        state.filled_position_cost_usd = filled
+        state.early_filled_notional = filled
+        state.early_cheap_filled = filled
+
+    def _v2_filled_notional(self, state: AssetState) -> float:
+        return self._v2_filled_position_cost_usd(state)
+
+    def _set_v2_filled_notional(self, state: AssetState, amount: float) -> None:
+        self._set_v2_filled_position_cost_usd(state, amount)
+
+    def _v2_current_total_notional(self, state: AssetState) -> float:
+        return round(self._v2_filled_position_cost_usd(state) + self._v2_reserved_open_order_usd(state), 2)
+
+    def _v2_min_order_shares(self) -> int:
+        return 5
+
+    def _v2_order_size(self, target_usd: float, price: float) -> tuple[int, float]:
+        """Convert target USD into executable whole shares and actual order notional."""
+        if target_usd <= 0 or price <= 0 or price >= 1:
+            return 0, 0.0
+        shares = max(int(round(target_usd / price, 0)), self._v2_min_order_shares())
+        actual_notional_usd = round(shares * price, 2)
+        return shares, actual_notional_usd
+
+    def _v2_float(self, value) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _v2_order_actual_shares(self, order: dict) -> int:
+        return int(order.get("actual_shares", order.get("shares", 0)) or 0)
+
+    def _v2_order_actual_price(self, order: dict) -> float:
+        return self._v2_float(order.get("actual_price", order.get("price", 0)))
+
+    def _v2_order_actual_notional(self, order: dict) -> float:
+        return round(self._v2_float(order.get("actual_notional_usd", order.get("size", 0))), 2)
+
+    def _v2_order_reserved_remaining(self, order: dict) -> float:
+        return round(
+            self._v2_float(
+                order.get(
+                    "remaining_reserved_notional_usd",
+                    order.get("reserved_notional_usd_remaining", self._v2_order_actual_notional(order)),
+                )
+            ),
+            2,
+        )
+
+    def _set_v2_order_reserved_remaining(self, order: dict, amount: float) -> None:
+        remaining = round(max(amount, 0.0), 2)
+        order["remaining_reserved_notional_usd"] = remaining
+        order["reserved_notional_usd_remaining"] = remaining
+
+    def _build_v2_tracked_order(
+        self,
+        order_id: str,
+        actual_shares: int,
+        actual_price: float,
+        actual_notional_usd: float,
+        side: str,
+        target_size: float | None = None,
+    ) -> dict:
+        return {
+            "order_id": order_id,
+            "shares": actual_shares,
+            "price": actual_price,
+            "size": actual_notional_usd,
+            "actual_shares": actual_shares,
+            "actual_price": actual_price,
+            "actual_notional_usd": actual_notional_usd,
+            "remaining_reserved_notional_usd": actual_notional_usd,
+            "reserved_notional_usd_remaining": actual_notional_usd,
+            "filled_shares": 0,
+            "filled_notional_usd": 0.0,
+            "target_size": target_size,
+            "side": side,
+            "budget_reserved": True,
+            "created_at": time.time(),
+        }
+
+    def _v2_fill_progress(self, order: dict, resp: dict) -> tuple[int, float, bool]:
+        actual_shares = self._v2_order_actual_shares(order)
+        actual_price = self._v2_order_actual_price(order)
+        actual_notional_usd = self._v2_order_actual_notional(order)
+        prev_filled_shares = int(order.get("filled_shares", 0) or 0)
+        prev_filled_notional = round(self._v2_float(order.get("filled_notional_usd", 0)), 2)
+        status = str(resp.get("status", "") if isinstance(resp, dict) else "").upper()
+
+        if status in ("MATCHED", "FILLED"):
+            return actual_shares, actual_notional_usd, True
+
+        size_matched = self._v2_float(resp.get("size_matched", 0) if isinstance(resp, dict) else 0)
+        total_filled_shares = int(round(size_matched)) if size_matched > 0 else prev_filled_shares
+        total_filled_shares = max(min(total_filled_shares, actual_shares), prev_filled_shares)
+        total_filled_notional = round(total_filled_shares * actual_price, 2) if actual_price > 0 else prev_filled_notional
+        total_filled_notional = max(min(total_filled_notional, actual_notional_usd), prev_filled_notional)
+        is_complete = total_filled_notional >= actual_notional_usd - 1e-9 if actual_notional_usd > 0 else False
+        return total_filled_shares, total_filled_notional, is_complete
+
+    def _sync_v2_position_from_fills(self, state: AssetState) -> None:
+        """Keep the sellable main position aligned with actual filled shares/cost."""
+        pos = state.early_position
+        if not pos:
+            return
+        if pos.get("direction_up", True):
+            pos["shares"] = int(round(state.early_up_shares))
+            pos["size"] = round(state.early_up_cost, 2)
+        else:
+            pos["shares"] = int(round(state.early_down_shares))
+            pos["size"] = round(state.early_down_cost, 2)
+
+    def _early_entry_active_for_state(self, state: AssetState) -> bool:
+        if not self.settings.early_entry_enabled:
+            return False
+        if state.tracker.window_seconds != 300:
+            return False
+        enabled_pairs = set(getattr(self.settings, "enabled_pairs", []) or [])
+        return (state.asset, state.tracker.window_seconds) in enabled_pairs
+
+    def _v2_order_execution_enabled(self) -> bool:
+        return self.settings.mode in ("live", "paper") and hasattr(self.trader, "client")
+
+    def _v2_get_order_status(self, state: AssetState, order: dict) -> dict:
+        oid = order.get("order_id", "")
+        if not oid or not hasattr(self.trader, "client"):
+            return {"status": "UNKNOWN"}
+
+        resp = self.trader.client.get_order(oid)
+        if self.settings.mode != "paper":
+            return resp
+
+        status = str(resp.get("status", "") if isinstance(resp, dict) else "").upper()
+        if status in ("MATCHED", "FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"):
+            return resp
+
+        direction = self._v2_order_direction(state, order)
+        if direction is True:
+            best_ask = self._v2_float(state.orderbook.yes_best_ask)
+        elif direction is False:
+            best_ask = self._v2_float(state.orderbook.no_best_ask)
+        else:
+            best_ask = 0.0
+
+        actual_price = self._v2_order_actual_price(order)
+        if best_ask > 0 and actual_price >= best_ask - 1e-9:
+            actual_shares = self._v2_order_actual_shares(order)
+            if hasattr(self.trader.client, "mark_filled"):
+                self.trader.client.mark_filled(oid, actual_shares)
+            return {"status": "FILLED", "size_matched": str(actual_shares)}
+
+        return resp if isinstance(resp, dict) else {"status": "LIVE"}
+
+    def _v2_remaining_budget(self, state: AssetState) -> float:
+        max_bet_per_asset = self._v2_max_bet_per_asset()
+        return round(max(max_bet_per_asset - self._v2_current_total_notional(state), 0.0), 2)
+
+    def _v2_order_direction(self, state: AssetState, order: dict) -> bool | None:
+        pos = state.early_position or {}
+        direction_up = pos.get("direction_up", True)
+        side = order.get("side", "")
+        if side in ("UP", "YES"):
+            return True
+        if side in ("DOWN", "NO"):
+            return False
+        if side == "main":
+            return direction_up
+        if side == "hedge":
+            return not direction_up
+        if side == "rotate":
+            return direction_up
+        return None
+
+    def _v2_setting_float(self, name: str, default: float) -> float:
+        value = getattr(self.settings, name, default)
+        if isinstance(value, bool):
+            return float(value)
+        if isinstance(value, (int, float)):
+            return float(value)
+        return default
+
+    def _v2_reprice_stale_after_seconds(self) -> float:
+        value = self._v2_setting_float("early_entry_reprice_stale_after_seconds", 6.0)
+        return value if value > 0 else 6.0
+
+    def _v2_reprice_price_tolerance(self) -> float:
+        value = self._v2_setting_float("early_entry_reprice_price_tolerance", 0.01)
+        return max(value, 0.0)
+
+    def _v2_open_orders(self, state: AssetState) -> list[dict]:
+        return [order for order in state.early_dca_orders if not order.get("filled") and not order.get("closed")]
+
+    def _v2_normalized_order_side(self, state: AssetState, order: dict) -> str:
+        direction = self._v2_order_direction(state, order)
+        if direction is True:
+            return "UP"
+        if direction is False:
+            return "DOWN"
+        return str(order.get("side", "")).upper()
+
+    def _v2_accum_plan(self, bid: float) -> tuple[list[float], float, str]:
+        if bid <= 0.15:
+            return [0.00, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08], 0.35, "lottery"
+        if bid <= 0.35:
+            return [0.00, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06], 0.25, "cheap"
+        if bid <= 0.60:
+            return [0.00, 0.01, 0.02, 0.03, 0.05], 0.20, "mid"
+        return [0.00, 0.01, 0.03], 0.15, "winning"
+
+    def _v2_accum_specs(self, bid: float) -> tuple[str, list[dict]]:
+        offsets, target_size, tier = self._v2_accum_plan(bid)
+        specs: list[dict] = []
+        seen_prices: set[float] = set()
+        for offset in offsets:
+            post_price = round(bid - offset, 2)
+            if post_price < 0.01 or post_price > 0.98 or post_price in seen_prices:
+                continue
+            shares, actual_notional_usd = self._v2_order_size(target_size, post_price)
+            if shares <= 0 or actual_notional_usd <= 0:
+                continue
+            seen_prices.add(post_price)
+            specs.append(
+                {
+                    "post_price": post_price,
+                    "shares": shares,
+                    "actual_notional_usd": actual_notional_usd,
+                    "target_size": target_size,
+                }
+            )
+        return tier, specs
+
+    def _v2_cancel_client(self):
+        if not hasattr(self.trader, "client"):
+            return None
+        if hasattr(self.trader.client, "cancel"):
+            return self.trader.client.cancel
+        if hasattr(self.trader.client, "cancel_order"):
+            return self.trader.client.cancel_order
+        return None
+
+    async def _v2_recycle_stale_orders(
+        self,
+        state: AssetState,
+        desired_prices_by_side: dict[str, list[float]],
+    ) -> tuple[dict[str, set[float]], int]:
+        kept_prices_by_side: dict[str, set[float]] = {"UP": set(), "DOWN": set()}
+        stale_after = self._v2_reprice_stale_after_seconds()
+        tolerance = self._v2_reprice_price_tolerance()
+        cancel_client = self._v2_cancel_client()
+        cancelled = 0
+        now = time.time()
+
+        for order in list(self._v2_open_orders(state)):
+            side = self._v2_normalized_order_side(state, order)
+            if side not in ("UP", "DOWN"):
+                continue
+
+            desired_prices = desired_prices_by_side.get(side, [])
+            actual_price = round(self._v2_order_actual_price(order), 2)
+            created_at_raw = order.get("created_at", now)
+            created_at = created_at_raw if isinstance(created_at_raw, (int, float)) else now
+            order_age_seconds = max(now - float(created_at), 0.0)
+
+            nearest_desired_price = actual_price
+            price_gap = 0.0
+            near_market = True
+            if desired_prices:
+                nearest_desired_price = min(desired_prices, key=lambda price: abs(price - actual_price))
+                price_gap = round(abs(nearest_desired_price - actual_price), 2)
+                near_market = price_gap <= tolerance + 1e-9
+            else:
+                near_market = False
+
+            stale_age = order_age_seconds >= stale_after
+            stale_price = not near_market
+            unlikely_to_fill = stale_price
+            is_stale = stale_age and (stale_price or not desired_prices)
+
+            if not is_stale:
+                kept_prices_by_side[side].add(actual_price)
+                continue
+
+            oid = order.get("order_id", "")
+            try:
+                if cancel_client and oid:
+                    cancel_client(oid)
+                release_notional = self._v2_order_reserved_remaining(order)
+                if release_notional > 0 and not order.get("budget_released"):
+                    self._release_v2_budget(state, release_notional, "stale_cancel", side, oid)
+                self._set_v2_order_reserved_remaining(order, 0.0)
+                order["budget_released"] = True
+                order["closed"] = True
+                cancelled += 1
+                logger.info(
+                    "stale_order_cancelled",
+                    asset=state.asset,
+                    side=side,
+                    order_id=oid[:16],
+                    actual_price=actual_price,
+                    nearest_desired_price=nearest_desired_price,
+                    price_gap=price_gap,
+                    order_age_seconds=round(order_age_seconds, 2),
+                    stale_after_seconds=round(stale_after, 2),
+                    no_longer_near_market=stale_price,
+                    unlikely_to_fill=unlikely_to_fill,
+                    released_reserved_usd=round(release_notional, 2),
+                    reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
+                    filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
+                )
+            except Exception as e:
+                logger.warning(
+                    "stale_order_cancel_error",
+                    asset=state.asset,
+                    side=side,
+                    order_id=oid[:16],
+                    error=str(e)[:120],
+                )
+
+        state.early_dca_orders = [order for order in state.early_dca_orders if not order.get("closed")]
+        return kept_prices_by_side, cancelled
+
+    def _v2_window_metrics(self, state: AssetState) -> dict[str, float | int | bool]:
+        tracked_orders = state.early_dca_orders
+        filled_orders = [
+            o for o in tracked_orders if o.get("filled") or self._v2_float(o.get("filled_notional_usd", 0)) > 0
+        ]
+        cheap_buy_count = len(tracked_orders)
+        cheap_buy_usd = round(sum(float(o.get("actual_notional_usd", o.get("size", 0)) or 0) for o in tracked_orders), 2)
+        under_25_count = sum(1 for o in tracked_orders if float(o.get("price", 1) or 1) < 0.25)
+        percent_buys_under_0_25 = round((under_25_count / cheap_buy_count) * 100, 1) if cheap_buy_count else 0.0
+        directions = [self._v2_order_direction(state, order) for order in tracked_orders]
+        filled_directions = [self._v2_order_direction(state, order) for order in filled_orders]
+        reserved_open_order_usd = self._v2_reserved_open_order_usd(state)
+        filled_position_cost_usd = self._v2_filled_position_cost_usd(state)
+        return {
+            "cheap_buy_count": cheap_buy_count,
+            "cheap_buy_usd": cheap_buy_usd,
+            "percent_buys_under_0_25": percent_buys_under_0_25,
+            "trades_per_window": len(filled_orders),
+            "both_sides_posted": any(direction is True for direction in directions)
+            and any(direction is False for direction in directions),
+            "both_sides_filled": any(direction is True for direction in filled_directions)
+            and any(direction is False for direction in filled_directions),
+            "reserved_open_order_usd": reserved_open_order_usd,
+            "filled_position_cost_usd": filled_position_cost_usd,
+            "current_reserved_budget": reserved_open_order_usd,
+            "current_filled_budget": filled_position_cost_usd,
+            "current_total_budget": self._v2_current_total_notional(state),
+            "remaining_budget": self._v2_remaining_budget(state),
+            "max_bet_per_asset": self._v2_max_bet_per_asset(),
+        }
+
+    def _reserve_v2_budget(self, state: AssetState, actual_notional_usd: float, context: str, side: str) -> bool:
+        max_bet_per_asset = self._v2_max_bet_per_asset()
+        current_reserved = self._v2_reserved_open_order_usd(state)
+        current_filled = self._v2_filled_position_cost_usd(state)
+        current_total = round(current_reserved + current_filled, 2)
+        remaining_budget = round(max(max_bet_per_asset - current_total, 0.0), 2)
+        if current_total + actual_notional_usd > max_bet_per_asset + 1e-9:
+            logger.info(
+                "v2_budget_blocked",
+                asset=state.asset,
+                side=side,
+                context=context,
+                actual_notional_usd=round(actual_notional_usd, 2),
+                max_bet_per_asset=max_bet_per_asset,
+                reserved_open_order_usd=current_reserved,
+                filled_position_cost_usd=current_filled,
+                current_total_notional_usd=current_total,
+                remaining_budget=remaining_budget,
+            )
+            return False
+        self._set_v2_reserved_open_order_usd(state, current_reserved + actual_notional_usd)
+        logger.info(
+            "v2_budget_reserved",
+            asset=state.asset,
+            side=side,
+            context=context,
+            actual_notional_usd=round(actual_notional_usd, 2),
+            max_bet_per_asset=max_bet_per_asset,
+            reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
+            filled_position_cost_usd=current_filled,
+            current_total_notional_usd=self._v2_current_total_notional(state),
+            remaining_budget=self._v2_remaining_budget(state),
+        )
+        return True
+
+    def _move_v2_reserved_to_filled(
+        self,
+        state: AssetState,
+        actual_notional_usd: float,
+        context: str,
+        side: str,
+        order_id: str = "",
+    ) -> None:
+        max_bet_per_asset = self._v2_max_bet_per_asset()
+        self._set_v2_reserved_open_order_usd(state, self._v2_reserved_open_order_usd(state) - actual_notional_usd)
+        self._set_v2_filled_position_cost_usd(state, self._v2_filled_position_cost_usd(state) + actual_notional_usd)
+        logger.info(
+            "v2_budget_filled",
+            asset=state.asset,
+            side=side,
+            context=context,
+            actual_notional_usd=round(actual_notional_usd, 2),
+            order_id=order_id[:16] if order_id else "",
+            max_bet_per_asset=max_bet_per_asset,
+            reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
+            filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
+            current_total_notional_usd=self._v2_current_total_notional(state),
+            remaining_budget=self._v2_remaining_budget(state),
+        )
+
+    def _release_v2_budget(
+        self,
+        state: AssetState,
+        actual_notional_usd: float,
+        context: str,
+        side: str,
+        order_id: str = "",
+    ) -> None:
+        max_bet_per_asset = self._v2_max_bet_per_asset()
+        self._set_v2_reserved_open_order_usd(state, self._v2_reserved_open_order_usd(state) - actual_notional_usd)
+        logger.info(
+            "v2_budget_released",
+            asset=state.asset,
+            side=side,
+            context=context,
+            actual_notional_usd=round(actual_notional_usd, 2),
+            order_id=order_id[:16] if order_id else "",
+            max_bet_per_asset=max_bet_per_asset,
+            reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
+            filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
+            current_total_notional_usd=self._v2_current_total_notional(state),
+            remaining_budget=self._v2_remaining_budget(state),
+        )
+        logger.info(
+            "budget_released",
+            asset=state.asset,
+            side=side,
+            context=context,
+            actual_notional_usd=round(actual_notional_usd, 2),
+            order_id=order_id[:16] if order_id else "",
+            reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
+            filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
+        )
+
     async def _strategy_loop_resilient(self):
         while self._running:
             try:
@@ -429,9 +897,11 @@ class TradingLoop:
         if not window:
             return
 
+        early_entry_active = self._early_entry_active_for_state(state)
         _sso = time.time() - window.open_ts
         logger.info("tick", asset=state.asset, seconds=int(_sso),
-                    early_enabled=self.settings.early_entry_enabled,
+                    early_enabled=early_entry_active,
+                    early_master_enabled=self.settings.early_entry_enabled,
                     has_position=bool(state.early_position),
                     early_traded=state.early_entry_traded,
                     early_evaluated=state.early_entry_evaluated)
@@ -461,7 +931,7 @@ class TradingLoop:
         state.window_tick_count += 1
 
         # Write live state every 5s (async, non-blocking)
-        if self.settings.early_entry_enabled and int(seconds_since_open) % 5 == 0:
+        if early_entry_active and int(seconds_since_open) % 5 == 0:
             self._write_live_state_async(state, price, seconds_since_open)
 
         # Log progress every 60s for debugging
@@ -470,7 +940,7 @@ class TradingLoop:
                          target=self.settings.late_entry_seconds, evaluated=state.late_entry_evaluated)
 
         # ── V2 EARLY ENTRY PLAYBOOK ──────────────────────────────────────────
-        if self.settings.early_entry_enabled:
+        if early_entry_active:
             win_secs = state.tracker.window_seconds
             # Cutoff: cancel unfilled + stop trading. 270s for 5m, 3540s for 1h.
             cutoff = win_secs - 30
@@ -490,6 +960,7 @@ class TradingLoop:
                 tick_3s = int(seconds_since_open // 3)
                 if tick_3s not in state.early_accum_ticks:
                     state.early_accum_ticks.add(tick_3s)
+                    await self._v2_poll_fills(state)
                     await self._v2_accumulate_cheap(state, price, seconds_since_open)
                     await self._v2_poll_fills(state)
 
@@ -1078,7 +1549,7 @@ class TradingLoop:
     async def _v2_open_position(self, state: AssetState, price: float):
         """Post GTC limits on both sides immediately when window opens. No Gamma API fetch."""
         logger.info("v2_open_attempt", asset=state.asset, mode=self.settings.mode)
-        if self.settings.mode != "live":
+        if not self._v2_order_execution_enabled():
             return
 
         window = state.tracker.current
@@ -1160,36 +1631,54 @@ class TradingLoop:
             from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
             from py_clob_client.order_builder.constants import BUY
             options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
+            budget_exhausted = False
             for token, bid, sz, label in [
                 (main_token, main_bid, main_size, "main"),
                 (hedge_token, hedge_bid, hedge_size, "hedge"),
             ]:
+                if budget_exhausted:
+                    break
                 post_price = round(bid + 0.01, 2) if bid and bid > 0 else 0.49
                 if post_price <= 0 or post_price >= 1.0:
                     continue
-                shares = max(round(sz / post_price), 5)
+                shares, actual_notional_usd = self._v2_order_size(sz, post_price)
+                if shares <= 0 or actual_notional_usd <= 0:
+                    continue
+                if not self._reserve_v2_budget(state, actual_notional_usd, "open", label):
+                    budget_exhausted = True
+                    break
                 try:
                     logger.info("v2_open_placing", asset=state.asset, side=label,
-                                token=token[:16], price=post_price, shares=shares, sz=sz)
+                                token=token[:16], price=post_price, shares=shares,
+                                sz=actual_notional_usd, target_size=sz)
                     args = OrderArgs(price=post_price, size=shares, side=BUY, token_id=token)
                     signed = self.trader.client.create_order(args, options)
                     resp = self.trader.client.post_order(signed, OrderType.GTC)
                     logger.info("v2_open_response", asset=state.asset, side=label, resp=str(resp)[:120])
                     oid = resp.get("orderID", "")
                     if oid:
-                        state.early_dca_orders.append({"order_id": oid, "price": post_price, "size": sz, "side": label})
+                        state.early_dca_orders.append(
+                            self._build_v2_tracked_order(
+                                order_id=oid,
+                                actual_shares=shares,
+                                actual_price=post_price,
+                                actual_notional_usd=actual_notional_usd,
+                                target_size=sz,
+                                side=label,
+                            )
+                        )
                         logger.info("v2_open_posted", asset=state.asset, slug=early_slug,
-                                    side=label, price=post_price, size=sz, order_id=oid[:16],
+                                    side=label, actual_price=post_price, actual_notional_usd=actual_notional_usd,
+                                    target_size=sz, actual_shares=shares, order_id=oid[:16],
                                     direction="UP" if direction_up else "DOWN")
                     else:
+                        self._release_v2_budget(state, actual_notional_usd, "open_no_order_id", label)
                         logger.warning("v2_open_no_order_id", asset=state.asset, side=label, resp=str(resp)[:200])
                 except Exception as e:
+                    self._release_v2_budget(state, actual_notional_usd, "open_post_error", label)
                     logger.warning("v2_open_error", asset=state.asset, side=label, error=str(e)[:200])
         except Exception as e:
             logger.warning("v2_open_import_error", asset=state.asset, error=str(e)[:200])
-
-        # Count open spend toward budget so accumulation respects the cap
-        state.early_cheap_filled += main_size + hedge_size
 
         # Always set position so accumulation loop fires even if orders failed
         state.early_entry_traded = True
@@ -1198,12 +1687,12 @@ class TradingLoop:
             "slug": early_slug,
             "token_id": main_token,
             "hedge_token": hedge_token,
-            "shares": max(round(main_size / 0.50), 5),
+            "shares": 0,
             "entry_price": round((main_bid or 0.50) + 0.01, 2),
             "hedge_entry_price": hedge_entry_price,
             "direction_up": direction_up,
             "side": "YES" if direction_up else "NO",
-            "size": main_size,
+            "size": 0.0,
         }
         logger.info("v2_open_complete", asset=state.asset, slug=early_slug,
                     direction="UP" if direction_up else "DOWN", lgbm=round(lgbm_raw, 3),
@@ -1218,7 +1707,7 @@ class TradingLoop:
         If direction flipped: swap main/hedge labels so accumulation targets the right side.
         Skip if seconds_since_open > 20 (already handled by caller gate).
         """
-        if self.settings.mode != "live":
+        if not self._v2_order_execution_enabled():
             return
         pos = state.early_position
         if not pos:
@@ -1266,6 +1755,7 @@ class TradingLoop:
             pos["token_id"], pos["hedge_token"] = pos["hedge_token"], pos["token_id"]
             pos["entry_price"], pos["hedge_entry_price"] = pos["hedge_entry_price"], pos["entry_price"]
             pos["side"] = "YES" if confirm_direction_up else "NO"
+            self._sync_v2_position_from_fills(state)
             logger.info("v2_confirm_flip", asset=state.asset, slug=pos["slug"],
                         new_direction="UP" if confirm_direction_up else "DOWN",
                         lgbm=round(lgbm_raw, 3), pct_move=round(pct_move, 3))
@@ -1284,7 +1774,11 @@ class TradingLoop:
         post_price = round(main_bid + 0.01, 2)
         if post_price <= 0 or post_price >= 1.0:
             return
-        shares = max(round(confirm_size / post_price), 5)
+        shares, actual_notional_usd = self._v2_order_size(confirm_size, post_price)
+        if shares <= 0 or actual_notional_usd <= 0:
+            return
+        if not self._reserve_v2_budget(state, actual_notional_usd, "confirm", "main"):
+            return
         try:
             from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
             from py_clob_client.order_builder.constants import BUY
@@ -1294,40 +1788,50 @@ class TradingLoop:
             resp = self.trader.client.post_order(signed, OrderType.GTC)
             oid = resp.get("orderID", "")
             if oid:
-                state.early_cheap_filled += confirm_size
-                state.early_dca_orders.append({"order_id": oid, "price": post_price,
-                                                "size": confirm_size, "side": "main"})
+                state.early_dca_orders.append(
+                    self._build_v2_tracked_order(
+                        order_id=oid,
+                        actual_shares=shares,
+                        actual_price=post_price,
+                        actual_notional_usd=actual_notional_usd,
+                        target_size=confirm_size,
+                        side="main",
+                    )
+                )
                 logger.info("v2_confirm_posted", asset=state.asset, slug=pos["slug"],
-                            price=post_price, size=confirm_size, order_id=oid[:16],
+                            actual_price=post_price, actual_notional_usd=actual_notional_usd, target_size=confirm_size,
+                            actual_shares=shares, order_id=oid[:16],
                             lgbm=round(lgbm_raw, 3), pct_move=round(pct_move, 3))
                 self._log_activity(state, "CONFIRM +main",
-                                   f"${confirm_size} lgbm={lgbm_raw:.2f} move={pct_move:+.3f}%")
+                                   f"${actual_notional_usd} lgbm={lgbm_raw:.2f} move={pct_move:+.3f}%")
             else:
+                self._release_v2_budget(state, actual_notional_usd, "confirm_no_order_id", "main")
                 logger.warning("v2_confirm_no_order_id", asset=state.asset, resp=str(resp)[:200])
         except Exception as e:
+            self._release_v2_budget(state, actual_notional_usd, "confirm_post_error", "main")
             logger.warning("v2_confirm_error", asset=state.asset, error=str(e)[:200])
 
     # ── V2 ACCUMULATE CHEAP + POLL FILLS ─────────────────────────────────
     async def _v2_accumulate_cheap(self, state: AssetState, price: float, seconds_since_open: float = 0.0):
         """Every 3s: post GTC ladders on BOTH sides below current bid.
 
-        K9 4-tier ladder (from spec, 3,500 trades):
-          bid <= 0.15 (lottery zone):    7 levels [0,1,2,3,4,5,6¢], $0.50 each
-          bid 0.15-0.35 (cheap zone):    5 levels [0,1,2,4,6¢],      $0.35 each
-          bid 0.35-0.60 (mid zone):      3 levels [0,2,5¢],           $0.25 each
-          bid > 0.60 (winning side):     2 levels [0,3¢],             $0.50 each — only after T+60s
+        Dense both-sides ladder:
+          bid <= 0.15 (lottery zone):    9 levels [0-8¢],             $0.35 each
+          bid 0.15-0.35 (cheap zone):    7 levels [0-6¢],             $0.25 each
+          bid 0.35-0.60 (mid zone):      5 levels [0,1,2,3,5¢],       $0.20 each
+          bid > 0.60 (winning side):     3 levels [0,1,3¢],           $0.15 each
 
-        Orders cost $0 until filled. Cap is on actual fills only.
+        Budget cap is strict per window per asset and includes filled positions
+        plus reserved open orders.
         """
         pos = state.early_position
-        if not pos or self.settings.mode != "live":
+        if not pos or not self._v2_order_execution_enabled():
             return
         window = state.tracker.current
         if not window:
             return
 
-        num_5m_assets = len([k for k in self.asset_states if "_1h" not in k])
-        max_bet_per_asset = self.settings.early_entry_max_bet / max(num_5m_assets, 1)
+        max_bet_per_asset = self._v2_max_bet_per_asset()
 
         await self._refresh_orderbook(state)
 
@@ -1335,74 +1839,114 @@ class TradingLoop:
         options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
 
         order_tasks = []
+        tick_sides_posted: set[str] = set()
+        tick_order_count = 0
+        tick_order_usd = 0.0
+        tick_under_25 = 0
+        budget_exhausted = False
+        num_open_orders_before = len(self._v2_open_orders(state))
+        desired_specs_by_side: dict[str, list[dict]] = {"UP": [], "DOWN": []}
         for side_up, token_id in [(True, window.yes_token_id), (False, window.no_token_id)]:
+            if budget_exhausted:
+                break
             if not token_id:
                 continue
             bid = state.orderbook.yes_best_bid if side_up else state.orderbook.no_best_bid
             if not bid or bid <= 0:
                 continue
+            side = "UP" if side_up else "DOWN"
+            tier, desired_specs = self._v2_accum_specs(bid)
+            desired_specs_by_side[side] = desired_specs
 
             logger.info("v2_accum_side", asset=state.asset,
-                        side="UP" if side_up else "DOWN",
+                        side=side,
                         bid=round(bid, 3),
-                        filled=round(state.early_cheap_filled, 2),
-                        max_bet=round(max_bet_per_asset, 2))
-
-            # K9 4-tier ladder
-            if bid <= 0.15:
-                # Lottery zone: 7 levels, $0.50 each (14x+ return if wins)
-                offsets = [0.00, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
-                size = 0.50
-            elif bid <= 0.35:
-                # Cheap accumulation zone: 5 levels, $0.35 each
-                offsets = [0.00, 0.01, 0.02, 0.04, 0.06]
-                size = 0.35
-            elif bid <= 0.60:
-                # Mid / baseline zone: 3 levels, $0.25 each
-                offsets = [0.00, 0.02, 0.05]
-                size = 0.25
-            else:
-                # Winning side (bid > 0.60): 2 levels, $0.50 each, only after T+60s
-                if seconds_since_open < 60:
-                    logger.info("v2_accum_tier", asset=state.asset,
-                                side="UP" if side_up else "DOWN",
-                                bid=round(bid, 3), tier="winning_blocked_t60",
-                                offsets="[]", num_orders=0)
-                    continue
-                offsets = [0.00, 0.03]
-                size = 0.50
+                        reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
+                        filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
+                        current_total_notional_usd=self._v2_current_total_notional(state),
+                        remaining_budget=self._v2_remaining_budget(state),
+                        max_bet_per_asset=round(max_bet_per_asset, 2))
 
             logger.info("v2_accum_tier", asset=state.asset,
-                        side="UP" if side_up else "DOWN",
+                        side=side,
                         bid=round(bid, 3),
-                        tier="lottery" if bid <= 0.15 else "cheap" if bid <= 0.35
-                        else "mid" if bid <= 0.60 else "winning",
-                        offsets=str(offsets),
-                        num_orders=len([o for o in offsets if round(bid - o, 2) >= 0.01]))
+                        tier=tier,
+                        offsets=str([round(bid - spec["post_price"], 2) for spec in desired_specs]),
+                        num_orders=len(desired_specs))
 
-            for offset in offsets:
-                post_price = round(bid - offset, 2)
-                if post_price < 0.01 or post_price > 0.98:
+        desired_prices_by_side = {
+            side: [spec["post_price"] for spec in specs]
+            for side, specs in desired_specs_by_side.items()
+        }
+        kept_prices_by_side, stale_orders_cancelled = await self._v2_recycle_stale_orders(
+            state,
+            desired_prices_by_side,
+        )
+
+        for side_up, token_id in [(True, window.yes_token_id), (False, window.no_token_id)]:
+            if budget_exhausted:
+                break
+            if not token_id:
+                continue
+            side = "UP" if side_up else "DOWN"
+            for spec in desired_specs_by_side[side]:
+                if spec["post_price"] in kept_prices_by_side[side]:
                     continue
-                if state.early_cheap_filled + size > max_bet_per_asset:
-                    break  # budget exhausted for this side — skip remaining levels too
-                # Pre-reserve budget synchronously so subsequent iterations in this
-                # same gather batch see the correct running total (fixes race condition
-                # where all tasks pass the check before any of them increment).
-                state.early_cheap_filled += size
-                shares = max(round(size / post_price), 5)
+                actual_notional_usd = spec["actual_notional_usd"]
+                if not self._reserve_v2_budget(state, actual_notional_usd, "accumulate", "UP" if side_up else "DOWN"):
+                    budget_exhausted = True
+                    break
+                tick_sides_posted.add(side)
+                tick_order_count += 1
+                tick_order_usd += actual_notional_usd
+                if spec["post_price"] < 0.25:
+                    tick_under_25 += 1
                 order_tasks.append(
-                    self._post_cheap_order(state, token_id, post_price, shares, size, side_up, options)
+                    self._post_cheap_order(
+                        state,
+                        token_id,
+                        spec["post_price"],
+                        spec["shares"],
+                        actual_notional_usd,
+                        side_up,
+                        options,
+                        target_size=spec["target_size"],
+                    )
                 )
+                kept_prices_by_side[side].add(spec["post_price"])
 
         if order_tasks:
             await asyncio.gather(*order_tasks, return_exceptions=True)
-            logger.info("v2_accumulate_tick", asset=state.asset,
-                        orders=len(order_tasks), filled=round(state.early_cheap_filled, 2),
-                        seconds=int(seconds_since_open), max_bet=max_bet_per_asset)
+        window_metrics = self._v2_window_metrics(state)
+        num_open_orders_after = len(self._v2_open_orders(state))
+        open_sides_after = {
+            self._v2_normalized_order_side(state, order)
+            for order in self._v2_open_orders(state)
+        }
+        logger.info("v2_reprice_cycle", asset=state.asset,
+                    seconds=int(seconds_since_open),
+                    stale_orders_cancelled=stale_orders_cancelled,
+                    repriced_orders_posted=len(order_tasks),
+                    num_open_orders_before=num_open_orders_before,
+                    num_open_orders_after=num_open_orders_after)
+        logger.info("v2_accumulate_tick", asset=state.asset,
+                    orders=len(order_tasks),
+                    seconds=int(seconds_since_open),
+                    cheap_buy_count=tick_order_count,
+                    cheap_buy_usd=round(tick_order_usd, 2),
+                    percent_buys_under_0_25=round((tick_under_25 / tick_order_count) * 100, 1) if tick_order_count else 0.0,
+                    trades_per_window=window_metrics["trades_per_window"],
+                    both_sides_posted=("UP" in open_sides_after and "DOWN" in open_sides_after),
+                    both_sides_filled=window_metrics["both_sides_filled"],
+                    reserved_open_order_usd=window_metrics["reserved_open_order_usd"],
+                    filled_position_cost_usd=window_metrics["filled_position_cost_usd"],
+                    current_reserved_budget=window_metrics["current_reserved_budget"],
+                    remaining_budget=window_metrics["remaining_budget"],
+                    max_bet_per_asset=window_metrics["max_bet_per_asset"])
 
     async def _post_cheap_order(self, state: AssetState, token_id: str, post_price: float,
-                                shares: int, size: float, side_up: bool, options) -> None:
+                                shares: int, size: float, side_up: bool, options,
+                                target_size: float | None = None) -> None:
         """Post one cheap limit order and track it. Full error logging."""
         from py_clob_client.clob_types import OrderArgs, OrderType
         from py_clob_client.order_builder.constants import BUY
@@ -1414,13 +1958,33 @@ class TradingLoop:
             oid = resp.get("orderID", "")
             if oid:
                 state.early_cheap_posted += size
-                state.early_dca_orders.append({"order_id": oid, "price": post_price, "size": size, "side": side})
+                state.early_dca_orders.append(
+                    self._build_v2_tracked_order(
+                        order_id=oid,
+                        actual_shares=shares,
+                        actual_price=post_price,
+                        actual_notional_usd=size,
+                        target_size=target_size,
+                        side=side,
+                    )
+                )
                 logger.info("v2_cheap_posted", asset=state.asset, side=side,
-                            price=post_price, size=size, order_id=oid[:16])
+                            actual_price=post_price, actual_notional_usd=size, target_size=target_size,
+                            actual_shares=shares, order_id=oid[:16],
+                            reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
+                            filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
+                            remaining_budget=self._v2_remaining_budget(state))
+                logger.info("repriced_order_posted", asset=state.asset, side=side,
+                            actual_price=post_price, actual_notional_usd=size, target_size=target_size,
+                            actual_shares=shares, order_id=oid[:16],
+                            reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
+                            filled_position_cost_usd=self._v2_filled_position_cost_usd(state))
             else:
+                self._release_v2_budget(state, size, "cheap_no_order_id", side)
                 logger.warning("v2_cheap_no_order_id", asset=state.asset, side=side,
                                price=post_price, resp=str(resp)[:200])
         except Exception as e:
+            self._release_v2_budget(state, size, "cheap_post_error", side)
             logger.warning("v2_cheap_post_error", asset=state.asset, side=side,
                            price=post_price, error=str(e))
 
@@ -1430,6 +1994,7 @@ class TradingLoop:
             return
         pos = state.early_position or {}
         direction_up = pos.get("direction_up", True)
+        filled_any = False
         for order in state.early_dca_orders:
             if order.get("filled"):
                 continue
@@ -1437,30 +2002,67 @@ class TradingLoop:
             if not oid:
                 continue
             try:
-                resp = self.trader.client.get_order(oid)
-                status = resp.get("status", "") if isinstance(resp, dict) else ""
+                resp = self._v2_get_order_status(state, order)
+                status = str(resp.get("status", "") if isinstance(resp, dict) else "").upper()
                 logger.info("v2_poll_order", asset=state.asset, oid=oid[:16],
                             status=status, side=order.get("side", ""))
-                if status in ("MATCHED", "FILLED"):
-                    order["filled"] = True
-                    sz = order.get("size", 0)
+                actual_shares = self._v2_order_actual_shares(order)
+                actual_price = self._v2_order_actual_price(order)
+                actual_notional_usd = self._v2_order_actual_notional(order)
+                total_filled_shares, total_filled_notional, is_complete = self._v2_fill_progress(order, resp if isinstance(resp, dict) else {})
+                prev_filled_shares = int(order.get("filled_shares", 0) or 0)
+                prev_filled_notional = round(self._v2_float(order.get("filled_notional_usd", 0)), 2)
+                delta_shares = max(total_filled_shares - prev_filled_shares, 0)
+                delta_notional = round(max(total_filled_notional - prev_filled_notional, 0.0), 2)
+                if delta_notional > 0:
                     side = order.get("side", "")
-                    price = order.get("price", 0)
-                    # Budget already pre-reserved at posting time — do not add again
-                    # Track per-side shares — resolve "main"/"hedge" using direction
-                    shares = round(sz / price) if price > 0 else 0
+                    reserved_remaining = self._v2_order_reserved_remaining(order)
+                    move_notional = round(min(reserved_remaining, delta_notional), 2)
+                    if move_notional > 0:
+                        self._move_v2_reserved_to_filled(state, move_notional, "fill", side, oid)
+                    self._set_v2_order_reserved_remaining(order, reserved_remaining - move_notional)
+                    order["filled_notional_usd"] = round(total_filled_notional, 2)
+                    order["filled_shares"] = total_filled_shares
+                    if delta_shares <= 0 and actual_price > 0:
+                        delta_shares = int(round(move_notional / actual_price))
                     is_up = (side == "UP") or (side == "main" and direction_up) or (side == "hedge" and not direction_up)
                     if is_up:
-                        state.early_up_shares += shares
-                        state.early_up_cost += sz
+                        state.early_up_shares += delta_shares
+                        state.early_up_cost += move_notional
                     else:
-                        state.early_down_shares += shares
-                        state.early_down_cost += sz
+                        state.early_down_shares += delta_shares
+                        state.early_down_cost += move_notional
+                    filled_any = True
+                    order["partially_filled"] = not is_complete
                     logger.info("v2_fill_detected", asset=state.asset, side=side,
-                                is_up=is_up, price=price, size=sz, shares=shares)
-                    self._log_activity(state, f"FILL {side} ${price:.2f}", f"${sz:.2f} ({shares} shares)")
+                                is_up=is_up, actual_price=actual_price,
+                                actual_notional_usd=move_notional, actual_shares=delta_shares,
+                                total_filled_notional_usd=round(total_filled_notional, 2),
+                                total_filled_shares=total_filled_shares,
+                                remaining_reserved_notional_usd=self._v2_order_reserved_remaining(order),
+                                fill_status="full" if is_complete else "partial")
+                    self._log_activity(state, f"FILL {side} ${actual_price:.2f}", f"${move_notional:.2f} ({delta_shares} shares)")
+                if is_complete:
+                    order["filled"] = True
+                    order["partially_filled"] = False
+                    order["filled_shares"] = actual_shares
+                    order["filled_notional_usd"] = actual_notional_usd
+                    self._set_v2_order_reserved_remaining(order, 0.0)
+                elif status in ("CANCELED", "CANCELLED", "REJECTED", "EXPIRED"):
+                    if not order.get("budget_released"):
+                        release_notional = self._v2_order_reserved_remaining(order)
+                        if release_notional > 0:
+                            self._release_v2_budget(state, release_notional, "poll_terminal", order.get("side", ""), oid)
+                        self._set_v2_order_reserved_remaining(order, 0.0)
+                        order["budget_released"] = True
+                    order["closed"] = True
+                    logger.info("v2_order_terminal", asset=state.asset, oid=oid[:16],
+                                status=status, side=order.get("side", ""))
             except Exception as e:
                 logger.info("v2_poll_error", asset=state.asset, oid=oid[:16], error=str(e)[:80])
+        state.early_dca_orders = [o for o in state.early_dca_orders if not o.get("closed")]
+        if filled_any:
+            self._sync_v2_position_from_fills(state)
 
     async def _verify_early_polymarket(self, early_slug: str, market_slug: str, delay: int):
         """Verify early entry trades against Polymarket oracle after delay."""
@@ -1572,19 +2174,35 @@ class TradingLoop:
             from py_clob_client.order_builder.constants import BUY
             options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
             buy_price = round(ask, 2)
-            shares = max(round(proceeds / buy_price), 5)
+            shares, actual_notional_usd = self._v2_order_size(proceeds, buy_price)
+            if shares <= 0 or actual_notional_usd <= 0:
+                return
+            if not self._reserve_v2_budget(state, actual_notional_usd, "rotate_buy", "rotate"):
+                return
             args = OrderArgs(price=buy_price, size=shares, side=BUY, token_id=token_id)
             signed = self.trader.client.create_order(args, options)
             resp = self.trader.client.post_order(signed, OrderType.GTC)
             oid = resp.get("orderID", "")
             if oid:
-                state.early_dca_orders.append({"order_id": oid, "price": buy_price, "size": proceeds, "side": "rotate"})
+                state.early_dca_orders.append(
+                    self._build_v2_tracked_order(
+                        order_id=oid,
+                        actual_shares=shares,
+                        actual_price=buy_price,
+                        actual_notional_usd=actual_notional_usd,
+                        target_size=proceeds,
+                        side="rotate",
+                    )
+                )
                 logger.info("early_rotate_buy", asset=state.asset, slug=pos["slug"],
-                            price=buy_price, proceeds=round(proceeds, 2), shares=shares,
+                            actual_price=buy_price, actual_notional_usd=round(actual_notional_usd, 2),
+                            target_size=round(proceeds, 2), actual_shares=shares,
                             potential_payout=round(shares * 1.0, 2), order_id=oid[:16])
             else:
+                self._release_v2_budget(state, actual_notional_usd, "rotate_no_order_id", "rotate")
                 logger.warning("early_rotate_buy_failed", resp=str(resp)[:80])
         except Exception as e:
+            self._release_v2_budget(state, actual_notional_usd, "rotate_post_error", "rotate")
             logger.warning("early_rotate_buy_error", error=str(e)[:80])
 
     async def _early_cancel_unfilled(self, state: AssetState):
@@ -1597,6 +2215,12 @@ class TradingLoop:
                 try:
                     self.trader.client.cancel(oid)
                     cancelled += 1
+                    if not order.get("budget_released"):
+                        release_notional = self._v2_order_reserved_remaining(order)
+                        if release_notional > 0:
+                            self._release_v2_budget(state, release_notional, "cancel", order.get("side", ""), oid)
+                        self._set_v2_order_reserved_remaining(order, 0.0)
+                        order["budget_released"] = True
                 except Exception as e:
                     logger.warning("early_cancel_error", asset=state.asset,
                                    oid=oid[:16], error=str(e)[:80])
@@ -1613,7 +2237,8 @@ class TradingLoop:
                     slug=state.early_position["slug"] if state.early_position else "",
                     cancelled=cancelled, up_shares=int(state.early_up_shares),
                     down_shares=int(state.early_down_shares),
-                    filled_usd=round(state.early_cheap_filled, 2))
+                    filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
+                    reserved_open_order_usd=self._v2_reserved_open_order_usd(state))
 
     # ── EARLY ENTRY CHECKPOINTS ──────────────────────────────────────────
     async def _early_checkpoint(self, state: AssetState, price: float, seconds_since_open: float, checkpoint: int):
@@ -1860,6 +2485,10 @@ class TradingLoop:
         state.early_status_logged = set()
         state.early_cheap_posted = 0.0
         state.early_cheap_filled = 0.0
+        state.reserved_open_order_usd = 0.0
+        state.filled_position_cost_usd = 0.0
+        state.early_reserved_notional = 0.0
+        state.early_filled_notional = 0.0
         state.early_confirm_done = False
         logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
         state.bayesian.reset(price, 0.5)
@@ -2264,7 +2893,8 @@ class TradingLoop:
         margin = round((1 - combined) * 100, 1) if 0 < combined < 1 else 0
         open_orders = len([o for o in state.early_dca_orders if not o.get("filled")])
         filled_orders = len([o for o in state.early_dca_orders if o.get("filled")])
-        fill_budget_remaining = round(max(self.settings.early_entry_max_bet - state.early_cheap_filled, 0), 2)
+        window_metrics = self._v2_window_metrics(state)
+        fill_budget_remaining = window_metrics["remaining_budget"]
         logger.info(
             "v2_status",
             asset=state.asset,
@@ -2280,6 +2910,19 @@ class TradingLoop:
             orders_posted=len(state.early_dca_orders),
             orders_filled=filled_orders,
             fill_budget_remaining=fill_budget_remaining,
+            cheap_buy_count=window_metrics["cheap_buy_count"],
+            cheap_buy_usd=window_metrics["cheap_buy_usd"],
+            percent_buys_under_0_25=window_metrics["percent_buys_under_0_25"],
+            trades_per_window=window_metrics["trades_per_window"],
+            both_sides_posted=window_metrics["both_sides_posted"],
+            both_sides_filled=window_metrics["both_sides_filled"],
+            reserved_open_order_usd=window_metrics["reserved_open_order_usd"],
+            filled_position_cost_usd=window_metrics["filled_position_cost_usd"],
+            current_filled_budget=window_metrics["current_filled_budget"],
+            current_reserved_budget=window_metrics["current_reserved_budget"],
+            current_total_budget=window_metrics["current_total_budget"],
+            remaining_budget=window_metrics["remaining_budget"],
+            max_bet_per_asset=window_metrics["max_bet_per_asset"],
         )
 
     async def _shadow_tracker_loop(self):
@@ -2400,7 +3043,13 @@ class TradingLoop:
                 "filled_orders": Decimal(str(len([o for o in state.early_dca_orders if o.get("filled")]))),
                 "main_filled": Decimal(str(round(state.early_main_filled, 2))),
                 "hedge_filled": Decimal(str(round(state.early_hedge_filled, 2))),
-                "cheap_filled": Decimal(str(round(state.early_cheap_filled, 2))),
+                "cheap_filled": Decimal(str(self._v2_filled_notional(state))),
+                "cheap_reserved": Decimal(str(self._v2_reserved_open_order_usd(state))),
+                "cheap_committed": Decimal(str(self._v2_current_total_notional(state))),
+                "reserved_open_order_usd": Decimal(str(self._v2_reserved_open_order_usd(state))),
+                "filled_position_cost_usd": Decimal(str(self._v2_filled_position_cost_usd(state))),
+                "remaining_budget": Decimal(str(self._v2_remaining_budget(state))),
+                "max_bet_per_asset": Decimal(str(self._v2_max_bet_per_asset())),
                 "has_position": 1 if pos else 0,
                 "activity": state.early_activity_log[-20:] if state.early_activity_log else [],
             }

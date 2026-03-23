@@ -4,6 +4,7 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "512",
   "memory": "1024",
+  "taskRoleArn": "arn:aws:iam::688567279867:role/polymarket-bot-task-role",
   "executionRoleArn": "arn:aws:iam::688567279867:role/ecsTaskExecutionRole",
   "containerDefinitions": [
     {
@@ -82,8 +83,56 @@
           "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:ASSETS::"
         },
         {
+          "name": "PAIRS",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:PAIRS::"
+        },
+        {
           "name": "LOG_LEVEL",
           "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:LOG_LEVEL::"
+        },
+        {
+          "name": "MAX_TRADE_USD",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:MAX_TRADE_USD::"
+        },
+        {
+          "name": "POLY_BUILDER_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:POLY_BUILDER_API_KEY::"
+        },
+        {
+          "name": "POLY_BUILDER_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:POLY_BUILDER_SECRET::"
+        },
+        {
+          "name": "POLY_BUILDER_PASSPHRASE",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:POLY_BUILDER_PASSPHRASE::"
+        },
+        {
+          "name": "EARLY_ENTRY_ENABLED",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:EARLY_ENTRY_ENABLED::"
+        },
+        {
+          "name": "EARLY_ENTRY_LGBM_THRESHOLD",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:EARLY_ENTRY_LGBM_THRESHOLD::"
+        },
+        {
+          "name": "EARLY_ENTRY_MAX_ASK",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:EARLY_ENTRY_MAX_ASK::"
+        },
+        {
+          "name": "EARLY_ENTRY_MAX_BET",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:EARLY_ENTRY_MAX_BET::"
+        },
+        {
+          "name": "OPPORTUNITY_BOT_PAUSED",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:OPPORTUNITY_BOT_PAUSED::"
+        },
+        {
+          "name": "SCENARIO_C_ENABLED",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:SCENARIO_C_ENABLED::"
+        },
+        {
+          "name": "EARLY_ENTRY_ROTATE_ENABLED",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:EARLY_ENTRY_ROTATE_ENABLED::"
         }
       ],
       "logConfiguration": {

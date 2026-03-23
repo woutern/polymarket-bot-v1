@@ -836,6 +836,8 @@ class TestEarlyEntry:
         assert s.early_entry_use_limit is True
         assert s.early_entry_limit_offset == 0.02
         assert s.early_entry_limit_wait_seconds == 8.0
+        assert s.early_entry_reprice_stale_after_seconds == 6.0
+        assert s.early_entry_reprice_price_tolerance == 0.01
         assert s.early_entry_main_pct == 0.83
         assert s.early_entry_hedge_pct == 0.17
 
@@ -876,7 +878,8 @@ class TestEarlyEntry:
         from polybot.core.loop import TradingLoop
         import inspect
         source = inspect.getsource(TradingLoop._v2_accumulate_cheap)
-        assert "early_cheap_filled" in source
+        assert "actual_notional_usd" in source
+        assert "reserved_open_order_usd" in source
         assert "max_bet_per_asset" in source
 
     def test_independent_dedup(self):

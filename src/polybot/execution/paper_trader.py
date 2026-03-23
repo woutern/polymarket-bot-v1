@@ -16,6 +16,67 @@ from polybot.strategy.sizing import compute_size
 logger = structlog.get_logger()
 
 
+class PaperOrderClient:
+    """Minimal in-memory order client for V2 paper-mode verification."""
+
+    _TERMINAL_STATUSES = {"MATCHED", "FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"}
+
+    def __init__(self):
+        self.orders: dict[str, dict] = {}
+        self._next_order_num = 0
+
+    def create_order(self, args, options):
+        return {"args": args, "options": options}
+
+    def post_order(self, signed, order_type):
+        args = signed["args"]
+        self._next_order_num += 1
+        order_id = f"paper_{self._next_order_num:08d}"
+        self.orders[order_id] = {
+            "status": "LIVE",
+            "price": float(args.price),
+            "shares": float(args.size),
+            "token_id": args.token_id,
+            "side": args.side,
+            "order_type": getattr(order_type, "value", str(order_type)),
+            "size_matched": "0",
+        }
+        return {"orderID": order_id, "success": True, "status": "LIVE"}
+
+    def get_order(self, order_id: str):
+        order = self.orders.get(order_id)
+        if not order:
+            return {"status": "UNKNOWN"}
+        resp = {"status": order["status"]}
+        if float(order.get("size_matched", "0") or 0) > 0:
+            resp["size_matched"] = str(order["size_matched"])
+        return resp
+
+    def cancel(self, order_id: str):
+        order = self.orders.get(order_id)
+        if not order:
+            return {"success": False, "status": "UNKNOWN"}
+        status = str(order.get("status", "")).upper()
+        if status not in self._TERMINAL_STATUSES:
+            order["status"] = "CANCELED"
+        return {"success": True, "status": order["status"]}
+
+    def cancel_order(self, order_id: str):
+        return self.cancel(order_id)
+
+    def cancel_orders(self, order_ids: list[str]):
+        for order_id in order_ids:
+            self.cancel(order_id)
+        return {"success": True}
+
+    def mark_filled(self, order_id: str, shares: int):
+        order = self.orders.get(order_id)
+        if not order:
+            return
+        order["status"] = "FILLED"
+        order["size_matched"] = str(shares)
+
+
 class PaperTrader:
     """Simulates trade execution using orderbook data.
 
@@ -27,6 +88,7 @@ class PaperTrader:
         self.risk = risk
         self.db = db
         self.open_positions: list[TradeRecord] = []
+        self.client = PaperOrderClient()
 
     async def execute(self, signal: Signal, signal_ms: float = 0, bedrock_ms: float = 0) -> TradeRecord | None:
         """Execute a paper trade from a signal."""

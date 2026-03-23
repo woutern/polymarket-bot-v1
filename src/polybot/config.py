@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     early_entry_rotate_enabled: bool = False  # Stop-and-rotate: sell → buy back cheap on same side
     early_entry_rotate_max_ask: float = 0.25  # Only rotate/accumulate if ask < 25¢
     early_entry_cheap_buy_size: float = 2.00  # Size per cheap-side limit order
+    early_entry_reprice_stale_after_seconds: float = 6.0  # recycle stale accum orders after 2 ticks
+    early_entry_reprice_price_tolerance: float = 0.01  # keep orders within 1 tick of desired ladder
 
     # Per-asset move thresholds (T+2s-T+15s early entry with quality filters)
     min_move_btc_5m: float = 0.02   # BTC 5m: lowered to see more signals
