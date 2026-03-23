@@ -4,7 +4,7 @@ Algorithmic trading system for Polymarket prediction markets.
 
 **Status:** Deployed on AWS ECS (eu-west-1)
 **Dashboard:** https://d2rj5lnnfnptd.cloudfront.net/
-**Tests:** 639 passing
+**Tests:** 641 passing
 **V2 both-sides:** gated by `EARLY_ENTRY_ENABLED=true` and pair-level `PAIRS`
 
 ## Three Trading Strategies
@@ -21,7 +21,9 @@ Current live focus is `BTC_5m`, with other pairs enabled only after pair-specifi
 - **Phase 2 — Main deploy (T+15s to T+180s):** accumulate both sides, recycle selectively
   - smooth budget curve ramps from 10% to 82% of budget by `T+180`
   - confidence scaling reduces spend in weak windows and allows fuller deployment in stronger ones
+  - very strong windows (`abs(prob_up - 0.50) >= 0.20`) can use a small global budget bump
   - strong windows can top up the favored side more aggressively, but only if the projected position still has non-negative model-weighted EV
+  - favored-side budget can borrow from the unfavored side when the signal is strong and the favored side is not already clearly ahead in shares
   - limited sell-and-recycle can start at `T+45` when inventory above the payout floor can be sold at a favorable bid
 - **Phase 3 — Buy-only (T+180s to T+250s):**
   - frozen allocation split
@@ -114,7 +116,7 @@ Deployments use `scripts/deploy_aws.sh`, which now registers a fresh ECS task de
 
 ```bash
 # Local development
-uv run pytest tests/          # 639 tests
+uv run pytest tests/          # 641 tests
 uv run python scripts/run.py  # Start 5min bot
 
 # Deploy to AWS
