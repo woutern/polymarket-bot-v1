@@ -4,36 +4,44 @@ Algorithmic trading system for Polymarket prediction markets.
 
 **Status:** Deployed on AWS ECS (eu-west-1)
 **Dashboard:** https://d2rj5lnnfnptd.cloudfront.net/
-**Tests:** 620 passing
+**Tests:** 635 passing
 **V2 both-sides:** gated by `EARLY_ENTRY_ENABLED=true` and pair-level `PAIRS`
 
 ## Three Trading Strategies
 
-### 1. V2 Both-Sides (K9-style, gated rollout)
-Modelled on K9 trader: 13.4% ROI, 69% GP rate across 3,500 real trades.
+### 1. V2 Both-Sides (profile-driven 5m engine)
+Current live focus is `BTC_5m`, with other pairs enabled only after pair-specific tuning.
 
-- **Scope:** 5-minute windows only, enabled per pair via `PAIRS` and currently used for controlled early-entry rollout
-- **Phase 1 — Open (T+5s):** post GTC main + hedge orders after the book forms
-  - Executable size is based on whole shares with a 5-share minimum
-  - Every post logs `actual_notional_usd` and `actual_shares`
-- **Phase 2 — Confirm (T+15–20s):** rerun LightGBM
-  - If direction flips, swap main/hedge labels and continue accumulating on the new side
-  - If direction confirms, post one more main-side GTC sized at 20% of per-asset budget
-- **Phase 3 — Accumulate (every 3s, T+5s to T+270s):** maintain GTC ladders on both sides
-  - `bid <= 0.15`: 9 levels `[0,1,2,3,4,5,6,7,8¢]` at `$0.35` target size
-  - `0.15 < bid <= 0.35`: 7 levels `[0,1,2,3,4,5,6¢]` at `$0.25`
-  - `0.35 < bid <= 0.60`: 5 levels `[0,1,2,3,5¢]` at `$0.20`
-  - `bid > 0.60`: 3 levels `[0,1,3¢]` at `$0.15`
-- **Active order recycling / repricing:** every accumulation tick inspects open orders on both sides
-  - Stale orders are cancelled when they are older than `early_entry_reprice_stale_after_seconds` (default `6s`) and no longer within `early_entry_reprice_price_tolerance` (default `1c`) of the desired ladder
-  - Cancelled orders release reserved budget immediately and the ladder is reposted at current prices
-  - Key logs: `stale_order_cancelled`, `budget_released`, `repriced_order_posted`, `v2_reprice_cycle`
-- **Budget / accounting:** the hard cap is based on executable USD notional, not share count
+- **Scope:** 5-minute windows only for the current V2 rollout, enabled per pair via `PAIRS`
+- **Cadence:** evaluate every 1s, but only trade when budget, pair-quality, and stale-order rules allow
+- **Phase 1 — Open (T+5s to T+15s):** small two-sided open
+  - uses 10% of per-window budget
+  - model drives split (`80/20` to `50/50`)
+  - executable size is based on whole shares with a 5-share minimum
+- **Phase 2 — Main deploy (T+15s to T+180s):** accumulate both sides, recycle selectively
+  - smooth budget curve ramps from 10% to 82% of budget by `T+180`
+  - confidence scaling reduces spend in weak windows and allows fuller deployment in stronger ones
+  - limited sell-and-recycle can start at `T+45` when inventory above the payout floor can be sold at a favorable bid
+- **Phase 3 — Buy-only (T+180s to T+250s):**
+  - frozen allocation split
+  - no more sells
+  - only passive adds if they pass pair-quality guards
+- **Phase 4 — Commit/Hold (T+250s to resolution):**
+  - cancel unfilled GTC orders
+  - hold remaining inventory to market resolution
+- **Active order recycling / repricing:**
+  - open orders are inspected every tick
+  - stale orders are cancelled after `early_entry_reprice_stale_after_seconds` (default `6s`) if they are no longer within `early_entry_reprice_price_tolerance` (default `1c`) of desired prices
+  - cancelled orders release reserved budget immediately
+- **Pair-quality guards:**
+  - rich-side buys are capped later in the window
+  - incomplete pairs do not keep averaging the filled side while the missing side drifts expensive
+  - new adds are blocked when projected `combined_avg` / payout-floor pressure would worsen a bad state
+- **Budget / accounting:** all risk is based on executable USD notional, never on target size alone
   - `actual_notional_usd = actual_shares * actual_price`
   - `reserved_open_order_usd + filled_position_cost_usd + new_actual_notional_usd <= $50` per asset per window
-  - Open-order reserve is released on fill, cancel, reject, and expiry
+  - reserve is released on fill, cancel, reject, timeout, and commit
 - **Paper verification path:** paper mode exposes an in-memory order client so V2 can exercise post/fill/cancel/release accounting without real-money execution
-- **Sell-rotate:** still optional and gated by `EARLY_ENTRY_ROTATE_ENABLED`; not part of the repricing patch
 
 ### 2. 5-Minute Crypto Bot (Scenario C, paused)
 - Trades BTC/SOL 5-minute Up/Down windows
@@ -62,7 +70,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete system diagram.
 | Bot | ECS Fargate, eu-west-1 |
 | Dashboard | Lambda + CloudFront, eu-west-1 |
 | Storage | DynamoDB, eu-west-1 |
-| Models | S3 eu-west-1 (LightGBM BTC/SOL, trained on 22K windows) |
+| Models | S3 eu-west-1 (LightGBM BTC/ETH/SOL live-loaded for 5m; retrain pipeline also supports XRP_5m) |
 | AI | Bedrock (Haiku + Sonnet 4), eu-west-1 |
 | Secrets | AWS Secrets Manager, eu-west-1 |
 
@@ -75,7 +83,10 @@ Deployments use `scripts/deploy_aws.sh`, which now registers a fresh ECS task de
 | V2 per-asset notional cap | $50/window based on executable USD notional (`reserved_open_order_usd + filled_position_cost_usd`) |
 | V2 open position | 70/30 to 50/50 main/hedge split (LGBM-driven) |
 | V2 accounting basis | `actual_notional_usd = actual_shares * actual_price`, never raw target USD or share count |
-| V2 stale repricing | every 3s tick, stale after 6s by default, 1c price tolerance |
+| V2 stale repricing | every 1s tick, stale after 6s by default, 1c price tolerance |
+| V2 recycle start | T+45s, payout-floor driven |
+| V2 buy-only phase | T+180s–T+250s |
+| V2 commit | T+250s |
 | V2 stop-loss | Only entries > 40¢ down > 25%, T+30–240s only |
 | V2 winning side gate | bid > 0.60 accumulation blocked before T+60s |
 | Max bet (5min bot) | $10 peak / $5 weak+weekend |
@@ -100,7 +111,7 @@ Deployments use `scripts/deploy_aws.sh`, which now registers a fresh ECS task de
 
 ```bash
 # Local development
-uv run pytest tests/          # 620 tests
+uv run pytest tests/          # 635 tests
 uv run python scripts/run.py  # Start 5min bot
 
 # Deploy to AWS
@@ -111,12 +122,36 @@ bash scripts/deploy_dashboard_lambda.sh  # Dashboard (Lambda)
 PYTHONPATH=src uv run python scripts/opportunity_bot.py
 ```
 
+## Roadmap / TODO
+
+### Immediate
+- Keep refining `BTC_5m` as the control profile until live windows are consistently sane
+- Tighten payout-floor-based recycle rules without reintroducing churn
+- Keep weak/sideways windows small and deploy harder only in strong mid-window setups
+- Fix runtime Secrets Manager refresh permissions so `EARLY_ENTRY_ENABLED=false` can finish the current window and skip the next one reliably
+
+### Next 5m rollout
+- Add per-pair strategy profiles instead of assuming one `5m` parameter set works everywhere
+- Enable `ETH_5m` after `BTC_5m` is stable
+- Tune `SOL_5m` separately with a smaller open and stricter rich-side caps
+- Wire live `XRP_5m` model loading so `XRP_5m` does not fall back to neutral predictions
+
+### Later timeframes
+- Add a separate `1h` profile: small open, gradual two-sided accumulation, no selling, late commit
+- Add a separate `15m` profile after `5m` and `1h` are stable
+- Keep the execution engine shared, but tune budget curve, rich-side caps, recycle rules, and timing per pair/timeframe
+
+### Infra / data
+- Reduce Docker image size and speed up ECS rollout times
+- Prevent overlapping service deployments/tasks during live rollouts
+- Expand V2 structured logging so post-trade analysis can compare fill quality and payout-floor pressure by pair/profile
+
 ## Tech Stack
 
 - Python 3.12, asyncio, uv
 - py-clob-client (Polymarket CLOB SDK)
 - Coinbase WebSocket (250ms price ticks)
-- LightGBM (per-pair classifiers, trained on 22K Jon-Becker windows, AUC 0.73/0.77)
+- LightGBM (per-pair classifiers, trained on 22K+ Jon-Becker/live windows)
 - AWS: ECS, DynamoDB, Bedrock (Haiku + Sonnet 4), Lambda, CloudFront, Secrets Manager
 - structlog (JSON logging → CloudWatch)
 - Auto-retrain every 4h (Jon-Becker base + live windows, AUC quality gate)
