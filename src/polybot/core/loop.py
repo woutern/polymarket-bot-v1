@@ -587,12 +587,36 @@ class TradingLoop:
             return float(value)
         return default
 
+    def _v2_open_budget_pct(self) -> float:
+        return 0.10
+
+    def _v2_sell_start_seconds(self) -> float:
+        return 60.0
+
+    def _v2_buy_only_start_seconds(self) -> float:
+        return 180.0
+
+    def _v2_commit_start_seconds(self) -> float:
+        return 250.0
+
+    def _v2_sell_cooldown_seconds(self) -> float:
+        return 30.0
+
     def _v2_budget_curve_pct(self, seconds_since_open: float) -> float:
-        """Start from the open-phase allocation, then unlock smoothly through T+180."""
+        """Small open, main deployment mid-window, tight late-window add-on."""
+        open_pct = self._v2_open_budget_pct()
         if seconds_since_open <= 5:
-            return 0.15
-        progress = min(max(seconds_since_open - 5.0, 0.0) / 175.0, 1.0)
-        return round(min(0.15 + (0.75 * progress), 0.90), 4)
+            return open_pct
+        if seconds_since_open <= 60:
+            progress = (seconds_since_open - 5.0) / 55.0
+            return round(open_pct + (0.15 * progress), 4)  # 10% → 25%
+        if seconds_since_open <= 180:
+            progress = (seconds_since_open - 60.0) / 120.0
+            return round(0.25 + (0.60 * progress), 4)  # 25% → 85%
+        if seconds_since_open <= 250:
+            progress = (seconds_since_open - 180.0) / 70.0
+            return round(0.85 + (0.05 * progress), 4)  # 85% → 90%
+        return 0.90
 
     def _v2_reprice_stale_after_seconds(self) -> float:
         value = self._v2_setting_float("early_entry_reprice_stale_after_seconds", 6.0)
@@ -764,6 +788,14 @@ class TradingLoop:
             "remaining_budget": self._v2_remaining_budget(state),
             "max_bet_per_asset": self._v2_max_bet_per_asset(),
         }
+
+    def _v2_side_committed_usd(self, state: AssetState, side_up: bool) -> float:
+        filled = state.early_up_cost if side_up else state.early_down_cost
+        reserved = 0.0
+        for order in self._v2_open_orders(state):
+            if self._v2_order_direction(state, order) is side_up:
+                reserved += self._v2_order_reserved_remaining(order)
+        return round(filled + reserved, 2)
 
     def _reserve_v2_budget(self, state: AssetState, actual_notional_usd: float, context: str, side: str) -> bool:
         max_bet_per_asset = self._v2_max_bet_per_asset()
@@ -1680,9 +1712,9 @@ class TradingLoop:
         else:
             up_pct, down_pct = 0.20, 0.80
 
-        # Open uses 15% of max budget (budget curve starts at ~7.5% at T+5)
+        # Open uses a small starter allocation. Most capital deploys mid-window.
         max_bet = self._v2_max_bet_per_asset()
-        open_budget = round(max_bet * 0.15, 2)
+        open_budget = round(max_bet * self._v2_open_budget_pct(), 2)
         up_size = round(open_budget * up_pct, 2)
         down_size = round(open_budget * down_pct, 2)
 
@@ -2013,13 +2045,13 @@ class TradingLoop:
     # ── V2 UNIFIED EXECUTION TICK ────────────────────────────────────────────
 
     async def _v2_execution_tick(self, state: AssetState, price: float, seconds_since_open: float):
-        """K9-style both-sides execution with sell-and-recover.
+        """5m execution split into open, main deploy, buy-only late phase, and hold.
 
-        Phases (per tick):
-        1. Model → allocation split (both sides always get orders)
-        2. Accumulate: buy both sides, model-weighted, hard cap $0.90
-        3. Sell-and-recover: sell heavy side to equalize share count (T+60-180)
-        4. Commit at T+180: cancel all, hold to resolution
+        Phases:
+        1. T+5-60: small open + light follow-up
+        2. T+60-180: main deployment + limited sell-and-recover
+        3. T+180-250: buy-only, frozen split, no sells
+        4. T+250+: commit/hold
         """
         pos = state.early_position
         if not pos or not self._v2_order_execution_enabled():
@@ -2089,8 +2121,29 @@ class TradingLoop:
         else:
             up_pct, down_pct = 0.20, 0.80
 
-        # ── 2. COMMITMENT CHECK (T >= 180) ────────────────────────────────
-        if seconds_since_open >= 180:
+        buy_only_start = self._v2_buy_only_start_seconds()
+        commit_start = self._v2_commit_start_seconds()
+
+        if seconds_since_open >= buy_only_start:
+            if "late_phase_up_pct" not in pos:
+                pos["late_phase_prob_up"] = prob_up
+                pos["late_phase_up_pct"] = up_pct
+                pos["late_phase_down_pct"] = down_pct
+                logger.info(
+                    "v2_buy_only_mode_entered",
+                    asset=state.asset,
+                    seconds=int(seconds_since_open),
+                    prob_up=round(prob_up, 3),
+                    up_pct=up_pct,
+                    down_pct=down_pct,
+                )
+            else:
+                prob_up = pos.get("late_phase_prob_up", prob_up)
+                up_pct = pos.get("late_phase_up_pct", up_pct)
+                down_pct = pos.get("late_phase_down_pct", down_pct)
+
+        # ── 2. COMMITMENT CHECK (T >= 250) ────────────────────────────────
+        if seconds_since_open >= commit_start:
             cancel_fn = self._v2_cancel_client()
             cancelled = 0
             for order in list(self._v2_open_orders(state)):
@@ -2133,7 +2186,8 @@ class TradingLoop:
 
         desired_prices_by_side: dict[str, list[float]] = {"UP": [], "DOWN": []}
 
-        base_offsets = [0.00, 0.01, 0.02]
+        late_buy_only = seconds_since_open >= buy_only_start
+        base_offsets = [0.01, 0.03] if late_buy_only else [0.00, 0.01, 0.02]
         hard_cap_skipped = 0
         for side_up, token_id, bid, side_budget, pct in [
             (True, window.yes_token_id, yes_bid, 0.0, up_pct),
@@ -2146,6 +2200,8 @@ class TradingLoop:
                 continue
             side = "UP" if side_up else "DOWN"
             levels = 3 if pct >= 0.70 else (2 if pct >= 0.50 else 1)
+            if late_buy_only:
+                levels = min(levels, len(base_offsets))
             desired_prices: list[float] = []
             for offset in base_offsets[:levels]:
                 post_price = round(bid - offset, 2)
@@ -2161,9 +2217,20 @@ class TradingLoop:
             desired_prices_by_side,
         )
 
-        # ── 5. ACCUMULATE BOTH SIDES (model-weighted) ────────────────────
+        # ── 5. ACCUMULATE BOTH SIDES (model-weighted, cumulative side targets) ──
         remaining = self._v2_remaining_budget(state)
         usable = min(remaining, budget_curve_remaining)
+        target_up_usd = round(max_deploy_usd * up_pct, 2)
+        target_down_usd = round(max_deploy_usd * down_pct, 2)
+        current_up_committed = self._v2_side_committed_usd(state, True)
+        current_down_committed = self._v2_side_committed_usd(state, False)
+        up_budget = max(round(target_up_usd - current_up_committed, 2), 0.0)
+        down_budget = max(round(target_down_usd - current_down_committed, 2), 0.0)
+        deficit_total = round(up_budget + down_budget, 2)
+        if deficit_total > usable > 0:
+            scale = usable / deficit_total
+            up_budget = round(up_budget * scale, 2)
+            down_budget = round(down_budget * scale, 2)
 
         from py_clob_client.clob_types import CreateOrderOptions
         options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
@@ -2171,9 +2238,6 @@ class TradingLoop:
 
         posted_up = 0
         posted_down = 0
-
-        up_budget = usable * up_pct
-        down_budget = usable * down_pct
 
         for side_up, token_id, bid, side_budget, pct in [
             (True, window.yes_token_id, yes_bid, up_budget, up_pct),
@@ -2185,6 +2249,8 @@ class TradingLoop:
                 continue
             side = "UP" if side_up else "DOWN"
             levels = 3 if pct >= 0.70 else (2 if pct >= 0.50 else 1)
+            if late_buy_only:
+                levels = min(levels, len(base_offsets))
 
             for offset in base_offsets[:levels]:
                 post_price = round(bid - offset, 2)
@@ -2214,7 +2280,7 @@ class TradingLoop:
                 except Exception:
                     self._release_v2_budget(state, notional, "exec_post_error", side)
 
-        # ── 6. SELL-AND-RECOVER (T+60 to T+180) ─────────────────────────
+        # ── 6. SELL-AND-RECOVER (T+60 to T+180 only) ────────────────────
         # Sell the heavy side to equalize share count. Recovers capital.
         sell_fired = False
         sell_reason = ""
@@ -2223,9 +2289,13 @@ class TradingLoop:
         combined_avg = (up_avg + dn_avg) if (state.early_up_shares > 0 and state.early_down_shares > 0) else 0
 
         last_sell_ts = getattr(state, "v2_last_sell_ts", 0.0)
-        sell_cooldown_ok = (time.time() - last_sell_ts) >= 15 if last_sell_ts > 0 else True
+        sell_cooldown_ok = (
+            (time.time() - last_sell_ts) >= self._v2_sell_cooldown_seconds()
+            if last_sell_ts > 0
+            else True
+        )
 
-        if sell_cooldown_ok and 60 <= seconds_since_open < 180:
+        if sell_cooldown_ok and self._v2_sell_start_seconds() <= seconds_since_open < buy_only_start:
             heavy_side_up = None
 
             if state.early_up_shares > state.early_down_shares * 1.2 and state.early_up_shares > 10:
