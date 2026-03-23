@@ -591,7 +591,7 @@ class TradingLoop:
         return 0.10
 
     def _v2_sell_start_seconds(self) -> float:
-        return 60.0
+        return 45.0
 
     def _v2_buy_only_start_seconds(self) -> float:
         return 180.0
@@ -621,11 +621,11 @@ class TradingLoop:
         """Spend less when the model edge is weak; neutral windows should stay small."""
         edge = round(abs(prob_up - 0.50), 3)
         if edge < 0.03:
-            return 0.30
+            return 0.35
         if edge < 0.06:
-            return 0.55
+            return 0.65
         if edge < 0.10:
-            return 0.75
+            return 0.85
         return 1.00
 
     def _v2_pair_risk_limits(self, prob_up: float) -> tuple[float, float]:
@@ -678,14 +678,14 @@ class TradingLoop:
             return open_pct
         if seconds_since_open <= 60:
             progress = (seconds_since_open - 5.0) / 55.0
-            return round(open_pct + (0.08 * progress), 4)  # 10% → 18%
+            return round(open_pct + (0.12 * progress), 4)  # 10% → 22%
         if seconds_since_open <= 180:
             progress = (seconds_since_open - 60.0) / 120.0
-            return round(0.18 + (0.57 * progress), 4)  # 18% → 75%
+            return round(0.22 + (0.60 * progress), 4)  # 22% → 82%
         if seconds_since_open <= 250:
             progress = (seconds_since_open - 180.0) / 70.0
-            return round(0.75 + (0.15 * progress), 4)  # 75% → 90%
-        return 0.90
+            return round(0.82 + (0.10 * progress), 4)  # 82% → 92%
+        return 0.92
 
     def _v2_reprice_stale_after_seconds(self) -> float:
         value = self._v2_setting_float("early_entry_reprice_stale_after_seconds", 6.0)
