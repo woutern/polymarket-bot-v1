@@ -854,7 +854,7 @@ class TestEarlyEntry:
         import inspect
         source = inspect.getsource(TradingLoop._tick_asset)
         assert "early_entry_enabled" in source
-        assert "_v2_accumulate_cheap" in source
+        assert "_v2_execution_tick" in source or "_v2_accumulate_cheap" in source
         assert "early_accum_ticks" in source
 
     def test_early_entry_fires_on_lgbm_above_gate(self):
@@ -890,12 +890,11 @@ class TestEarlyEntry:
         assert "early_entry_traded" in source
 
     def test_size_from_config(self):
-        """V2 per-asset budget is derived from early_entry_max_bet / num_assets."""
+        """V2 per-asset budget is derived from max_bet_per_asset."""
         from polybot.core.loop import TradingLoop
         import inspect
         source = inspect.getsource(TradingLoop._v2_open_position)
-        assert "early_entry_max_bet" in source
-        assert "num_5m_assets" in source
+        assert "_v2_max_bet_per_asset" in source or "early_entry_max_bet" in source
 
     def test_limit_order_with_fallback(self):
         """V2 open position posts two GTC orders (main + hedge)."""

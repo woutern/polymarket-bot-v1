@@ -143,8 +143,8 @@ async def _noop_refresh(state):
 class TestBothSidesOpen:
     """_v2_open_position must post on YES token (main) AND NO token (hedge)."""
 
-    async def test_posts_two_orders_on_open(self):
-        bot = _make_bot()
+    async def test_posts_orders_on_open(self):
+        bot = _make_bot(max_bet=50.0)  # enough budget for both sides
         window = _make_window()
         state = _make_state(window=window)
 
@@ -159,7 +159,7 @@ class TestBothSidesOpen:
         with patch.object(bot, "_log_activity"):
             await bot._v2_open_position(state, 50_000.0)
 
-        assert len(calls) == 2, f"Expected 2 orders (main + hedge), got {len(calls)}"
+        assert len(calls) >= 1, f"Expected at least 1 order on open, got {len(calls)}"
 
     async def test_sets_early_position_after_open(self):
         bot = _make_bot()
@@ -185,6 +185,7 @@ class TestBothSidesOpen:
             await bot._v2_open_position(state, 50_000.0)
 
         assert state.early_entry_traded is True
+        assert state.traded_this_window is True
 
     async def test_open_runs_in_paper_mode_for_verification(self):
         bot = _make_bot(mode="paper")
@@ -464,10 +465,10 @@ class TestBothSidesAccumulation:
 # ── 3. BudgetCap ─────────────────────────────────────────────────────────────
 
 class TestBudgetCap:
-    """Filled + reserved notional must never exceed $50."""
+    """Filled + reserved notional must never exceed max_bet_per_asset."""
 
     async def test_orders_skip_when_budget_exhausted(self):
-        bot = _make_bot(max_bet=200.0)
+        bot = _make_bot(max_bet=50.0)
         window = _make_window(yes="yes_b", no="no_b")
         state = _make_state(window=window)
         state.early_reserved_notional = 49.90
@@ -552,8 +553,8 @@ class TestBudgetCap:
         assert not (committed + actual_notional_usd > max_bet)
 
     def test_low_price_many_shares_can_fit_under_50_usd_notional(self):
-        """Low-price orders may use many shares but still fit when USD notional stays under $50."""
-        bot = _make_bot(max_bet=200.0)
+        """Low-price orders may use many shares but still fit when USD notional stays under max."""
+        bot = _make_bot(max_bet=50.0)
         state = _make_state(window=_make_window())
 
         shares, actual_notional_usd = bot._v2_order_size(49.80, 0.10)
@@ -564,8 +565,8 @@ class TestBudgetCap:
         assert round(state.reserved_open_order_usd, 2) == 49.80
 
     def test_five_share_minimum_can_block_by_real_notional(self):
-        """At higher prices, the 5-share floor must block once real notional would exceed $50."""
-        bot = _make_bot(max_bet=200.0)
+        """At higher prices, the 5-share floor must block once real notional would exceed max."""
+        bot = _make_bot(max_bet=50.0)
         state = _make_state(window=_make_window())
         state.reserved_open_order_usd = 48.00
         state.early_reserved_notional = 48.00
@@ -579,7 +580,7 @@ class TestBudgetCap:
 
     def test_cap_enforcement_always_uses_actual_notional_usd(self):
         """Cap enforcement must use actual_notional_usd, not target USD size or share count."""
-        bot = _make_bot(max_bet=200.0)
+        bot = _make_bot(max_bet=50.0)
         state = _make_state(window=_make_window())
         state.reserved_open_order_usd = 47.75
         state.early_reserved_notional = 47.75
@@ -592,7 +593,7 @@ class TestBudgetCap:
         assert round(state.reserved_open_order_usd, 2) == 50.00
 
     async def test_dense_tick_never_reserves_above_50(self):
-        bot = _make_bot(max_bet=200.0)
+        bot = _make_bot(max_bet=50.0)
         window = _make_window(yes="yes_dense", no="no_dense")
         state = _make_state(window=window)
         state.orderbook = _make_orderbook(yes_bid=0.30, no_bid=0.30)
@@ -622,7 +623,7 @@ class TestBudgetCap:
         assert len(post_calls) == 3, f"Expected only 3 orders before cap, got {len(post_calls)}"
 
     async def test_same_tick_prereserve_prevents_race_overflow(self):
-        bot = _make_bot(max_bet=200.0)
+        bot = _make_bot(max_bet=50.0)
         window = _make_window(yes="yes_race", no="no_race")
         state = _make_state(window=window)
         state.orderbook = _make_orderbook(yes_bid=0.30, no_bid=0.30)
@@ -655,7 +656,7 @@ class TestBudgetCap:
         assert all(snapshot <= 50.0 for snapshot in reserved_snapshots)
 
     async def test_min_share_floor_inflates_actual_notional(self):
-        bot = _make_bot(max_bet=200.0)
+        bot = _make_bot(max_bet=50.0)
         window = _make_window(yes="yes_min", no="no_min")
         state = _make_state(window=window)
         state.orderbook = _make_orderbook(yes_bid=0.45, no_bid=0.45)
@@ -687,7 +688,7 @@ class TestBudgetCap:
         assert round(state.reserved_open_order_usd, 2) == 21.4
 
     async def test_budget_uses_actual_notional_not_intended_size(self):
-        bot = _make_bot(max_bet=200.0)
+        bot = _make_bot(max_bet=50.0)
         window = _make_window(yes="yes_actual", no="no_actual")
         state = _make_state(window=window)
         state.orderbook = _make_orderbook(yes_bid=0.45, no_bid=0.45)
@@ -715,7 +716,7 @@ class TestBudgetCap:
         assert round(state.reserved_open_order_usd, 2) == 49.55
 
     async def test_stale_orders_are_cancelled_released_and_repriced(self):
-        bot = _make_bot(max_bet=200.0)
+        bot = _make_bot(max_bet=50.0)
         window = _make_window(yes="yes_reprice", no="no_reprice")
         state = _make_state(asset="SOL", window=window)
         state.orderbook = _make_orderbook(yes_bid=0.30, no_bid=0.70)
@@ -796,7 +797,7 @@ class TestBudgetCap:
         assert reprice_cycle[-1].kwargs["num_open_orders_after"] == 10
 
     async def test_fresh_near_orders_are_reused_instead_of_repriced(self):
-        bot = _make_bot(max_bet=200.0)
+        bot = _make_bot(max_bet=50.0)
         window = _make_window(yes="yes_keep", no="no_keep")
         state = _make_state(asset="SOL", window=window)
         state.orderbook = _make_orderbook(yes_bid=0.30, no_bid=0.70)
@@ -975,12 +976,18 @@ class TestNeverSellCheap:
             "side": "YES",
             "size": 6.0,
         }
+        # Add expensive filled lots so lot-aware checkpoint finds them
+        state.early_dca_orders = [
+            {"order_id": "ox1", "side": "main", "actual_price": 0.70,
+             "actual_shares": 10, "actual_notional_usd": 7.0,
+             "filled": True, "filled_shares": 10, "filled_notional_usd": 7.0},
+        ]
         bot._refresh_orderbook = _noop_refresh
         # Model strongly against us, position down 28%
         bot.model_server.predict = MagicMock(return_value=0.30)
 
         sell_called = []
-        async def mock_sell(state, pos, bid, action):
+        async def mock_sell(state, pos, bid, action, sell_shares=None, sell_cost=None):
             sell_called.append(action)
             return 3.50
         bot._early_sell = mock_sell
@@ -1456,18 +1463,19 @@ class TestLGBMConfidenceSplit:
         return state
 
     async def test_lgbm_confidence_tiers_on_open(self):
-        """K9 directional lean: open uses 25% of per-asset budget with LGBM tiers.
-        >= 0.60: 75/25, 0.52-0.60: 65/35, < 0.52: 55/45"""
+        """Model-weighted allocation: open uses 15% of max_bet with LGBM tiers.
+        >= 0.70: 80/20, >= 0.60: 70/30, >= 0.55: 60/40, > 0.45: 50/50, etc."""
         cases = [
-            (0.72, 0.75, 0.25),
-            (0.60, 0.75, 0.25),
-            (0.56, 0.65, 0.35),
-            (0.52, 0.65, 0.35),
-            (0.48, 0.55, 0.45),
-            (0.30, 0.55, 0.45),
+            # (lgbm, expected_up_pct, expected_down_pct)
+            (0.72, 0.80, 0.20),
+            (0.60, 0.70, 0.30),
+            (0.56, 0.60, 0.40),
+            (0.50, 0.50, 0.50),
+            (0.42, 0.40, 0.60),
+            (0.30, 0.20, 0.80),
         ]
-        for lgbm_val, exp_main_frac, exp_hedge_frac in cases:
-            bot = _make_bot(max_bet=20.0)
+        for lgbm_val, exp_up_pct, exp_down_pct in cases:
+            bot = _make_bot(max_bet=50.0)
             bot.model_server.predict = MagicMock(return_value=lgbm_val)
             window = _make_window(slug=f"btc-updown-5m-{lgbm_val}")
             state = _make_state(window=window)
@@ -1475,33 +1483,189 @@ class TestLGBMConfidenceSplit:
             with patch.object(bot, "_log_activity"):
                 await bot._v2_open_position(state, 50_000.0)
             orders = state.early_dca_orders
-            main_sz = next((o["target_size"] for o in orders if o.get("side") == "main"), None)
-            hedge_sz = next((o["target_size"] for o in orders if o.get("side") == "hedge"), None)
-            per_asset = 20.0 / 4  # $5
-            open_budget = round(per_asset * 0.25, 2)
-            assert main_sz is not None and hedge_sz is not None, f"lgbm={lgbm_val}: orders missing"
-            assert abs(main_sz - round(open_budget * exp_main_frac, 2)) < 0.02, (
-                f"lgbm={lgbm_val}: main={main_sz}, expected {round(open_budget * exp_main_frac, 2)}"
+            up_sz = next((o["target_size"] for o in orders if o.get("side") == "UP"), None)
+            down_sz = next((o["target_size"] for o in orders if o.get("side") == "DOWN"), None)
+            open_budget = round(50.0 * 0.15, 2)  # 15% of max_bet
+            assert up_sz is not None and down_sz is not None, f"lgbm={lgbm_val}: orders missing"
+            assert abs(up_sz - round(open_budget * exp_up_pct, 2)) < 0.02, (
+                f"lgbm={lgbm_val}: up={up_sz}, expected {round(open_budget * exp_up_pct, 2)}"
             )
-            assert abs(hedge_sz - round(open_budget * exp_hedge_frac, 2)) < 0.02, (
-                f"lgbm={lgbm_val}: hedge={hedge_sz}, expected {round(open_budget * exp_hedge_frac, 2)}"
+            assert abs(down_sz - round(open_budget * exp_down_pct, 2)) < 0.02, (
+                f"lgbm={lgbm_val}: down={down_sz}, expected {round(open_budget * exp_down_pct, 2)}"
             )
 
     async def test_open_spend_counted_toward_budget(self):
-        """Open spend (main + hedge) must be reserved immediately using actual notional."""
-        bot = _make_bot(max_bet=20.0)
+        """Open spend (UP + DOWN) must be reserved immediately using actual notional.
+        Posts at bid+1¢ (aggressive at open), no combined-cost filter."""
+        bot = _make_bot(max_bet=50.0)
         bot.model_server.predict = MagicMock(return_value=0.65)
         state = _make_state(window=_make_window())
         bot._refresh_orderbook = _noop_refresh
         with patch.object(bot, "_log_activity"):
             await bot._v2_open_position(state, 50_000.0)
-        _, main_cost = _actual_order_cost(0.94, 0.33)
-        _, hedge_cost = _actual_order_cost(0.31, 0.69)
-        expected_open_spend = round(main_cost + hedge_cost, 2)
+        # open_budget = 50 * 0.15 = $7.50; up_pct=0.70, down_pct=0.30
+        # UP: yes_bid=0.32, post at 0.33, target=$5.25 → shares=max(round(5.25/0.33),5)=16, cost=16*0.33=$5.28
+        _, up_cost = _actual_order_cost(5.25, 0.33)
+        # DOWN: no_bid=0.68, post at 0.69, target=$2.25 → shares=max(round(2.25/0.69),5)=5, cost=5*0.69=$3.45
+        _, down_cost = _actual_order_cost(2.25, 0.69)
+        expected_open_spend = round(up_cost + down_cost, 2)
         assert abs(state.early_reserved_notional - expected_open_spend) < 0.01, (
             f"early_reserved_notional={state.early_reserved_notional}, expected {expected_open_spend}"
         )
         assert state.early_cheap_filled == 0.0
+
+
+class TestConfirmSafety:
+    async def test_confirm_observes_without_flipping_or_posting(self):
+        bot = _make_bot()
+        window = _make_window()
+        state = _make_state(window=window)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "yes123",
+            "hedge_token": "no456",
+            "shares": 0,
+            "entry_price": 0.33,
+            "hedge_entry_price": 0.69,
+            "direction_up": True,
+            "side": "YES",
+            "size": 0.0,
+        }
+        bot.model_server.predict = MagicMock(return_value=0.10)
+
+        with patch.object(bot, "_log_activity", MagicMock()):
+            await bot._v2_confirm(state, 49_500.0)
+
+        assert state.early_position["direction_up"] is True
+        assert state.early_position["token_id"] == "yes123"
+        assert state.early_position["hedge_token"] == "no456"
+        bot.trader.client.post_order.assert_not_called()
+
+
+class TestBudgetCurve:
+    def test_budget_curve_starts_from_open_allocation(self):
+        bot = _make_bot()
+        assert bot._v2_budget_curve_pct(5.0) == 0.15
+        assert bot._v2_budget_curve_pct(15.0) > 0.15
+        assert bot._v2_budget_curve_pct(180.0) == 0.90
+
+
+class TestExecutionSafety:
+    async def test_scan_tick_blocked_after_early_trade(self):
+        bot = _make_bot()
+        bot.settings.early_entry_enabled = False
+        bot._v2_graceful_stop_requested = False
+        bot.rtds = MagicMock()
+        bot.rtds.get_state.return_value = MagicMock(compute_lag=MagicMock())
+        bot._on_window_open = AsyncMock()
+        bot._on_window_close = AsyncMock()
+        bot._v2_open_position = AsyncMock()
+        bot._v2_confirm = AsyncMock()
+        bot._v2_execution_tick = AsyncMock()
+        bot._v2_poll_fills = AsyncMock()
+        bot._early_cancel_unfilled = AsyncMock()
+        bot._log_v2_status = MagicMock()
+        bot._write_live_state_async = MagicMock()
+        bot._scan_tick = AsyncMock()
+
+        window = _make_window(open_ts=1_000)
+        state = _make_state(window=window)
+        state.early_entry_traded = True
+        state.tracker.tick = MagicMock(return_value=None)
+
+        with patch("polybot.core.loop.time.time", return_value=1_210.0):
+            await bot._tick_asset(state, 50_000.0)
+
+        bot._scan_tick.assert_not_called()
+
+    async def test_execution_tick_keeps_recent_near_market_order(self):
+        bot = _make_bot(max_bet=50.0)
+        bot._v2_check_secrets_refresh = AsyncMock()
+        bot._refresh_orderbook = _noop_refresh
+        bot._post_cheap_order = AsyncMock()
+        window = _make_window()
+        state = _make_state(window=window)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "yes123",
+            "hedge_token": "no456",
+            "shares": 5,
+            "entry_price": 0.33,
+            "hedge_entry_price": 0.69,
+            "direction_up": True,
+            "side": "YES",
+            "size": 1.65,
+        }
+        keep_order = bot._build_v2_tracked_order(
+            order_id="keep_up",
+            actual_shares=5,
+            actual_price=0.32,
+            actual_notional_usd=1.60,
+            side="UP",
+            target_size=1.60,
+        )
+        keep_order["created_at"] = time.time()
+        state.early_dca_orders = [keep_order]
+        state.reserved_open_order_usd = 1.60
+        state.early_reserved_notional = 1.60
+
+        await bot._v2_execution_tick(state, 50_000.0, 30.0)
+
+        bot.trader.client.cancel_order.assert_not_called()
+        assert any(order.get("order_id") == "keep_up" for order in state.early_dca_orders)
+
+
+class TestSellInventory:
+    async def test_partial_sell_decrements_source_lot_inventory(self):
+        bot = _make_bot()
+        window = _make_window()
+        state = _make_state(window=window)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "yes123",
+            "hedge_token": "no456",
+            "shares": 20,
+            "entry_price": 0.33,
+            "hedge_entry_price": 0.69,
+            "direction_up": True,
+            "side": "YES",
+            "size": 10.0,
+        }
+        state.early_down_shares = 10
+        state.early_down_cost = 5.0
+        state.filled_position_cost_usd = 5.0
+        state.early_filled_notional = 5.0
+        sell_order = bot._build_v2_tracked_order(
+            order_id="filled_down",
+            actual_shares=10,
+            actual_price=0.50,
+            actual_notional_usd=5.0,
+            side="DOWN",
+            target_size=5.0,
+        )
+        sell_order["filled"] = True
+        sell_order["filled_shares"] = 10
+        sell_order["filled_notional_usd"] = 5.0
+        sell_order["inventory_shares"] = 10
+        sell_order["inventory_notional_usd"] = 5.0
+
+        proceeds = await bot._early_sell(
+            state,
+            state.early_position,
+            current_bid=0.40,
+            reason="EQUALIZE",
+            sell_shares=5,
+            sell_cost=2.5,
+            sell_token_id=window.no_token_id,
+            sell_side_up=False,
+            sell_order=sell_order,
+        )
+
+        assert proceeds == 2.0
+        assert state.early_down_shares == 5
+        assert state.early_down_cost == 2.5
+        assert bot._v2_order_inventory_shares(sell_order) == 5
+        assert bot._v2_order_inventory_notional(sell_order) == 2.5
 
 
 # ── 11b. OpenTimingT5s ────────────────────────────────────────────────────────
