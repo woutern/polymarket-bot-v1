@@ -1463,18 +1463,17 @@ class TestLGBMConfidenceSplit:
         return state
 
     async def test_lgbm_confidence_tiers_on_open(self):
-        """Model-weighted allocation: open uses 10% of max_bet with LGBM tiers.
-        >= 0.70: 80/20, >= 0.60: 70/30, >= 0.55: 60/40, > 0.45: 50/50, etc."""
+        """Model-weighted allocation: open uses 10% of max_bet, scaled down when edge is weak."""
         cases = [
-            # (lgbm, expected_up_pct, expected_down_pct)
-            (0.72, 0.80, 0.20),
-            (0.60, 0.70, 0.30),
-            (0.56, 0.60, 0.40),
-            (0.50, 0.50, 0.50),
-            (0.42, 0.40, 0.60),
-            (0.30, 0.20, 0.80),
+            # (lgbm, expected_up_pct, expected_down_pct, expected_budget_scale)
+            (0.72, 0.80, 0.20, 1.00),
+            (0.60, 0.60, 0.40, 1.00),
+            (0.56, 0.60, 0.40, 0.75),
+            (0.50, 0.50, 0.50, 0.30),
+            (0.42, 0.40, 0.60, 0.75),
+            (0.30, 0.20, 0.80, 1.00),
         ]
-        for lgbm_val, exp_up_pct, exp_down_pct in cases:
+        for lgbm_val, exp_up_pct, exp_down_pct, exp_budget_scale in cases:
             bot = _make_bot(max_bet=50.0)
             bot.model_server.predict = MagicMock(return_value=lgbm_val)
             window = _make_window(slug=f"btc-updown-5m-{lgbm_val}")
@@ -1485,7 +1484,7 @@ class TestLGBMConfidenceSplit:
             orders = state.early_dca_orders
             up_sz = next((o["target_size"] for o in orders if o.get("side") == "UP"), None)
             down_sz = next((o["target_size"] for o in orders if o.get("side") == "DOWN"), None)
-            open_budget = round(50.0 * 0.10, 2)  # 10% of max_bet
+            open_budget = round(50.0 * 0.10 * exp_budget_scale, 2)
             assert up_sz is not None and down_sz is not None, f"lgbm={lgbm_val}: orders missing"
             assert abs(up_sz - round(open_budget * exp_up_pct, 2)) < 0.02, (
                 f"lgbm={lgbm_val}: up={up_sz}, expected {round(open_budget * exp_up_pct, 2)}"
@@ -1547,8 +1546,16 @@ class TestBudgetCurve:
         bot = _make_bot()
         assert bot._v2_budget_curve_pct(5.0) == 0.10
         assert bot._v2_budget_curve_pct(15.0) > 0.10
-        assert bot._v2_budget_curve_pct(180.0) == 0.85
+        assert bot._v2_budget_curve_pct(60.0) == 0.18
+        assert bot._v2_budget_curve_pct(180.0) == 0.75
         assert bot._v2_budget_curve_pct(250.0) == 0.90
+
+    def test_confidence_budget_scale_caps_weak_signals(self):
+        bot = _make_bot()
+        assert bot._v2_confidence_budget_scale(0.50) == 0.30
+        assert bot._v2_confidence_budget_scale(0.54) == 0.55
+        assert bot._v2_confidence_budget_scale(0.59) == 0.75
+        assert bot._v2_confidence_budget_scale(0.65) == 1.00
 
 
 class TestExecutionSafety:
@@ -1678,9 +1685,10 @@ class TestExecutionSafety:
         bot._v2_check_secrets_refresh = AsyncMock()
         bot._refresh_orderbook = _noop_refresh
         bot._post_cheap_order = AsyncMock()
-        bot.model_server.predict = MagicMock(return_value=0.50)
+        bot.model_server.predict = MagicMock(return_value=0.70)
         window = _make_window()
         state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.68, no_bid=0.30, yes_ask=0.69, no_ask=0.31)
         state.early_position = {
             "slug": "early_btc-updown-5m-1000000",
             "token_id": "yes123",
@@ -1703,6 +1711,57 @@ class TestExecutionSafety:
 
         posted_tokens = [call.args[1] for call in bot._post_cheap_order.await_args_list]
         assert "no456" in posted_tokens
+
+    async def test_execution_tick_sells_excess_inventory_above_payout_floor(self):
+        bot = _make_bot(max_bet=50.0)
+        bot._v2_check_secrets_refresh = AsyncMock()
+        bot._refresh_orderbook = _noop_refresh
+        bot._post_cheap_order = AsyncMock()
+        bot._v2_poll_fills = AsyncMock()
+        bot._early_sell = AsyncMock(return_value=2.25)
+        bot.model_server.predict = MagicMock(return_value=0.60)
+        window = _make_window()
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.60, no_bid=0.45, yes_ask=0.61, no_ask=0.46)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "yes123",
+            "hedge_token": "no456",
+            "shares": 30,
+            "entry_price": 0.60,
+            "hedge_entry_price": 0.45,
+            "direction_up": True,
+            "side": "YES",
+            "size": 18.0,
+        }
+        state.early_up_shares = 30
+        state.early_up_cost = 18.0
+        state.early_down_shares = 35
+        state.early_down_cost = 15.75
+        state.filled_position_cost_usd = 33.75
+        state.early_filled_notional = 33.75
+        sell_order = bot._build_v2_tracked_order(
+            order_id="filled_down",
+            actual_shares=10,
+            actual_price=0.45,
+            actual_notional_usd=4.5,
+            side="DOWN",
+            target_size=4.5,
+        )
+        sell_order["filled"] = True
+        sell_order["filled_shares"] = 10
+        sell_order["filled_notional_usd"] = 4.5
+        sell_order["inventory_shares"] = 10
+        sell_order["inventory_notional_usd"] = 4.5
+        state.early_dca_orders = [sell_order]
+
+        await bot._v2_execution_tick(state, 50_000.0, 140.0)
+
+        bot._early_sell.assert_awaited_once()
+        _, _, sell_bid, reason = bot._early_sell.await_args.args[:4]
+        assert round(sell_bid, 2) == 0.45
+        assert reason == "PAYOUT_FLOOR"
+        assert bot._early_sell.await_args.kwargs["sell_side_up"] is False
 
 
 class TestSellInventory:

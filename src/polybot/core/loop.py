@@ -602,6 +602,32 @@ class TradingLoop:
     def _v2_sell_cooldown_seconds(self) -> float:
         return 30.0
 
+    def _v2_allocation_split(self, prob_up: float) -> tuple[float, float]:
+        if prob_up >= 0.70:
+            return 0.80, 0.20
+        if prob_up >= 0.62:
+            return 0.70, 0.30
+        if prob_up >= 0.56:
+            return 0.60, 0.40
+        if prob_up > 0.44:
+            return 0.50, 0.50
+        if prob_up > 0.38:
+            return 0.40, 0.60
+        if prob_up > 0.30:
+            return 0.30, 0.70
+        return 0.20, 0.80
+
+    def _v2_confidence_budget_scale(self, prob_up: float) -> float:
+        """Spend less when the model edge is weak; neutral windows should stay small."""
+        edge = round(abs(prob_up - 0.50), 3)
+        if edge < 0.03:
+            return 0.30
+        if edge < 0.06:
+            return 0.55
+        if edge < 0.10:
+            return 0.75
+        return 1.00
+
     def _v2_budget_curve_pct(self, seconds_since_open: float) -> float:
         """Small open, main deployment mid-window, tight late-window add-on."""
         open_pct = self._v2_open_budget_pct()
@@ -609,13 +635,13 @@ class TradingLoop:
             return open_pct
         if seconds_since_open <= 60:
             progress = (seconds_since_open - 5.0) / 55.0
-            return round(open_pct + (0.15 * progress), 4)  # 10% → 25%
+            return round(open_pct + (0.08 * progress), 4)  # 10% → 18%
         if seconds_since_open <= 180:
             progress = (seconds_since_open - 60.0) / 120.0
-            return round(0.25 + (0.60 * progress), 4)  # 25% → 85%
+            return round(0.18 + (0.57 * progress), 4)  # 18% → 75%
         if seconds_since_open <= 250:
             progress = (seconds_since_open - 180.0) / 70.0
-            return round(0.85 + (0.05 * progress), 4)  # 85% → 90%
+            return round(0.75 + (0.15 * progress), 4)  # 75% → 90%
         return 0.90
 
     def _v2_reprice_stale_after_seconds(self) -> float:
@@ -796,6 +822,9 @@ class TradingLoop:
             if self._v2_order_direction(state, order) is side_up:
                 reserved += self._v2_order_reserved_remaining(order)
         return round(filled + reserved, 2)
+
+    def _v2_side_hold_value(self, prob_up: float, side_up: bool) -> float:
+        return prob_up if side_up else (1.0 - prob_up)
 
     def _reserve_v2_budget(self, state: AssetState, actual_notional_usd: float, context: str, side: str) -> bool:
         max_bet_per_asset = self._v2_max_bet_per_asset()
@@ -1697,30 +1726,19 @@ class TradingLoop:
         HARD_CAP_PRICE = 0.90
 
         # Model-weighted allocation for open phase
-        if lgbm_raw >= 0.70:
-            up_pct, down_pct = 0.80, 0.20
-        elif lgbm_raw >= 0.60:
-            up_pct, down_pct = 0.70, 0.30
-        elif lgbm_raw >= 0.55:
-            up_pct, down_pct = 0.60, 0.40
-        elif lgbm_raw > 0.45:
-            up_pct, down_pct = 0.50, 0.50
-        elif lgbm_raw > 0.40:
-            up_pct, down_pct = 0.40, 0.60
-        elif lgbm_raw > 0.30:
-            up_pct, down_pct = 0.30, 0.70
-        else:
-            up_pct, down_pct = 0.20, 0.80
+        up_pct, down_pct = self._v2_allocation_split(lgbm_raw)
+        budget_scale = self._v2_confidence_budget_scale(lgbm_raw)
 
         # Open uses a small starter allocation. Most capital deploys mid-window.
         max_bet = self._v2_max_bet_per_asset()
-        open_budget = round(max_bet * self._v2_open_budget_pct(), 2)
+        open_budget = round(max_bet * self._v2_open_budget_pct() * budget_scale, 2)
         up_size = round(open_budget * up_pct, 2)
         down_size = round(open_budget * down_pct, 2)
 
         logger.info("v2_open_orderbook", asset=state.asset,
                     direction="UP" if direction_up else "DOWN",
                     lgbm=round(lgbm_raw, 3), up_pct=up_pct, down_pct=down_pct,
+                    budget_scale=round(budget_scale, 2),
                     yes_bid=round(yes_bid, 3), no_bid=round(no_bid, 3),
                     yes_ask=round(state.orderbook.yes_best_ask, 3),
                     no_ask=round(state.orderbook.no_best_ask, 3))
@@ -1800,6 +1818,7 @@ class TradingLoop:
         }
         logger.info("v2_open_complete", asset=state.asset, slug=early_slug,
                     direction="UP" if direction_up else "DOWN", lgbm=round(lgbm_raw, 3),
+                    budget_scale=round(budget_scale, 2),
                     up_size=up_size, down_size=down_size, max_bet=max_bet)
         self._log_activity(state, f"OPEN {'UP' if direction_up else 'DOWN'}",
                            f"up=${up_size} down=${down_size} lgbm={lgbm_raw:.2f}")
@@ -2105,21 +2124,9 @@ class TradingLoop:
         except Exception:
             prob_up = 0.50
 
-        # Model-weighted allocation split
-        if prob_up >= 0.70:
-            up_pct, down_pct = 0.80, 0.20
-        elif prob_up >= 0.60:
-            up_pct, down_pct = 0.70, 0.30
-        elif prob_up >= 0.55:
-            up_pct, down_pct = 0.60, 0.40
-        elif prob_up > 0.45:
-            up_pct, down_pct = 0.50, 0.50
-        elif prob_up > 0.40:
-            up_pct, down_pct = 0.40, 0.60
-        elif prob_up > 0.30:
-            up_pct, down_pct = 0.30, 0.70
-        else:
-            up_pct, down_pct = 0.20, 0.80
+        # Model-weighted allocation split + spend cap when the signal is weak.
+        up_pct, down_pct = self._v2_allocation_split(prob_up)
+        budget_scale = self._v2_confidence_budget_scale(prob_up)
 
         buy_only_start = self._v2_buy_only_start_seconds()
         commit_start = self._v2_commit_start_seconds()
@@ -2129,6 +2136,7 @@ class TradingLoop:
                 pos["late_phase_prob_up"] = prob_up
                 pos["late_phase_up_pct"] = up_pct
                 pos["late_phase_down_pct"] = down_pct
+                pos["late_phase_budget_scale"] = budget_scale
                 logger.info(
                     "v2_buy_only_mode_entered",
                     asset=state.asset,
@@ -2136,11 +2144,13 @@ class TradingLoop:
                     prob_up=round(prob_up, 3),
                     up_pct=up_pct,
                     down_pct=down_pct,
+                    budget_scale=round(budget_scale, 2),
                 )
             else:
                 prob_up = pos.get("late_phase_prob_up", prob_up)
                 up_pct = pos.get("late_phase_up_pct", up_pct)
                 down_pct = pos.get("late_phase_down_pct", down_pct)
+                budget_scale = pos.get("late_phase_budget_scale", budget_scale)
 
         # ── 2. COMMITMENT CHECK (T >= 250) ────────────────────────────────
         if seconds_since_open >= commit_start:
@@ -2180,7 +2190,7 @@ class TradingLoop:
 
         # ── 3. BUDGET CURVE (smooth ramp from the open allocation) ───────
         max_deploy_pct = self._v2_budget_curve_pct(seconds_since_open)
-        max_deploy_usd = max_bet * max_deploy_pct
+        max_deploy_usd = max_bet * max_deploy_pct * budget_scale
         current_filled = self._v2_filled_position_cost_usd(state)
         budget_curve_remaining = max(max_deploy_usd - current_filled, 0)
 
@@ -2281,12 +2291,15 @@ class TradingLoop:
                     self._release_v2_budget(state, notional, "exec_post_error", side)
 
         # ── 6. SELL-AND-RECOVER (T+60 to T+180 only) ────────────────────
-        # Sell the heavy side to equalize share count. Recovers capital.
+        # Sell excess inventory above the payout floor when the market bid is
+        # richer than the model-implied hold value for that side.
         sell_fired = False
         sell_reason = ""
         up_avg = (state.early_up_cost / state.early_up_shares) if state.early_up_shares > 0 else 0
         dn_avg = (state.early_down_cost / state.early_down_shares) if state.early_down_shares > 0 else 0
         combined_avg = (up_avg + dn_avg) if (state.early_up_shares > 0 and state.early_down_shares > 0) else 0
+        payout_floor = min(int(state.early_up_shares), int(state.early_down_shares))
+        cost_above_floor = max(round(current_filled - payout_floor, 2), 0.0)
 
         last_sell_ts = getattr(state, "v2_last_sell_ts", 0.0)
         sell_cooldown_ok = (
@@ -2296,62 +2309,76 @@ class TradingLoop:
         )
 
         if sell_cooldown_ok and self._v2_sell_start_seconds() <= seconds_since_open < buy_only_start:
-            heavy_side_up = None
+            sell_candidates: list[dict] = []
+            for side_up, shares, bid in [
+                (True, int(state.early_up_shares), yes_bid),
+                (False, int(state.early_down_shares), no_bid),
+            ]:
+                excess_shares = max(shares - payout_floor, 0)
+                if excess_shares < 5 or shares - 5 < 10 or bid <= 0:
+                    continue
+                hold_value = self._v2_side_hold_value(prob_up, side_up)
+                edge_over_hold = round(bid - hold_value, 3)
+                if edge_over_hold < 0.01:
+                    continue
+                sell_candidates.append(
+                    {
+                        "side_up": side_up,
+                        "side": "UP" if side_up else "DOWN",
+                        "bid": bid,
+                        "excess_shares": excess_shares,
+                        "edge_over_hold": edge_over_hold,
+                    }
+                )
 
-            if state.early_up_shares > state.early_down_shares * 1.2 and state.early_up_shares > 10:
-                heavy_side_up = True
-            elif state.early_down_shares > state.early_up_shares * 1.2 and state.early_down_shares > 10:
-                heavy_side_up = False
+            if sell_candidates:
+                sell_candidates.sort(
+                    key=lambda item: (item["excess_shares"], item["edge_over_hold"]),
+                    reverse=True,
+                )
+                sell_side = sell_candidates[0]
+                sell_side_up = sell_side["side_up"]
+                sell_bid = sell_side["bid"]
 
-            if heavy_side_up is not None:
-                heavy_side = "UP" if heavy_side_up else "DOWN"
-                heavy_shares = state.early_up_shares if heavy_side_up else state.early_down_shares
+                sell_lots = []
+                for order in state.early_dca_orders:
+                    if not order.get("filled"):
+                        continue
+                    side = self._v2_normalized_order_side(state, order)
+                    if (side == "UP") != sell_side_up:
+                        continue
+                    inventory_shares = self._v2_order_inventory_shares(order)
+                    if inventory_shares < 5:
+                        continue
+                    inventory_notional = self._v2_order_inventory_notional(order)
+                    sell_shares = min(inventory_shares, 5)
+                    unit_cost = (
+                        inventory_notional / inventory_shares
+                        if inventory_shares > 0 and inventory_notional > 0
+                        else self._v2_order_actual_price(order)
+                    )
+                    sell_lots.append({
+                        "order": order,
+                        "shares": sell_shares,
+                        "price": self._v2_order_actual_price(order),
+                        "notional": round(sell_shares * unit_cost, 2),
+                    })
 
-                # Don't sell below 10 shares on the heavy side
-                if heavy_shares - 5 >= 10:
-                    sell_bid = yes_bid if heavy_side_up else no_bid
-                    if sell_bid > 0:
-                        # Find a filled lot on the heavy side
-                        sell_lots = []
-                        for order in state.early_dca_orders:
-                            if not order.get("filled"):
-                                continue
-                            side = self._v2_normalized_order_side(state, order)
-                            if (side == "UP") != heavy_side_up:
-                                continue
-                            inventory_shares = self._v2_order_inventory_shares(order)
-                            if inventory_shares < 5:
-                                continue
-                            inventory_notional = self._v2_order_inventory_notional(order)
-                            sell_shares = min(inventory_shares, 5)
-                            unit_cost = (
-                                inventory_notional / inventory_shares
-                                if inventory_shares > 0 and inventory_notional > 0
-                                else self._v2_order_actual_price(order)
-                            )
-                            sell_lots.append({
-                                "order": order,
-                                "shares": sell_shares,  # sell max 5 at a time
-                                "price": self._v2_order_actual_price(order),
-                                "notional": round(sell_shares * unit_cost, 2),
-                            })
-
-                        if sell_lots:
-                            # Sell most expensive lot first (best recovery)
-                            sell_lots.sort(key=lambda x: -x["price"])
-                            lot = sell_lots[0]
-                            sell_token = window.yes_token_id if heavy_side_up else window.no_token_id
-                            sell_reason = "EQUALIZE"
-                            proceeds = await self._early_sell(
-                                state, pos, sell_bid, sell_reason,
-                                sell_shares=lot["shares"], sell_cost=lot["notional"],
-                                sell_token_id=sell_token, sell_side_up=heavy_side_up,
-                                sell_order=lot["order"],
-                            )
-                            if proceeds and proceeds > 0:
-                                sell_fired = True
-                                state.v2_last_sell_ts = time.time()
-                                await self._v2_poll_fills(state)
+                if sell_lots:
+                    sell_lots.sort(key=lambda x: -x["price"])
+                    lot = sell_lots[0]
+                    sell_token = window.yes_token_id if sell_side_up else window.no_token_id
+                    sell_reason = "PAYOUT_FLOOR"
+                    proceeds = await self._early_sell(
+                        state, pos, sell_bid, sell_reason,
+                        sell_shares=lot["shares"], sell_cost=lot["notional"],
+                        sell_token_id=sell_token, sell_side_up=sell_side_up,
+                        sell_order=lot["order"],
+                    )
+                    if proceeds and proceeds > 0:
+                        sell_fired = True
+                        state.v2_last_sell_ts = time.time()
+                        await self._v2_poll_fills(state)
 
         # ── 7. LOG ────────────────────────────────────────────────────────
         net_cost = self._v2_filled_position_cost_usd(state)
@@ -2367,12 +2394,15 @@ class TradingLoop:
                     down_shares=int(state.early_down_shares),
                     up_avg=round(up_avg, 3), down_avg=round(dn_avg, 3),
                     combined_avg=round(combined_avg, 3),
+                    payout_floor=payout_floor,
+                    cost_above_floor=round(cost_above_floor, 2),
                     net_cost=round(net_cost, 2),
                     total_shares=total_shares,
                     sell_fired=sell_fired, sell_reason=sell_reason,
                     filled_usd=round(net_cost, 2),
                     remaining_budget=round(self._v2_remaining_budget(state), 2),
-                    budget_curve_pct=round(max_deploy_pct, 3))
+                    budget_curve_pct=round(max_deploy_pct, 3),
+                    budget_scale=round(budget_scale, 2))
 
     # ── V2 SECRETS REFRESH ────────────────────────────────────────────────
 
