@@ -626,7 +626,52 @@ class TradingLoop:
             return 0.65
         if edge < 0.10:
             return 0.85
+        if edge >= 0.20:
+            return 1.10
         return 1.00
+
+    def _v2_strong_favored_budget_boost(
+        self,
+        prob_up: float,
+        usable: float,
+        up_budget: float,
+        down_budget: float,
+        up_bid: float,
+        down_bid: float,
+        up_shares: int,
+        down_shares: int,
+    ) -> tuple[float, float]:
+        edge = round(abs(prob_up - 0.50), 3)
+        if edge < 0.10 or usable <= 0:
+            return up_budget, down_budget
+
+        favored_up = prob_up >= 0.50
+        favored_budget = up_budget if favored_up else down_budget
+        unfavored_budget = down_budget if favored_up else up_budget
+        favored_bid = up_bid if favored_up else down_bid
+        favored_shares = up_shares if favored_up else down_shares
+        unfavored_shares = down_shares if favored_up else up_shares
+
+        if favored_bid <= 0:
+            return up_budget, down_budget
+
+        # Do not keep biasing the same side if it is already clearly ahead in shares.
+        if favored_shares > unfavored_shares + 5:
+            return up_budget, down_budget
+
+        min_orders = 2 if edge >= 0.20 else 1
+        target_favored_budget = round(5 * favored_bid * min_orders, 2)
+        target_favored_budget = min(target_favored_budget, usable)
+        if favored_budget >= target_favored_budget - 1e-9:
+            return up_budget, down_budget
+
+        transfer = min(unfavored_budget, round(target_favored_budget - favored_budget, 2))
+        if transfer <= 0:
+            return up_budget, down_budget
+
+        if favored_up:
+            return round(up_budget + transfer, 2), round(down_budget - transfer, 2)
+        return round(up_budget - transfer, 2), round(down_budget + transfer, 2)
 
     def _v2_pair_risk_limits(self, prob_up: float) -> tuple[float, float]:
         """Pair guardrails once both sides exist."""
@@ -2251,7 +2296,7 @@ class TradingLoop:
 
         # ── 3. BUDGET CURVE (smooth ramp from the open allocation) ───────
         max_deploy_pct = self._v2_budget_curve_pct(seconds_since_open)
-        max_deploy_usd = max_bet * max_deploy_pct * budget_scale
+        max_deploy_usd = min(max_bet, max_bet * max_deploy_pct * budget_scale)
         current_filled = self._v2_filled_position_cost_usd(state)
         current_total_notional = self._v2_current_total_notional(state)
         budget_curve_remaining = max(max_deploy_usd - current_filled, 0)
@@ -2303,6 +2348,16 @@ class TradingLoop:
             scale = usable / deficit_total
             up_budget = round(up_budget * scale, 2)
             down_budget = round(down_budget * scale, 2)
+        up_budget, down_budget = self._v2_strong_favored_budget_boost(
+            prob_up=prob_up,
+            usable=usable,
+            up_budget=up_budget,
+            down_budget=down_budget,
+            up_bid=yes_bid,
+            down_bid=no_bid,
+            up_shares=int(state.early_up_shares),
+            down_shares=int(state.early_down_shares),
+        )
 
         current_up_avg = (state.early_up_cost / state.early_up_shares) if state.early_up_shares > 0 else 0.0
         current_down_avg = (state.early_down_cost / state.early_down_shares) if state.early_down_shares > 0 else 0.0

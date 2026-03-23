@@ -1466,12 +1466,12 @@ class TestLGBMConfidenceSplit:
         """Model-weighted allocation: open uses 10% of max_bet, scaled down when edge is weak."""
         cases = [
             # (lgbm, expected_up_pct, expected_down_pct, expected_budget_scale)
-            (0.72, 0.80, 0.20, 1.00),
+            (0.72, 0.80, 0.20, 1.10),
             (0.60, 0.60, 0.40, 1.00),
             (0.56, 0.60, 0.40, 0.85),
             (0.50, 0.50, 0.50, 0.35),
             (0.42, 0.40, 0.60, 0.85),
-            (0.30, 0.20, 0.80, 1.00),
+            (0.30, 0.20, 0.80, 1.10),
         ]
         for lgbm_val, exp_up_pct, exp_down_pct, exp_budget_scale in cases:
             bot = _make_bot(max_bet=50.0)
@@ -1556,6 +1556,7 @@ class TestBudgetCurve:
         assert bot._v2_confidence_budget_scale(0.54) == 0.65
         assert bot._v2_confidence_budget_scale(0.59) == 0.85
         assert bot._v2_confidence_budget_scale(0.65) == 1.00
+        assert bot._v2_confidence_budget_scale(0.72) == 1.10
 
     def test_pair_risk_limits_tighten_when_signal_is_weak(self):
         bot = _make_bot()
@@ -1568,6 +1569,36 @@ class TestBudgetCurve:
         bot = _make_bot()
         assert bot._v2_expected_position_ev(0.55, up_shares=10, down_shares=5, net_cost=7.5) == 0.25
         assert bot._v2_expected_position_ev(0.52, up_shares=5, down_shares=5, net_cost=5.2) == -0.2
+
+    def test_strong_favored_budget_boost_transfers_from_unfavored_side(self):
+        bot = _make_bot()
+        up_budget, down_budget = bot._v2_strong_favored_budget_boost(
+            prob_up=0.68,
+            usable=8.0,
+            up_budget=1.0,
+            down_budget=4.0,
+            up_bid=0.62,
+            down_bid=0.35,
+            up_shares=5,
+            down_shares=5,
+        )
+        assert up_budget >= 3.1
+        assert round(up_budget + down_budget, 2) == 5.0
+
+    def test_strong_favored_budget_boost_does_not_add_when_favored_side_already_ahead(self):
+        bot = _make_bot()
+        up_budget, down_budget = bot._v2_strong_favored_budget_boost(
+            prob_up=0.68,
+            usable=8.0,
+            up_budget=1.0,
+            down_budget=4.0,
+            up_bid=0.62,
+            down_bid=0.35,
+            up_shares=15,
+            down_shares=5,
+        )
+        assert up_budget == 1.0
+        assert down_budget == 4.0
 
 
 class TestExecutionSafety:
