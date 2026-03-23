@@ -1557,6 +1557,13 @@ class TestBudgetCurve:
         assert bot._v2_confidence_budget_scale(0.59) == 0.75
         assert bot._v2_confidence_budget_scale(0.65) == 1.00
 
+    def test_pair_risk_limits_tighten_when_signal_is_weak(self):
+        bot = _make_bot()
+        assert bot._v2_pair_risk_limits(0.50) == (1.00, 0.50)
+        assert bot._v2_pair_risk_limits(0.54) == (1.02, 1.00)
+        assert bot._v2_pair_risk_limits(0.59) == (1.04, 1.50)
+        assert bot._v2_pair_risk_limits(0.68) == (1.06, 2.00)
+
 
 class TestExecutionSafety:
     async def test_scan_tick_blocked_after_early_trade(self):
@@ -1762,6 +1769,37 @@ class TestExecutionSafety:
         assert round(sell_bid, 2) == 0.45
         assert reason == "PAYOUT_FLOOR"
         assert bot._early_sell.await_args.kwargs["sell_side_up"] is False
+
+    async def test_execution_tick_blocks_new_buys_when_pair_state_is_bad(self):
+        bot = _make_bot(max_bet=50.0)
+        bot._v2_check_secrets_refresh = AsyncMock()
+        bot._refresh_orderbook = _noop_refresh
+        bot._post_cheap_order = AsyncMock()
+        bot.model_server.predict = MagicMock(return_value=0.35)
+        window = _make_window()
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.47, no_bid=0.65, yes_ask=0.48, no_ask=0.66)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "yes123",
+            "hedge_token": "no456",
+            "shares": 10,
+            "entry_price": 0.47,
+            "hedge_entry_price": 0.58,
+            "direction_up": False,
+            "side": "NO",
+            "size": 5.25,
+        }
+        state.early_up_shares = 5
+        state.early_up_cost = 2.35
+        state.early_down_shares = 5
+        state.early_down_cost = 2.90
+        state.filled_position_cost_usd = 5.25
+        state.early_filled_notional = 5.25
+
+        await bot._v2_execution_tick(state, 50_000.0, 120.0)
+
+        bot._post_cheap_order.assert_not_awaited()
 
 
 class TestSellInventory:

@@ -628,6 +628,41 @@ class TradingLoop:
             return 0.75
         return 1.00
 
+    def _v2_pair_risk_limits(self, prob_up: float) -> tuple[float, float]:
+        """Pair guardrails once both sides exist."""
+        edge = round(abs(prob_up - 0.50), 3)
+        if edge < 0.03:
+            return 1.00, 0.50
+        if edge < 0.06:
+            return 1.02, 1.00
+        if edge < 0.10:
+            return 1.04, 1.50
+        return 1.06, 2.00
+
+    def _v2_projected_pair_metrics(
+        self,
+        state: AssetState,
+        current_filled: float,
+        side_up: bool,
+        shares: int,
+        notional: float,
+    ) -> dict[str, float | int]:
+        new_up_shares = int(state.early_up_shares) + (shares if side_up else 0)
+        new_down_shares = int(state.early_down_shares) + (shares if not side_up else 0)
+        new_up_cost = float(state.early_up_cost) + (notional if side_up else 0.0)
+        new_down_cost = float(state.early_down_cost) + (notional if not side_up else 0.0)
+        new_up_avg = (new_up_cost / new_up_shares) if new_up_shares > 0 else 0.0
+        new_down_avg = (new_down_cost / new_down_shares) if new_down_shares > 0 else 0.0
+        new_combined = (new_up_avg + new_down_avg) if (new_up_shares > 0 and new_down_shares > 0) else 0.0
+        payout_floor = min(new_up_shares, new_down_shares)
+        projected_filled = round(current_filled + notional, 2)
+        cost_above_floor = max(round(projected_filled - payout_floor, 2), 0.0)
+        return {
+            "combined_avg": round(new_combined, 4),
+            "payout_floor": payout_floor,
+            "cost_above_floor": round(cost_above_floor, 2),
+        }
+
     def _v2_budget_curve_pct(self, seconds_since_open: float) -> float:
         """Small open, main deployment mid-window, tight late-window add-on."""
         open_pct = self._v2_open_budget_pct()
@@ -2242,12 +2277,24 @@ class TradingLoop:
             up_budget = round(up_budget * scale, 2)
             down_budget = round(down_budget * scale, 2)
 
+        current_up_avg = (state.early_up_cost / state.early_up_shares) if state.early_up_shares > 0 else 0.0
+        current_down_avg = (state.early_down_cost / state.early_down_shares) if state.early_down_shares > 0 else 0.0
+        current_combined_avg = (
+            current_up_avg + current_down_avg
+            if (state.early_up_shares > 0 and state.early_down_shares > 0)
+            else 0.0
+        )
+        current_payout_floor = min(int(state.early_up_shares), int(state.early_down_shares))
+        current_cost_above_floor = max(round(current_filled - current_payout_floor, 2), 0.0)
+        max_combined_avg, max_cost_above_floor = self._v2_pair_risk_limits(prob_up)
+
         from py_clob_client.clob_types import CreateOrderOptions
         options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
         base_shares = 5
 
         posted_up = 0
         posted_down = 0
+        pair_guard_skipped = 0
 
         for side_up, token_id, bid, side_budget, pct in [
             (True, window.yes_token_id, yes_bid, up_budget, up_pct),
@@ -2274,6 +2321,39 @@ class TradingLoop:
                 notional = round(base_shares * post_price, 2)
                 if notional > side_budget:
                     continue
+
+                if current_payout_floor >= 5:
+                    side_shares = int(state.early_up_shares) if side_up else int(state.early_down_shares)
+                    other_shares = int(state.early_down_shares) if side_up else int(state.early_up_shares)
+                    lagging_side = side_shares < other_shares
+                    projected = self._v2_projected_pair_metrics(
+                        state,
+                        current_filled=current_filled,
+                        side_up=side_up,
+                        shares=base_shares,
+                        notional=notional,
+                    )
+                    projected_combined = float(projected["combined_avg"])
+                    projected_cost_above_floor = float(projected["cost_above_floor"])
+                    bad_state_now = (
+                        current_combined_avg > max_combined_avg + 1e-9
+                        or current_cost_above_floor > max_cost_above_floor + 1e-9
+                    )
+                    projected_within_limits = (
+                        projected_combined <= max_combined_avg + 1e-9
+                        and projected_cost_above_floor <= max_cost_above_floor + 1e-9
+                    )
+                    improving_bad_state = (
+                        lagging_side
+                        and projected_combined <= current_combined_avg + 1e-9
+                        and projected_cost_above_floor <= current_cost_above_floor + 1e-9
+                    )
+                    if (bad_state_now and not improving_bad_state) or (
+                        not bad_state_now and not projected_within_limits
+                    ):
+                        pair_guard_skipped += 1
+                        continue
+
                 if not self._reserve_v2_budget(state, notional, "exec_" + side.lower(), side):
                     continue
                 try:
@@ -2390,6 +2470,7 @@ class TradingLoop:
                     posted_up=posted_up, posted_down=posted_down,
                     stale_orders_cancelled=stale_orders_cancelled,
                     hard_cap_skipped=hard_cap_skipped,
+                    pair_guard_skipped=pair_guard_skipped,
                     up_shares=int(state.early_up_shares),
                     down_shares=int(state.early_down_shares),
                     up_avg=round(up_avg, 3), down_avg=round(dn_avg, 3),
