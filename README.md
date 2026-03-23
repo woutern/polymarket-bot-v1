@@ -136,6 +136,14 @@ PYTHONPATH=src uv run python scripts/opportunity_bot.py
 - Fix runtime Secrets Manager refresh permissions so `EARLY_ENTRY_ENABLED=false` can finish the current window and skip the next one reliably
 - Keep retraining healthy across all live pairs; BTC/SOL are currently fresh, while ETH/XRP still need enough rows to refresh cleanly
 
+### Overnight / Tomorrow
+- Let `BTC_5m` run by itself overnight; do not add `ETH_5m`, `SOL_5m`, or `XRP_5m` yet
+- Review the live task definition first thing in the morning to confirm which BTC `5m` tuning actually ran overnight
+- Check whether weak / sideways windows stayed tiny and whether strong windows deployed more on the favored side
+- Check for any rich-side chasing, one-sided runaway accumulation, or recycle churn
+- If BTC looks clean across a solid batch of windows, move next to `ETH_5m`; keep `SOL_5m` as a separate higher-volatility tuning pass
+- Wire `put_v2_window` / `put_v2_fill` into the live loop after the overnight review so post-trade analysis stops depending mainly on CloudWatch parsing
+
 ### Next 5m rollout
 - Add per-pair strategy profiles instead of assuming one `5m` parameter set works everywhere
 - Enable `ETH_5m` after `BTC_5m` is stable
