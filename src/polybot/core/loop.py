@@ -594,6 +594,9 @@ class TradingLoop:
     def _v2_sell_start_seconds(self) -> float:
         return 45.0
 
+    def _v2_bad_pair_sell_start_seconds(self) -> float:
+        return 20.0
+
     def _v2_buy_only_start_seconds(self) -> float:
         return 180.0
 
@@ -768,7 +771,10 @@ class TradingLoop:
     def _v2_should_salvage_orphan(
         self,
         *,
+        prob_up: float,
         seconds_since_open: float,
+        orphan_side_up: bool,
+        total_shares: int,
         current_bid: float,
         projected: dict[str, float | int],
         max_combined_avg: float,
@@ -781,10 +787,37 @@ class TradingLoop:
         projected_combined = float(projected["combined_avg"])
         projected_cost_above_floor = float(projected["cost_above_floor"])
         projected_ev = float(projected["expected_ev"])
+        edge = abs(prob_up - 0.50)
+        favored_side_up = prob_up >= 0.50
+        if total_shares > 10:
+            return False
+        if edge >= 0.08 and orphan_side_up == favored_side_up:
+            return False
         return (
             projected_combined > max_combined_avg + 1e-9
             or projected_cost_above_floor > max_cost_above_floor + 1e-9
             or projected_ev < -0.01
+        )
+
+    def _v2_rescue_worth_completing(
+        self,
+        *,
+        prob_up: float,
+        projected: dict[str, float | int],
+        max_combined_avg: float,
+        max_cost_above_floor: float,
+    ) -> bool:
+        """Only rescue an orphan if completing the pair is still economically sane."""
+        projected_combined = float(projected["combined_avg"])
+        projected_cost_above_floor = float(projected["cost_above_floor"])
+        projected_ev = float(projected["expected_ev"])
+        edge = round(abs(prob_up - 0.50), 3)
+        ev_floor = -0.01 if edge >= 0.10 else 0.0
+        combined_buffer = 0.01 if edge >= 0.10 else 0.0
+        return (
+            projected_combined <= max_combined_avg + combined_buffer + 1e-9
+            and projected_cost_above_floor <= max_cost_above_floor + 1e-9
+            and projected_ev >= ev_floor
         )
 
     def _v2_bad_pair_recycle_active(
@@ -2604,10 +2637,18 @@ class TradingLoop:
         if has_orphan and missing_side_up is not None and seconds_since_open < buy_only_start:
             missing_side = "UP" if missing_side_up else "DOWN"
             filled_side = "DOWN" if missing_side_up else "UP"
+            salvage_side_up = not missing_side_up
             missing_token = window.yes_token_id if missing_side_up else window.no_token_id
             missing_bid = yes_bid if missing_side_up else no_bid
             missing_ask = self._v2_float(state.orderbook.yes_best_ask if missing_side_up else state.orderbook.no_best_ask)
             filled_bid = no_bid if missing_side_up else yes_bid
+            total_orphan_shares = int(state.early_up_shares) + int(state.early_down_shares)
+            last_sell_ts = getattr(state, "v2_last_sell_ts", 0.0)
+            salvage_cooldown_ok = (
+                (time.time() - last_sell_ts) >= self._v2_sell_cooldown_seconds()
+                if last_sell_ts > 0
+                else True
+            )
             rescue_price = self._v2_incomplete_pair_rescue_price(missing_bid, missing_ask, HARD_CAP_PRICE)
             rescue_notional = round(base_shares * rescue_price, 2) if rescue_price > 0 else 0.0
             projected_rescue = (
@@ -2631,8 +2672,17 @@ class TradingLoop:
                 and rescue_price >= 0.01
                 and rescue_price <= HARD_CAP_PRICE
                 and current_total_notional + rescue_notional <= max_bet + 1e-9
+                and self._v2_rescue_worth_completing(
+                    prob_up=prob_up,
+                    projected=projected_rescue,
+                    max_combined_avg=max_combined_avg,
+                    max_cost_above_floor=max_cost_above_floor,
+                )
                 and not self._v2_should_salvage_orphan(
+                    prob_up=prob_up,
                     seconds_since_open=seconds_since_open,
+                    orphan_side_up=salvage_side_up,
+                    total_shares=total_orphan_shares,
                     current_bid=filled_bid,
                     projected=projected_rescue,
                     max_combined_avg=max_combined_avg,
@@ -2673,14 +2723,16 @@ class TradingLoop:
                         )
                     except Exception:
                         self._release_v2_budget(state, rescue_notional, "rescue_post_error", missing_side)
-            elif self._v2_should_salvage_orphan(
+            elif salvage_cooldown_ok and self._v2_should_salvage_orphan(
+                prob_up=prob_up,
                 seconds_since_open=seconds_since_open,
+                orphan_side_up=salvage_side_up,
+                total_shares=total_orphan_shares,
                 current_bid=filled_bid,
                 projected=projected_rescue,
                 max_combined_avg=max_combined_avg,
                 max_cost_above_floor=max_cost_above_floor,
             ):
-                salvage_side_up = not missing_side_up
                 salvage_order = None
                 salvage_cost = 0.0
                 salvage_shares = 0
@@ -2734,47 +2786,53 @@ class TradingLoop:
             else True
         )
 
-        if sell_cooldown_ok and self._v2_sell_start_seconds() <= seconds_since_open < buy_only_start:
-            sell_candidates: list[dict] = []
-            for side_up, shares, bid in [
-                (True, int(state.early_up_shares), yes_bid),
-                (False, int(state.early_down_shares), no_bid),
-            ]:
-                excess_shares = max(shares - payout_floor, 0)
-                if excess_shares < 5 or shares - 5 < 10 or bid <= 0:
-                    continue
-                hold_value = self._v2_side_hold_value(prob_up, side_up)
-                edge_over_hold = round(bid - hold_value, 3)
-                if edge_over_hold < 0.005:
-                    continue
-                sell_candidates.append(
-                    {
-                        "side_up": side_up,
-                        "side": "UP" if side_up else "DOWN",
-                        "bid": bid,
-                        "excess_shares": excess_shares,
-                        "edge_over_hold": edge_over_hold,
-                        "reason": "PAYOUT_FLOOR",
-                    }
-                )
-
-            bad_pair_now = (
-                payout_floor >= 5
-                and self._v2_bad_pair_recycle_active(
-                    current_combined_avg=current_combined_avg,
-                    current_cost_above_floor=current_cost_above_floor,
-                    current_position_ev=current_position_ev,
-                    max_combined_avg=max_combined_avg,
-                    max_cost_above_floor=max_cost_above_floor,
-                )
+        bad_pair_now = (
+            payout_floor >= 5
+            and self._v2_bad_pair_recycle_active(
+                current_combined_avg=current_combined_avg,
+                current_cost_above_floor=current_cost_above_floor,
+                current_position_ev=current_position_ev,
+                max_combined_avg=max_combined_avg,
+                max_cost_above_floor=max_cost_above_floor,
             )
+        )
+        normal_sell_window = self._v2_sell_start_seconds() <= seconds_since_open < buy_only_start
+        bad_pair_sell_window = self._v2_bad_pair_sell_start_seconds() <= seconds_since_open < buy_only_start
+
+        if sell_cooldown_ok and (normal_sell_window or (bad_pair_now and bad_pair_sell_window)):
+            sell_candidates: list[dict] = []
+            if normal_sell_window:
+                for side_up, shares, bid in [
+                    (True, int(state.early_up_shares), yes_bid),
+                    (False, int(state.early_down_shares), no_bid),
+                ]:
+                    excess_shares = max(shares - payout_floor, 0)
+                    if excess_shares < 5 or shares - 5 < 10 or bid <= 0:
+                        continue
+                    hold_value = self._v2_side_hold_value(prob_up, side_up)
+                    edge_over_hold = round(bid - hold_value, 3)
+                    if edge_over_hold < 0.005:
+                        continue
+                    sell_candidates.append(
+                        {
+                            "side_up": side_up,
+                            "side": "UP" if side_up else "DOWN",
+                            "bid": bid,
+                            "excess_shares": excess_shares,
+                            "edge_over_hold": edge_over_hold,
+                            "reason": "PAYOUT_FLOOR",
+                        }
+                    )
 
             if not sell_candidates and bad_pair_now:
+                total_shares_now = int(state.early_up_shares) + int(state.early_down_shares)
                 for side_up, shares, bid in [
                     (True, int(state.early_up_shares), yes_bid),
                     (False, int(state.early_down_shares), no_bid),
                 ]:
                     if shares < 5 or bid < self._v2_orphan_salvage_min_bid():
+                        continue
+                    if total_shares_now > 10 and shares - 5 < 5:
                         continue
                     hold_value = self._v2_side_hold_value(prob_up, side_up)
                     edge_over_hold = round(bid - hold_value, 3)
