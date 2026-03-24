@@ -2010,6 +2010,70 @@ class TestExecutionSafety:
 
         bot._early_sell.assert_awaited_once()
 
+    async def test_execution_tick_bad_complete_pair_can_trim_rich_side(self):
+        bot = _make_bot(max_bet=50.0)
+        bot._v2_check_secrets_refresh = AsyncMock()
+        bot._refresh_orderbook = _noop_refresh
+        bot._post_cheap_order = AsyncMock()
+        bot._v2_poll_fills = AsyncMock()
+        bot._early_sell = AsyncMock(return_value=1.80)
+        bot.model_server.predict = MagicMock(return_value=0.266)
+        window = _make_window()
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.36, no_bid=0.73, yes_ask=0.37, no_ask=0.74)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "no456",
+            "hedge_token": "yes123",
+            "shares": 5,
+            "entry_price": 0.73,
+            "hedge_entry_price": 0.36,
+            "direction_up": False,
+            "side": "NO",
+            "size": 3.65,
+        }
+        state.early_up_shares = 5
+        state.early_up_cost = 1.80
+        state.early_down_shares = 5
+        state.early_down_cost = 3.65
+        state.filled_position_cost_usd = 5.45
+        state.early_filled_notional = 5.45
+        up_order = bot._build_v2_tracked_order(
+            order_id="filled_up",
+            actual_shares=5,
+            actual_price=0.36,
+            actual_notional_usd=1.80,
+            side="UP",
+            target_size=1.80,
+        )
+        up_order["filled"] = True
+        up_order["filled_shares"] = 5
+        up_order["filled_notional_usd"] = 1.80
+        up_order["inventory_shares"] = 5
+        up_order["inventory_notional_usd"] = 1.80
+        dn_order = bot._build_v2_tracked_order(
+            order_id="filled_down",
+            actual_shares=5,
+            actual_price=0.73,
+            actual_notional_usd=3.65,
+            side="DOWN",
+            target_size=3.65,
+        )
+        dn_order["filled"] = True
+        dn_order["filled_shares"] = 5
+        dn_order["filled_notional_usd"] = 3.65
+        dn_order["inventory_shares"] = 5
+        dn_order["inventory_notional_usd"] = 3.65
+        state.early_dca_orders = [up_order, dn_order]
+
+        await bot._v2_execution_tick(state, 50_000.0, 120.0)
+
+        bot._early_sell.assert_awaited_once()
+        _, _, sell_bid, reason = bot._early_sell.await_args.args[:4]
+        assert round(sell_bid, 2) == 0.36
+        assert reason == "BAD_PAIR"
+        assert bot._early_sell.await_args.kwargs["sell_side_up"] is True
+
     async def test_execution_tick_blocks_new_buys_when_pair_state_is_bad(self):
         bot = _make_bot(max_bet=50.0)
         bot._v2_check_secrets_refresh = AsyncMock()
@@ -2188,6 +2252,58 @@ class TestExecutionSafety:
 
 
 class TestSellInventory:
+    async def test_inventory_aware_full_sell_keeps_other_side_position(self):
+        bot = _make_bot(mode="paper")
+        window = _make_window()
+        state = _make_state(window=window)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "no456",
+            "hedge_token": "yes123",
+            "shares": 5,
+            "entry_price": 0.55,
+            "hedge_entry_price": 0.43,
+            "direction_up": False,
+            "side": "NO",
+            "size": 2.75,
+        }
+        state.early_up_shares = 5
+        state.early_up_cost = 2.15
+        state.early_down_shares = 5
+        state.early_down_cost = 2.75
+        state.filled_position_cost_usd = 4.90
+        state.early_filled_notional = 4.90
+        sell_order = bot._build_v2_tracked_order(
+            order_id="filled_down",
+            actual_shares=5,
+            actual_price=0.55,
+            actual_notional_usd=2.75,
+            side="DOWN",
+            target_size=2.75,
+        )
+        sell_order["filled"] = True
+        sell_order["filled_shares"] = 5
+        sell_order["filled_notional_usd"] = 2.75
+        sell_order["inventory_shares"] = 5
+        sell_order["inventory_notional_usd"] = 2.75
+
+        proceeds = await bot._early_sell(
+            state,
+            state.early_position,
+            current_bid=0.40,
+            reason="BAD_PAIR",
+            sell_shares=5,
+            sell_cost=2.75,
+            sell_token_id=window.no_token_id,
+            sell_side_up=False,
+            sell_order=sell_order,
+        )
+
+        assert proceeds == 0
+        assert state.early_up_shares == 5
+        assert state.early_down_shares == 0
+        assert state.early_position is not None
+
     async def test_partial_sell_decrements_source_lot_inventory(self):
         bot = _make_bot()
         window = _make_window()

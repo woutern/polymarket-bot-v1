@@ -787,6 +787,22 @@ class TradingLoop:
             or projected_ev < -0.01
         )
 
+    def _v2_bad_pair_recycle_active(
+        self,
+        *,
+        current_combined_avg: float,
+        current_cost_above_floor: float,
+        current_position_ev: float,
+        max_combined_avg: float,
+        max_cost_above_floor: float,
+    ) -> bool:
+        """Detect complete pairs that are bad enough to justify trimming a rich side."""
+        return (
+            current_combined_avg > max_combined_avg + 0.03
+            or current_cost_above_floor > max_cost_above_floor + 0.25
+            or current_position_ev < -0.10
+        )
+
     def _v2_budget_curve_pct(self, seconds_since_open: float) -> float:
         """Small open, main deployment mid-window, tight late-window add-on."""
         open_pct = self._v2_open_budget_pct()
@@ -2738,8 +2754,42 @@ class TradingLoop:
                         "bid": bid,
                         "excess_shares": excess_shares,
                         "edge_over_hold": edge_over_hold,
+                        "reason": "PAYOUT_FLOOR",
                     }
                 )
+
+            bad_pair_now = (
+                payout_floor >= 5
+                and self._v2_bad_pair_recycle_active(
+                    current_combined_avg=current_combined_avg,
+                    current_cost_above_floor=current_cost_above_floor,
+                    current_position_ev=current_position_ev,
+                    max_combined_avg=max_combined_avg,
+                    max_cost_above_floor=max_cost_above_floor,
+                )
+            )
+
+            if not sell_candidates and bad_pair_now:
+                for side_up, shares, bid in [
+                    (True, int(state.early_up_shares), yes_bid),
+                    (False, int(state.early_down_shares), no_bid),
+                ]:
+                    if shares < 5 or bid < self._v2_orphan_salvage_min_bid():
+                        continue
+                    hold_value = self._v2_side_hold_value(prob_up, side_up)
+                    edge_over_hold = round(bid - hold_value, 3)
+                    if edge_over_hold < 0.03:
+                        continue
+                    sell_candidates.append(
+                        {
+                            "side_up": side_up,
+                            "side": "UP" if side_up else "DOWN",
+                            "bid": bid,
+                            "excess_shares": shares,
+                            "edge_over_hold": edge_over_hold,
+                            "reason": "BAD_PAIR",
+                        }
+                    )
 
             if sell_candidates:
                 sell_candidates.sort(
@@ -2778,7 +2828,7 @@ class TradingLoop:
                     sell_lots.sort(key=lambda x: -x["price"])
                     lot = sell_lots[0]
                     sell_token = window.yes_token_id if sell_side_up else window.no_token_id
-                    sell_reason = "PAYOUT_FLOOR"
+                    sell_reason = str(sell_side.get("reason", "PAYOUT_FLOOR"))
                     proceeds = await self._early_sell(
                         state, pos, sell_bid, sell_reason,
                         sell_shares=lot["shares"], sell_cost=lot["notional"],
@@ -3664,10 +3714,18 @@ class TradingLoop:
         If sell_shares is provided, sell only that many shares (lot-aware).
         Otherwise falls back to pos["shares"] (legacy aggregate).
         """
-        is_partial = sell_shares is not None and sell_shares < (pos.get("shares", 0) or 0)
+        inventory_aware = sell_shares is not None or sell_side_up is not None or sell_order is not None
+        is_partial = inventory_aware or (sell_shares is not None and sell_shares < (pos.get("shares", 0) or 0))
         if self.settings.mode != "live":
             logger.info("early_sell_paper", asset=state.asset, reason=reason, partial=is_partial)
-            if not is_partial:
+            if inventory_aware:
+                sold_up = sell_side_up if sell_side_up is not None else pos.get("direction_up", True)
+                shares = sell_shares if sell_shares is not None else pos.get("shares", 0)
+                cost_basis = sell_cost if sell_cost is not None else pos.get("size", 0)
+                self._v2_apply_sell_fill(state, sold_up, shares, cost_basis, sell_order)
+                if int(state.early_up_shares) <= 0 and int(state.early_down_shares) <= 0:
+                    state.early_position = None
+            elif not is_partial:
                 state.early_position = None
             return 0
 
@@ -3753,8 +3811,10 @@ class TradingLoop:
                 except Exception:
                     pass
                 # Update internal inventory to match executed reality
-                if is_partial:
+                if inventory_aware:
                     self._v2_apply_sell_fill(state, sold_up, shares, cost_basis, sell_order)
+                    if int(state.early_up_shares) <= 0 and int(state.early_down_shares) <= 0:
+                        state.early_position = None
                 else:
                     state.early_position = None
                 return sell_proceeds
@@ -3797,8 +3857,10 @@ class TradingLoop:
                             shares_sold=shares, cost_basis=round(cost_basis_gtc, 2))
                 self._log_activity(state, f"SELL {sold_label} ${gtc_price:.2f}", f"P&L ${pnl:+.2f} ({reason})")
                 # Update internal inventory
-                if is_partial:
+                if inventory_aware:
                     self._v2_apply_sell_fill(state, sold_up, shares, cost_basis_gtc, sell_order)
+                    if int(state.early_up_shares) <= 0 and int(state.early_down_shares) <= 0:
+                        state.early_position = None
                 else:
                     state.early_position = None
                 return sell_proceeds
