@@ -2253,6 +2253,57 @@ class TestExecutionSafety:
         assert round(sell_bid, 2) == 0.52
         assert reason == "ORPHAN_SALVAGE"
 
+    async def test_execution_tick_salvages_small_orphan_early_on_strong_flip(self):
+        bot = _make_bot(max_bet=50.0)
+        bot._v2_check_secrets_refresh = AsyncMock()
+        bot._refresh_orderbook = _noop_refresh
+        bot._post_cheap_order = AsyncMock()
+        bot._v2_poll_fills = AsyncMock()
+        bot._early_sell = AsyncMock(return_value=2.30)
+        bot.model_server.predict = MagicMock(return_value=0.266)
+        window = _make_window()
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.46, no_bid=0.65, yes_ask=0.47, no_ask=0.66)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "yes123",
+            "hedge_token": "no456",
+            "shares": 5,
+            "entry_price": 0.47,
+            "hedge_entry_price": 0.54,
+            "direction_up": True,
+            "side": "YES",
+            "size": 2.35,
+        }
+        state.early_up_shares = 5
+        state.early_up_cost = 2.35
+        state.early_down_shares = 0
+        state.early_down_cost = 0.0
+        state.filled_position_cost_usd = 2.35
+        state.early_filled_notional = 2.35
+        orphan_order = bot._build_v2_tracked_order(
+            order_id="filled_up",
+            actual_shares=5,
+            actual_price=0.47,
+            actual_notional_usd=2.35,
+            side="UP",
+            target_size=2.35,
+        )
+        orphan_order["filled"] = True
+        orphan_order["filled_shares"] = 5
+        orphan_order["filled_notional_usd"] = 2.35
+        orphan_order["inventory_shares"] = 5
+        orphan_order["inventory_notional_usd"] = 2.35
+        state.early_dca_orders = [orphan_order]
+        state.v2_last_rescue_ts = time.time() - 30
+
+        await bot._v2_execution_tick(state, 50_000.0, 30.0)
+
+        bot._early_sell.assert_awaited_once()
+        _, _, sell_bid, reason = bot._early_sell.await_args.args[:4]
+        assert round(sell_bid, 2) == 0.46
+        assert reason == "ORPHAN_SALVAGE"
+
     async def test_execution_tick_does_not_salvage_large_favored_orphan(self):
         bot = _make_bot(max_bet=50.0)
         bot._v2_check_secrets_refresh = AsyncMock()

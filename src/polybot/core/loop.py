@@ -780,24 +780,32 @@ class TradingLoop:
         max_combined_avg: float,
         max_cost_above_floor: float,
     ) -> bool:
-        if seconds_since_open < self._v2_salvage_start_seconds():
-            return False
-        if current_bid < self._v2_orphan_salvage_min_bid():
-            return False
         projected_combined = float(projected["combined_avg"])
         projected_cost_above_floor = float(projected["cost_above_floor"])
         projected_ev = float(projected["expected_ev"])
         edge = abs(prob_up - 0.50)
         favored_side_up = prob_up >= 0.50
-        if total_shares > 10:
-            return False
-        if edge >= 0.08 and orphan_side_up == favored_side_up:
-            return False
-        return (
+        projected_bad = (
             projected_combined > max_combined_avg + 1e-9
             or projected_cost_above_floor > max_cost_above_floor + 1e-9
             or projected_ev < -0.01
         )
+        if current_bid < self._v2_orphan_salvage_min_bid():
+            return False
+        if total_shares > 10:
+            return False
+        if edge >= 0.08 and orphan_side_up == favored_side_up:
+            return False
+        normal_salvage_due = seconds_since_open >= self._v2_salvage_start_seconds()
+        early_strong_flip_salvage = (
+            total_shares <= 5
+            and edge >= 0.10
+            and orphan_side_up != favored_side_up
+            and seconds_since_open >= 20.0
+        )
+        if not (normal_salvage_due or early_strong_flip_salvage):
+            return False
+        return projected_bad
 
     def _v2_rescue_worth_completing(
         self,
