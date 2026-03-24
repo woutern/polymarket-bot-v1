@@ -2043,16 +2043,21 @@ class TestExecutionSafety:
         state.filled_position_cost_usd = 14.4
         state.early_filled_notional = 14.4
 
-        await bot._v2_execution_tick(state, 50_000.0, 120.0)
+        await bot._v2_execution_tick(state, 50_000.0, 119.0)
 
         posted_tokens = [call.args[1] for call in bot._post_cheap_order.await_args_list]
         # Balance cap: UP is already 80% of shares (20/25), so the 75% cap
-        # blocks more UP buys.  The unfavored DOWN side (no456) should get
-        # the buy instead since it's under-represented and passes the loose guard.
+        # (active before T+120) blocks more UP buys.  The unfavored DOWN
+        # side (no456) should get the buy instead since it's
+        # under-represented and passes the loose guard.
         assert "yes123" not in posted_tokens
         assert "no456" in posted_tokens
 
     async def test_execution_tick_blocks_negative_ev_rich_side_add(self):
+        """Old projected-EV check is gone.  Only hard cap (82c) + balance cap
+        (90% after T+120) + dying-side block (other_bid>70c after T+60) remain.
+        Both sides are under 82c, the 5/5 split is balanced, and neither
+        side's other_bid exceeds 70c, so both YES and NO orders go through."""
         bot = _make_bot(max_bet=50.0)
         bot._v2_check_secrets_refresh = AsyncMock()
         bot._refresh_orderbook = _noop_refresh
@@ -2061,7 +2066,7 @@ class TestExecutionSafety:
         window = _make_window()
         state = _make_state(window=window)
         state.orderbook = _make_orderbook(
-            yes_bid=0.75, no_bid=0.25, yes_ask=0.76, no_ask=0.26
+            yes_bid=0.65, no_bid=0.35, yes_ask=0.66, no_ask=0.36
         )
         state.early_position = {
             "slug": "early_btc-updown-5m-1000000",
@@ -2084,11 +2089,8 @@ class TestExecutionSafety:
         await bot._v2_execution_tick(state, 50_000.0, 120.0)
 
         posted_tokens = [call.args[1] for call in bot._post_cheap_order.await_args_list]
-        # Edge < 0.08 so K9 bypass does NOT apply; the expensive YES side is
-        # still blocked by the expensive-side price cap.
-        assert "yes123" not in posted_tokens
-        # The cheap unfavored DOWN side (no_bid=0.25) passes the looser guard
-        # thresholds, so some DOWN orders are allowed through.
+        # Both sides under 82c, balance is 50/50, no dying-side → both go through.
+        assert "yes123" in posted_tokens
         assert "no456" in posted_tokens
 
     async def test_execution_tick_counts_reserved_orders_in_pair_risk(self):
@@ -2458,6 +2460,9 @@ class TestExecutionSafety:
         assert bot._early_sell.await_args.kwargs["sell_side_up"] is False
 
     async def test_execution_tick_blocks_new_buys_when_pair_state_is_bad(self):
+        """Bad pair state no longer blocks buys.  Verify balance cap still
+        works: with 30 UP shares vs 5 DOWN (total 35), adding 5 more UP
+        would be 35/40 = 87.5% → blocked.  DOWN side (10/40 = 25%) passes."""
         bot = _make_bot(max_bet=50.0)
         bot._v2_check_secrets_refresh = AsyncMock()
         bot._refresh_orderbook = _noop_refresh
@@ -2472,32 +2477,35 @@ class TestExecutionSafety:
             "slug": "early_btc-updown-5m-1000000",
             "token_id": "yes123",
             "hedge_token": "no456",
-            "shares": 20,
+            "shares": 35,
             "entry_price": 0.54,
             "hedge_entry_price": 0.60,
             "direction_up": False,
             "side": "NO",
-            "size": 11.40,
+            "size": 19.20,
         }
-        state.early_up_shares = 10
-        state.early_up_cost = 5.40
-        state.early_down_shares = 10
-        state.early_down_cost = 6.00
-        state.filled_position_cost_usd = 11.40
-        state.early_filled_notional = 11.40
+        # Heavily imbalanced: 30 UP vs 5 DOWN (total 35, >= 10 threshold)
+        state.early_up_shares = 30
+        state.early_up_cost = 16.20
+        state.early_down_shares = 5
+        state.early_down_cost = 3.00
+        state.filled_position_cost_usd = 19.20
+        state.early_filled_notional = 19.20
 
         await bot._v2_execution_tick(state, 50_000.0, 120.0)
 
         posted_tokens = [call.args[1] for call in bot._post_cheap_order.await_args_list]
-        # K9 rule: favored DOWN side (edge=0.15 >= 0.08) bypasses pair guard,
-        # so no456 orders are now allowed through.
-        assert "no456" in posted_tokens
-        # Unfavored UP side is still blocked.
+        # Balance cap blocks UP: (30+5)/(35+5) = 87.5% > 75%
         assert "yes123" not in posted_tokens
+        # DOWN side is fine: (5+5)/(35+5) = 25% < 75%
+        assert "no456" in posted_tokens
 
     async def test_execution_tick_blocks_expensive_catch_up_when_pair_is_incomplete(
         self,
     ):
+        """Incomplete pair freeze is removed.  Both prices are under 82c and
+        total shares (5) is below the balance-cap threshold of 10, so buys
+        now go through on both sides."""
         bot = _make_bot(max_bet=50.0)
         bot._v2_check_secrets_refresh = AsyncMock()
         bot._refresh_orderbook = _noop_refresh
@@ -2528,7 +2536,10 @@ class TestExecutionSafety:
 
         await bot._v2_execution_tick(state, 50_000.0, 90.0)
 
-        bot._post_cheap_order.assert_not_awaited()
+        posted_tokens = [call.args[1] for call in bot._post_cheap_order.await_args_list]
+        # Both sides under 82c, total shares < 10 so balance cap inactive.
+        assert "yes123" in posted_tokens or "no456" in posted_tokens
+        bot._post_cheap_order.assert_awaited()
 
     async def test_execution_tick_rescues_missing_side_when_pair_is_salvageable(self):
         bot = _make_bot(max_bet=50.0)
@@ -2888,6 +2899,10 @@ class TestExecutionSafety:
         bot._early_sell.assert_not_awaited()
 
     async def test_execution_tick_blocks_late_expensive_rich_side_add(self):
+        """The favored DOWN side is blocked by the dynamic balance cap (90%
+        after T+120) because the position is heavily skewed toward NO.  The
+        cheap unfavored UP side passes the dying-side guard (other_bid=0.68
+        ≤ 0.70) and the balance cap, so it goes through."""
         bot = _make_bot(max_bet=50.0)
         bot._v2_check_secrets_refresh = AsyncMock()
         bot._refresh_orderbook = _noop_refresh
@@ -2896,34 +2911,34 @@ class TestExecutionSafety:
         window = _make_window()
         state = _make_state(window=window)
         state.orderbook = _make_orderbook(
-            yes_bid=0.18, no_bid=0.83, yes_ask=0.19, no_ask=0.84
+            yes_bid=0.30, no_bid=0.68, yes_ask=0.31, no_ask=0.69
         )
         state.early_position = {
             "slug": "early_btc-updown-5m-1000000",
             "token_id": "no456",
             "hedge_token": "yes123",
-            "shares": 40,
-            "entry_price": 0.83,
-            "hedge_entry_price": 0.18,
+            "shares": 47,
+            "entry_price": 0.68,
+            "hedge_entry_price": 0.30,
             "direction_up": False,
             "side": "NO",
-            "size": 31.50,
+            "size": 30.06,
         }
-        state.early_up_shares = 35
-        state.early_up_cost = 7.35
-        state.early_down_shares = 30
-        state.early_down_cost = 24.15
-        state.filled_position_cost_usd = 31.50
-        state.early_filled_notional = 31.50
+        state.early_up_shares = 5
+        state.early_up_cost = 1.50
+        state.early_down_shares = 42
+        state.early_down_cost = 28.56
+        state.filled_position_cost_usd = 30.06
+        state.early_filled_notional = 30.06
 
         await bot._v2_execution_tick(state, 50_000.0, 220.0)
 
         posted_tokens = [call.args[1] for call in bot._post_cheap_order.await_args_list]
-        # The favored DOWN side (no_bid=0.83) is blocked by the
-        # expensive-side price cap (0.75 at T+220), NOT the pair guard.
+        # The favored DOWN side (42 of 47 shares = 89%) is blocked by the
+        # dynamic balance cap (90% after T+120): (42+5)/(47+5)=90.4% > 90%.
         assert "no456" not in posted_tokens
-        # The cheap unfavored UP side (yes_bid=0.18) passes the looser
-        # guard thresholds and is allowed through.
+        # The cheap unfavored UP side (other_bid=0.68 ≤ 0.70) passes the
+        # dying-side guard and the balance cap.
         assert "yes123" in posted_tokens
 
 

@@ -728,7 +728,7 @@ class TradingLoop:
         return 20.0
 
     def _v2_buy_only_start_seconds(self) -> float:
-        return 180.0
+        return 240.0
 
     def _v2_commit_start_seconds(self) -> float:
         return 250.0
@@ -3105,19 +3105,19 @@ class TradingLoop:
         # ── 2a. LATE-WINDOW DUMP (T+210 to T+250) ────────────────────────
         # Sell near-worthless losing shares before commit. Even 3c per share
         # is better than $0 at resolution.
-        LATE_DUMP_START = 210.0
+        LATE_DUMP_START = 180.0
         if LATE_DUMP_START <= seconds_since_open < commit_start:
             last_sell_ts = getattr(state, "v2_last_sell_ts", 0.0)
             dump_cooldown_ok = (
-                (time.time() - last_sell_ts) >= 15.0 if last_sell_ts > 0 else True
+                (time.time() - last_sell_ts) >= 10.0 if last_sell_ts > 0 else True
             )
             if dump_cooldown_ok:
                 for side_up, shares, bid in [
                     (True, int(state.early_up_shares), yes_bid),
                     (False, int(state.early_down_shares), no_bid),
                 ]:
-                    if shares < 5 or bid <= 0 or bid >= 0.10:
-                        continue  # not worthless, or no shares
+                    if shares < 5 or bid <= 0 or bid >= 0.25:
+                        continue  # not cheap enough to dump, or no shares
                     # Find a lot to sell
                     for order in state.early_dca_orders:
                         if not order.get("filled"):
@@ -3380,84 +3380,34 @@ class TradingLoop:
                     if side_up
                     else int(state.early_up_shares)
                 )
-                lagging_side = side_shares < other_shares
-                other_avg = current_down_avg if side_up else current_up_avg
-                expensive_side_cap = self._v2_expensive_side_price_cap(
-                    seconds_since_open
-                )
-                if (
-                    other_avg > 0
-                    and post_price > other_avg
-                    and post_price > expensive_side_cap
-                ):
-                    pair_guard_skipped += 1
-                    continue
-                projected = self._v2_projected_pair_metrics(
-                    state,
-                    prob_up=prob_up,
-                    current_total_notional=current_total_notional,
-                    side_up=side_up,
-                    shares=base_shares,
-                    notional=notional,
-                )
-                projected_combined = float(projected["combined_avg"])
-                projected_cost_above_floor = float(projected["cost_above_floor"])
-                projected_pair_exists = int(projected["payout_floor"]) >= 5
-                projected_position_ev = float(projected["expected_ev"])
+                # K9-STYLE GUARD: hard cap + balance cap + dying side block.
+                #
+                # Rules:
+                # 1. Hard cap (82c) — already checked above
+                # 2. Don't buy a side when the OTHER side is above 70c
+                #    (market says 90%+ this side loses — stop wasting capital)
+                # 3. Balance cap: dynamic — 75% before T+120, 90% after
+                #    (K9 goes up to 87.6% on heavy side)
+                # 4. That's it. Let the budget deploy.
 
-                # If only one side has filled, freeze additional buys on that side until
-                # the missing side catches up at an acceptable starter-pair price.
-                if current_payout_floor <= 0 and side_shares >= 5 and other_shares <= 0:
+                # Rule 2: dying side block — if other side bid > 70c,
+                # this side is almost certainly losing. Don't buy it.
+                other_bid = no_bid if side_up else yes_bid
+                if seconds_since_open >= 60 and other_bid > 0.70:
                     pair_guard_skipped += 1
                     continue
 
-                # As soon as a candidate buy would complete the pair, enforce the same
-                # pair-quality guardrails. This blocks "catch-up" fills like buying the
-                # missing side at 0.65 against an existing 0.52 fill in a weak-signal window.
-                if projected_pair_exists:
-                    edge = abs(prob_up - 0.50)
-                    favored_side = (prob_up >= 0.50 and side_up) or (
-                        prob_up < 0.50 and not side_up
-                    )
-
-                    # Balance cap: favored side can't exceed 75% of total shares.
-                    # This prevents 96/4 positions — we want directional lean, not
-                    # all-in one-sided bets.  K9 ends up 45-55% balanced.
-                    total_shares_now = int(state.early_up_shares) + int(
-                        state.early_down_shares
-                    )
-                    if total_shares_now >= 10 and favored_side:
-                        favored_shares = (
-                            side_shares + base_shares
-                        )  # projected after this buy
-                        favored_pct = favored_shares / (total_shares_now + base_shares)
-                        if favored_pct > 0.75:
-                            pair_guard_skipped += 1
-                            continue
-
-                    # Favored side with model edge: use loose guard only
-                    if favored_side and edge >= 0.08:
-                        # Still check: don't buy if projected EV is deeply negative
-                        if projected_position_ev < -1.0:
-                            pair_guard_skipped += 1
-                            continue
-                    else:
-                        # Unfavored / weak-signal side gets guard — but looser
-                        # when under-represented (needs to catch up for balance)
-                        under_represented = side_shares < other_shares
-                        if under_represented:
-                            # Loose guard: let the hedge side catch up
-                            projected_within_limits = projected_position_ev >= -0.50
-                        else:
-                            projected_within_limits = (
-                                projected_combined <= max_combined_avg + 0.02
-                                and projected_cost_above_floor
-                                <= max_cost_above_floor + 0.50
-                                and projected_position_ev >= -0.10
-                            )
-                        if not projected_within_limits:
-                            pair_guard_skipped += 1
-                            continue
+                # Rule 3: dynamic balance cap
+                total_shares_now = int(state.early_up_shares) + int(
+                    state.early_down_shares
+                )
+                if total_shares_now >= 10:
+                    balance_cap = 0.90 if seconds_since_open >= 120 else 0.75
+                    side_after = side_shares + base_shares
+                    side_pct = side_after / (total_shares_now + base_shares)
+                    if side_pct > balance_cap:
+                        pair_guard_skipped += 1
+                        continue
 
                 if not self._reserve_v2_budget(
                     state, notional, "exec_" + side.lower(), side
@@ -3746,8 +3696,8 @@ class TradingLoop:
             # This is the K9 "sell losers to fund winners" mechanic
             if not sell_candidates and normal_sell_window:
                 edge = abs(prob_up - 0.50)
+                favored_up = prob_up >= 0.50
                 if edge >= 0.10:  # model is at least 60/40 confident
-                    favored_up = prob_up >= 0.50
                     for side_up, shares, bid, avg in [
                         (True, int(state.early_up_shares), yes_bid, current_up_avg),
                         (False, int(state.early_down_shares), no_bid, current_down_avg),
@@ -3776,6 +3726,26 @@ class TradingLoop:
                                 "reason": "UNFAVORED_RICH",
                             }
                         )
+
+                # Also: if other side bid > 80c, this side is dead — dump it
+                # regardless of model edge (market is 80%+ sure)
+                if not sell_candidates:
+                    for side_up, shares, bid in [
+                        (True, int(state.early_up_shares), yes_bid),
+                        (False, int(state.early_down_shares), no_bid),
+                    ]:
+                        other_bid_now = no_bid if side_up else yes_bid
+                        if other_bid_now > 0.80 and shares >= 5 and bid > 0.01:
+                            sell_candidates.append(
+                                {
+                                    "side_up": side_up,
+                                    "side": "UP" if side_up else "DOWN",
+                                    "bid": bid,
+                                    "excess_shares": shares,
+                                    "edge_over_hold": 0.0,
+                                    "reason": "DEAD_SIDE",
+                                }
+                            )
 
             if (
                 not sell_candidates
@@ -3832,26 +3802,24 @@ class TradingLoop:
                         }
                     )
 
+            # Filter out the favored/winning side — NEVER sell it.
+            # The churn loop happens because BAD_PAIR sells the expensive
+            # side, which is often the WINNING side (high avg = market
+            # thinks it wins).  K9 only sells the LOSING side.
+            favored_up = prob_up >= 0.50
+            sell_candidates = [
+                c
+                for c in sell_candidates
+                if c["side_up"] != favored_up  # only sell the unfavored side
+            ]
+
             if sell_candidates:
-                # For BAD_PAIR: prefer selling the side with higher avg price
-                # (the expensive side pushing combined above 1.00).
-                # For PAYOUT_FLOOR: prefer selling excess with best edge_over_hold.
+                # Sort by best improvement
                 def _sell_sort_key(item):
-                    if item.get("reason") == "BAD_PAIR":
-                        # Prefer the side with higher avg — that's the one hurting the pair
-                        side_avg = (
-                            current_up_avg if item["side_up"] else current_down_avg
-                        )
-                        return (
-                            side_avg,  # higher avg = sell this one first
-                            item.get("ev_improvement", 0.0),
-                            item.get("cost_improvement", 0.0),
-                        )
                     return (
-                        item.get("ev_improvement", item["edge_over_hold"]),
+                        item.get("ev_improvement", item.get("edge_over_hold", 0)),
                         item.get("cost_improvement", 0.0),
                         item["excess_shares"],
-                        item["edge_over_hold"],
                     )
 
                 sell_candidates.sort(key=_sell_sort_key, reverse=True)
@@ -3912,6 +3880,52 @@ class TradingLoop:
                         else:
                             state.v2_last_sell_price_down = sell_bid
                         await self._v2_poll_fills(state)
+
+                        # K9-STYLE SELL-AND-REBUY: immediately use proceeds
+                        # to buy the cheap opposite side.  K9 rebuys within
+                        # 2 seconds (37% same second).
+                        rebuy_side_up = not sell_side_up
+                        rebuy_bid = yes_bid if rebuy_side_up else no_bid
+                        if rebuy_bid > 0 and rebuy_bid <= HARD_CAP_PRICE:
+                            rebuy_notional = round(base_shares * rebuy_bid, 2)
+                            rebuy_token = (
+                                window.yes_token_id
+                                if rebuy_side_up
+                                else window.no_token_id
+                            )
+                            if rebuy_token and self._reserve_v2_budget(
+                                state,
+                                rebuy_notional,
+                                "sell_rebuy",
+                                "UP" if rebuy_side_up else "DOWN",
+                            ):
+                                try:
+                                    await self._post_cheap_order(
+                                        state,
+                                        rebuy_token,
+                                        rebuy_bid,
+                                        base_shares,
+                                        rebuy_notional,
+                                        rebuy_side_up,
+                                        options,
+                                        target_size=rebuy_notional,
+                                    )
+                                    logger.info(
+                                        "v2_sell_rebuy",
+                                        asset=state.asset,
+                                        sold_side="UP" if sell_side_up else "DOWN",
+                                        rebuy_side="UP" if rebuy_side_up else "DOWN",
+                                        rebuy_price=round(rebuy_bid, 2),
+                                        rebuy_notional=round(rebuy_notional, 2),
+                                        seconds=int(seconds_since_open),
+                                    )
+                                except Exception:
+                                    self._release_v2_budget(
+                                        state,
+                                        rebuy_notional,
+                                        "sell_rebuy_error",
+                                        "UP" if rebuy_side_up else "DOWN",
+                                    )
 
         # ── 7. LOG ────────────────────────────────────────────────────────
         net_cost = self._v2_filled_position_cost_usd(state)
