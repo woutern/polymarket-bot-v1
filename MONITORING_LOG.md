@@ -1,6 +1,90 @@
 # Live Monitoring Log — March 24, 2026
 
-## Session Info
+## POST-MORTEM: What went wrong today
+
+### Total estimated losses: -$80 to -$120
+
+The bot went through 12+ code deploys (:48 through :62) in a single day.
+Each deploy fixed one problem but introduced new ones. The result was a
+series of different failure modes, each causing real money losses.
+
+### Root causes (in order of impact)
+
+**1. Direction lock killed us (-$60+ estimated)**
+At T+60 the bot locked its model prediction and refused to change.
+When the market reversed after T+60, the bot was stuck buying the
+losing side. Example: model locked DOWN at T+60, BTC went UP after,
+bot held 165 DOWN shares losing $31.90 while UP shares were worth $15.85.
+The "never sell favored side" rule prevented recovering because the
+locked model said DOWN was favored even though the market said UP.
+
+**2. Buying dying shares (-$20+ estimated)**
+The bot kept buying UP at 4-9c when BTC had already dropped $551.
+Or buying DOWN at 22c when BTC was up $192. These are shares going
+to zero at resolution. Capital wasted that should have gone to the
+winning side.
+
+**3. Churn loop on winning side (-$15+ estimated)**
+Buying UP at 69c, selling at 66c, buying again at 65c. The sell
+triggers and buy logic fought each other. Each round trip lost
+3-5c per share in spread.
+
+**4. Pair guard blocked 90% of budget (-$30+ opportunity cost)**
+For most of the day, the bot deployed $7-12 of $100 budget. The
+pair guard checked projected combined_avg, cost_above_floor, and
+position_ev before every buy. Almost everything failed these checks.
+K9 deploys 80%+ of budget.
+
+**5. Phantom inventory bug**
+Shares disappeared from inventory without a sell order. The
+`_v2_apply_sell_fill` was being called from an unexpected code path.
+Guard added (`confirmed_sell` flag) but root cause not fully traced.
+
+### What each deploy changed and what went wrong
+
+| Deploy | Change | Result |
+|--------|--------|--------|
+| :48-:51 | Orphan rescue, salvage, recycle | Recycle never fired (thresholds too strict) |
+| :52 | 8-stream data collection | Working correctly |
+| :53-:54 | Loosen BAD_PAIR thresholds | Sold the WRONG side (winning side) |
+| :55 | Fix sell side (expensive-avg not high-bid) | Correct side, but still too few sells |
+| :56 | UNFAVORED_RICH sell + direction lock at T+60 | Direction lock prevented adapting to reversals |
+| :57 | Favored-side pair guard bypass | Bot went 96/4 one-sided (too aggressive) |
+| :58 | 75% balance cap | Better balance but still low deployment |
+| :59 | 55c hard cap + anti-churn | Budget frozen at $5-12 (cap too strict) |
+| :60 | Phantom inventory guard | Fixed symptom not root cause |
+| :61 | 82c hard cap + 10s cooldown | Churn loop: buy 69c sell 66c buy 65c |
+| :62 | Strip pair guard, dying side block, sell-and-rebuy | Direction lock still kills us on reversals |
+
+### The fundamental mistake
+
+I kept making incremental patches and deploying them live immediately.
+Each patch was tested against simulations but simulations don't capture:
+- Market reversals mid-window
+- The interaction between buy logic and sell logic
+- Model being wrong 36% of the time
+- The speed at which losing positions compound
+
+### What needs to happen before going live again
+
+1. **Remove direction lock entirely** — use market price, not locked model
+2. **Use market bid as the "favored side" signal for sells** — if UP bid > 60c, UP is winning regardless of model
+3. **Proper simulation with realistic market reversals** — not just UP/DOWN/RANGE
+4. **Test for at least 50 simulated windows** before live deploy
+5. **Single deploy, single test** — not 12 deploys in one day
+6. **Set a loss limit** — stop the bot automatically if losses exceed $X per window
+
+### Lessons learned
+
+- More guards ≠ better. Each guard blocked something useful.
+- The model is 64% accurate. 36% of the time it's wrong. The strategy MUST handle being wrong gracefully.
+- K9 doesn't lock direction. K9 adapts to the market continuously.
+- Simulations with fixed UP/DOWN scenarios don't test the most important case: the market reversing mid-window.
+- Deploying 12 times in one day is reckless. Each deploy should be a deliberate, tested change.
+
+---
+
+## Session Info (final state)
 - **Task definition:** :59
 - **Budget:** $100 per window (EARLY_ENTRY_MAX_BET=100)
 - **Pairs trading:** BTC_5m only
@@ -51,7 +135,7 @@ Notes: [anything unusual]
 
 (Windows logged below as they complete)
 
-### Window 0 — ~13:05 UTC (task :59) — PREVIOUS WINDOW
+### Window 0 — ~13:05 UTC (task :59)
 ```
 13:05:06 FILL UP=5@0.51, DN=5@0.50
 13:05:14 FILL DN=5@0.51, DN=5@0.50 (more DOWN)
@@ -120,24 +204,26 @@ identify which caller is invoking it outside of a real sell execution.
 
 ## Priority Improvements for Next Session
 
-### CRITICAL (do first when back)
-0. **Fix vanishing shares bug** — `_v2_apply_sell_fill` is being called without a real sell. Shares disappear from inventory. This breaks everything.
+### CRITICAL (do BEFORE any live trading)
+0. **Remove direction lock** — use market price to determine winning side, not locked model
+1. **Use market bid for sell decisions** — if UP bid > 60c, UP is winning. Sell DOWN.
+2. **Build realistic reversal simulations** — test market flipping mid-window
+3. **Test 50+ simulated windows** — not just 3 fixed scenarios
+4. **Set automatic loss limit** — stop bot if window loss > $20
 
-### Immediate (after critical fix)
-1. **Enable ETH_5m** — best calibrated model, same strategy, $50 budget
-2. **Fix signal features** — stop writing 0s in training data
-3. **Temperature scaling** — fix BTC/SOL calibration with 1-parameter method
+### After strategy is validated
+5. **Fix vanishing shares bug** — trace the exact caller
+6. **Enable ETH_5m** — best calibrated model, $50 budget
+7. **Fix signal features** — stop writing 0s in training data
+8. **Temperature scaling** — fix BTC/SOL calibration
+9. **Build 1h training pipeline** — convert S3 candle data
 
-### Short-term (this week)
-4. **Add multi-timeframe features** — hourly trend as input to 5m model
-5. **Add orderbook features** — depth imbalance, spread to model
-6. **Wider ladder** — 5-6 price levels instead of 1-3
-7. **Add XGBoost + CatBoost ensemble** — diversity improves accuracy
-
-### Medium-term
-8. **Build 1h training pipeline** — convert S3 candle data to labeled windows
-9. **Train BTC_1h model** — K9's hourly strategy is simpler (no sells, just accumulate)
-10. **Fix deploy speed** — slim Docker image, cache layers properly
+### Do NOT do again
+- Deploy 12 times in one day
+- Add "safety" guards without testing interaction effects
+- Lock direction based on a 64% accurate model
+- Override market signals with model predictions
+- Go live without reversal-scenario testing
 
 ---
 
