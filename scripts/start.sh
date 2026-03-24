@@ -9,7 +9,7 @@ set -e
 python3 -c "import time; open('/tmp/heartbeat','w').write(str(time.time()))"
 
 echo "Starting MarketMaker Bot (V2 both-sides, live)..."
-PYTHONPATH=/app/src .venv/bin/python scripts/run_mm.py --live --yes --budget "${MM_BUDGET:-80}" &
+PYTHONPATH=/app/src .venv/bin/python scripts/run_mm.py --live --yes --budget "${MM_BUDGET:-80}" --model &
 BOT_PID=$!
 
 echo "Starting Dashboard on port 8888..."

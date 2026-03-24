@@ -300,6 +300,10 @@ class WindowRunner:
         self._result = result
         self.store.put_window(self.window_id, result)
 
+        # Write training data row to polymarket-bot-training-data for retrain pipeline
+        _close = close_price if self._fb_initialised and close_price > 0 else 0.0
+        self._write_training_data(_close)
+
     # ------------------------------------------------------------------
     # Live order execution
     # ------------------------------------------------------------------
@@ -375,6 +379,37 @@ class WindowRunner:
     def result(self) -> WindowResult | None:
         """Return the final WindowResult (available after run() completes)."""
         return self._result
+
+    def _write_training_data(self, close_price: float) -> None:
+        """Write a training data row to polymarket-bot-training-data for the retrain pipeline."""
+        try:
+            import boto3
+            open_price = self._feature_builder.open_price if self._fb_initialised else 0.0
+            if not open_price or not close_price:
+                return
+            pct_move = (close_price - open_price) / open_price * 100
+            went_up = close_price >= open_price
+            asset = self._asset
+            slug = self.window_id.split("_", 2)[-1] if "_" in self.window_id else self.window_id
+            row = {
+                "window_id": {"S": f"{asset}_5m_{slug}"},
+                "timestamp": {"N": str(int(self.window_open_ts))},
+                "asset": {"S": asset},
+                "timeframe": {"S": "5m"},
+                "open_price": {"N": str(round(open_price, 2))},
+                "close_price": {"N": str(round(close_price, 2))},
+                "pct_move": {"N": str(round(pct_move, 6))},
+                "outcome": {"N": "1" if went_up else "0"},
+                "direction": {"S": "up" if went_up else "down"},
+                "data_source": {"S": "mm_live"},
+            }
+            boto3.client("dynamodb", region_name="eu-west-1").put_item(
+                TableName="polymarket-bot-training-data",
+                Item=row,
+            )
+            logger.info("runner_training_data_written window_id=%s direction=%s", self.window_id, row["direction"]["S"])
+        except Exception as exc:
+            logger.debug("runner_training_data_failed %s", str(exc)[:80])
 
 
 # ─── Convenience factory ────────────────────────────────────────────────────
