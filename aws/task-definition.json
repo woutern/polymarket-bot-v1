@@ -1,7 +1,9 @@
 {
   "family": "polymarket-bot",
   "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
   "cpu": "512",
   "memory": "1024",
   "taskRoleArn": "arn:aws:iam::688567279867:role/polymarket-bot-task-role",
@@ -152,5 +154,6 @@
         }
       }
     }
-  ]
+  ],
+  "enableExecuteCommand": true
 }

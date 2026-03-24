@@ -160,7 +160,7 @@ crypto, finance, fed, geopolitics, elections, tech, weather, culture, economics,
 |-----------|---------|---------|
 | Bot | ECS Fargate | Single task, multiple processes |
 | Dashboard | Lambda + CloudFront | https://d2rj5lnnfnptd.cloudfront.net/ |
-| Storage | DynamoDB | trades, windows, signals, training_data, opportunity-trades |
+| Storage | DynamoDB | trades, windows, signals, training_data, opportunity-trades, polymarket-bot-controls |
 | Models | S3 | `polymarket-bot-data-688567279867-euw1/models/` |
 | Model paths | SSM Parameter Store | `/polymarket/models/{pair}/latest_path` |
 | Secrets | Secrets Manager | `polymarket-bot-env` |
@@ -169,6 +169,35 @@ crypto, finance, fed, geopolitics, elections, tech, weather, culture, economics,
 | Auto-claim | Builder Relayer API | Every 30 min via Node.js script |
 
 Deployments use `scripts/deploy_aws.sh`, which registers a fresh ECS task definition revision before forcing the service deployment.
+
+### Kill switch / pause (DynamoDB-backed, takes effect within 10s)
+
+```bash
+# Pause new windows (finish current window, then stop):
+aws dynamodb put-item --table-name polymarket-bot-controls --region eu-west-1 \
+  --item '{"bot":{"S":"bot"},"pause_new_windows":{"BOOL":true},"note":{"S":"manual pause"}}'
+
+# Hard kill (stops immediately after current tick):
+aws dynamodb put-item --table-name polymarket-bot-controls --region eu-west-1 \
+  --item '{"bot":{"S":"bot"},"kill_switch":{"BOOL":true},"note":{"S":"emergency stop"}}'
+
+# Resume (clear all flags):
+aws dynamodb delete-item --table-name polymarket-bot-controls --region eu-west-1 \
+  --key '{"bot":{"S":"bot"}}'
+
+# Emergency: scale ECS to 0 (instant, no graceful cancel):
+aws ecs update-service --cluster polymarket-bot --service polymarket-bot-service \
+  --desired-count 0 --region eu-west-1
+```
+
+### Shell into running container (ECS Exec)
+
+```bash
+TASK=$(aws ecs list-tasks --cluster polymarket-bot --service-name polymarket-bot-service \
+  --region eu-west-1 --query 'taskArns[0]' --output text)
+aws ecs execute-command --cluster polymarket-bot --task $TASK \
+  --container polymarket-bot --interactive --command /bin/sh --region eu-west-1
+```
 
 ---
 

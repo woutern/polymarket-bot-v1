@@ -109,6 +109,17 @@ async def _main() -> None:
 
     model_server = _load_model_server() if args.model else None
 
+    # Live mode uses DynamoDB-backed controls (kill_switch + pause_new_windows).
+    # Paper mode uses in-memory controls (no AWS needed).
+    controls = None
+    if mode == "live":
+        try:
+            from polybot.core.controls import BotControls
+            controls = BotControls()
+            print(f"  Controls: DynamoDB (polymarket-bot-controls)")
+        except Exception as exc:
+            print(f"  Controls: DynamoDB unavailable ({exc!s:.60}) — using in-memory")
+
     print()
     print("=" * 55)
     print(f"  MarketMaker Bot — {mode.upper()}")
@@ -126,6 +137,7 @@ async def _main() -> None:
         budget_override=args.budget,
         model_server=model_server,
         max_windows=args.windows,
+        controls=controls,
     )
 
     # Handle Ctrl+C gracefully — stop after current window
