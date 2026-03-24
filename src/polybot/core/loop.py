@@ -3329,20 +3329,41 @@ class TradingLoop:
                         prob_up < 0.50 and not side_up
                     )
 
-                    # K9 rule: favored side buys are NEVER blocked by pair
-                    # guard when model has edge >= 0.08.  The cheap favored
-                    # side is where the profit comes from — blocking it is
-                    # what caused us to sit on $93 unused budget.
+                    # Balance cap: favored side can't exceed 75% of total shares.
+                    # This prevents 96/4 positions — we want directional lean, not
+                    # all-in one-sided bets.  K9 ends up 45-55% balanced.
+                    total_shares_now = int(state.early_up_shares) + int(
+                        state.early_down_shares
+                    )
+                    if total_shares_now >= 10 and favored_side:
+                        favored_shares = (
+                            side_shares + base_shares
+                        )  # projected after this buy
+                        favored_pct = favored_shares / (total_shares_now + base_shares)
+                        if favored_pct > 0.75:
+                            pair_guard_skipped += 1
+                            continue
+
+                    # Favored side with model edge: use loose guard only
                     if favored_side and edge >= 0.08:
-                        pass  # no pair guard — just buy it
+                        # Still check: don't buy if projected EV is deeply negative
+                        if projected_position_ev < -1.0:
+                            pair_guard_skipped += 1
+                            continue
                     else:
-                        # Unfavored / weak-signal side still gets guarded
-                        projected_within_limits = (
-                            projected_combined <= max_combined_avg + 0.02
-                            and projected_cost_above_floor
-                            <= max_cost_above_floor + 0.50
-                            and projected_position_ev >= -0.10
-                        )
+                        # Unfavored / weak-signal side gets guard — but looser
+                        # when under-represented (needs to catch up for balance)
+                        under_represented = side_shares < other_shares
+                        if under_represented:
+                            # Loose guard: let the hedge side catch up
+                            projected_within_limits = projected_position_ev >= -0.50
+                        else:
+                            projected_within_limits = (
+                                projected_combined <= max_combined_avg + 0.02
+                                and projected_cost_above_floor
+                                <= max_cost_above_floor + 0.50
+                                and projected_position_ev >= -0.10
+                            )
                         if not projected_within_limits:
                             pair_guard_skipped += 1
                             continue

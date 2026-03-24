@@ -2046,11 +2046,11 @@ class TestExecutionSafety:
         await bot._v2_execution_tick(state, 50_000.0, 120.0)
 
         posted_tokens = [call.args[1] for call in bot._post_cheap_order.await_args_list]
-        # K9 rule: favored side (YES/up) with edge >= 0.08 bypasses pair guard,
-        # so yes123 is posted even though it's the rich side.
-        assert "yes123" in posted_tokens
-        # Unfavored DOWN side is still guarded and blocked here.
-        assert "no456" not in posted_tokens
+        # Balance cap: UP is already 80% of shares (20/25), so the 75% cap
+        # blocks more UP buys.  The unfavored DOWN side (no456) should get
+        # the buy instead since it's under-represented and passes the loose guard.
+        assert "yes123" not in posted_tokens
+        assert "no456" in posted_tokens
 
     async def test_execution_tick_blocks_negative_ev_rich_side_add(self):
         bot = _make_bot(max_bet=50.0)
