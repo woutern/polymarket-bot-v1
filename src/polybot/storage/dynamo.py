@@ -159,3 +159,67 @@ class DynamoStore:
         except Exception as e:
             logger.debug("dynamo_query_failed", extra={"error": str(e)})
             return []
+
+    # ── V2 window summaries + per-fill records ─────────────────────────────
+
+    def put_v2_window(self, record: dict):
+        """Write a V2 window summary record. Best-effort."""
+        if not self._available:
+            return
+        try:
+            if not hasattr(self, "_v2_windows"):
+                import boto3
+                import os
+                if not os.getenv("AWS_EXECUTION_ENV"):
+                    try:
+                        session = boto3.Session(profile_name="playground", region_name=self._region)
+                        db = session.resource("dynamodb")
+                    except Exception:
+                        db = boto3.resource("dynamodb", region_name=self._region)
+                else:
+                    db = boto3.resource("dynamodb", region_name=self._region)
+                self._v2_windows = db.Table("polymarket-bot-v2-windows")
+            self._v2_windows.put_item(Item=_to_decimal(record))
+        except Exception as e:
+            logger.debug("dynamo_put_v2_window_failed", extra={"error": str(e)[:80]})
+
+    def update_v2_window_outcome(self, window_slug: str, actual_outcome: str, model_correct: bool, net_pnl: float):
+        """Update a V2 window record with resolution outcome. Best-effort."""
+        if not self._available:
+            return
+        try:
+            if not hasattr(self, "_v2_windows"):
+                return
+            from decimal import Decimal
+            self._v2_windows.update_item(
+                Key={"window_slug": window_slug},
+                UpdateExpression="SET actual_outcome = :o, model_correct = :mc, net_pnl = :pnl",
+                ExpressionAttributeValues={
+                    ":o": actual_outcome,
+                    ":mc": int(model_correct),
+                    ":pnl": Decimal(str(round(net_pnl, 4))),
+                },
+            )
+        except Exception as e:
+            logger.debug("dynamo_update_v2_window_failed", extra={"error": str(e)[:80]})
+
+    def put_v2_fill(self, record: dict):
+        """Write a V2 per-fill record. Best-effort."""
+        if not self._available:
+            return
+        try:
+            if not hasattr(self, "_v2_fills"):
+                import boto3
+                import os
+                if not os.getenv("AWS_EXECUTION_ENV"):
+                    try:
+                        session = boto3.Session(profile_name="playground", region_name=self._region)
+                        db = session.resource("dynamodb")
+                    except Exception:
+                        db = boto3.resource("dynamodb", region_name=self._region)
+                else:
+                    db = boto3.resource("dynamodb", region_name=self._region)
+                self._v2_fills = db.Table("polymarket-bot-v2-fills")
+            self._v2_fills.put_item(Item=_to_decimal(record))
+        except Exception as e:
+            logger.debug("dynamo_put_v2_fill_failed", extra={"error": str(e)[:80]})

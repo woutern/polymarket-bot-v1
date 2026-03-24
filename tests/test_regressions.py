@@ -470,13 +470,20 @@ class TestPairsFiltering:
         assets_enabled = {a for a, _ in pairs}
         assert assets_enabled == {"BTC", "ETH", "SOL"}
 
-    def test_loop_only_creates_states_for_enabled_pairs(self):
-        """TradingLoop.__init__ must only create AssetState for enabled pairs."""
+    def test_watch_pairs_parse_without_enabling_trading(self):
+        """WATCH_PAIRS should be parsed separately from live trading pairs."""
+        from polybot.config import Settings
+        s = Settings(pairs="BTC_5m", watch_pairs="ETH_5m,SOL_5m,XRP_5m", assets="BTC,ETH,SOL")
+        assert s.enabled_pairs == [("BTC", 300)]
+        assert s.watch_pair_list == [("ETH", 300), ("SOL", 300), ("XRP", 300)]
+
+    def test_loop_tracks_watch_pairs_in_addition_to_enabled_pairs(self):
+        """TradingLoop.__init__ should track watch-only pairs without making them tradable."""
         from polybot.core.loop import TradingLoop
         import inspect
         source = inspect.getsource(TradingLoop.__init__)
-        # Must iterate enabled_pairs, not asset_list
-        assert "enabled_pairs" in source, "Loop must use settings.enabled_pairs, not settings.asset_list"
+        assert "enabled_pairs" in source
+        assert "watch_pair_list" in source
 
     def test_pairs_config_in_ecs_task_definition(self):
         """PAIRS must be in the ECS task definition secrets mapping.
@@ -497,18 +504,28 @@ class TestPairsFiltering:
     def test_late_entry_only_trades_enabled_assets(self):
         """_evaluate_late_entry is only called for assets in asset_states.
 
-        asset_states is built from enabled_pairs, so if ETH is not in
-        enabled_pairs, there's no ETH AssetState, and _evaluate_late_entry
-        is never called for it.
+        tradable asset_states are still gated by enabled_pairs even if watch-only
+        pairs are tracked for collection.
         """
         from polybot.core.loop import TradingLoop
         import inspect
-        # The main loop iterates asset_states (built from enabled_pairs)
+        # The main loop iterates asset_states, but only early-entry-enabled pairs trade.
         source = inspect.getsource(TradingLoop._tick_asset)
         assert "_scan_tick" in source, "_tick_asset must call _scan_tick"
-        # __init__ builds asset_states from enabled_pairs
+        # __init__ tracks enabled + watch pairs, but _early_entry_active_for_state
+        # still gates real trading to enabled_pairs only.
         init_source = inspect.getsource(TradingLoop.__init__)
-        assert "enabled_pairs" in init_source, "__init__ must use enabled_pairs to build asset_states"
+        active_source = inspect.getsource(TradingLoop._early_entry_active_for_state)
+        assert "enabled_pairs" in init_source
+        assert "enabled_pairs" in active_source
+
+    def test_on_window_close_uses_dynamic_timeframe_for_training_rows(self):
+        """Training data rows must use the state timeframe, not a hardcoded 5m label."""
+        from polybot.core.loop import TradingLoop
+        import inspect
+        source = inspect.getsource(TradingLoop._on_window_close)
+        assert 'tf = "5m"' not in source
+        assert "_timeframe_key" in source
 
 
 class TestFlatSizingByAsk:

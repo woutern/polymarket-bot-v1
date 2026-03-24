@@ -87,6 +87,14 @@
           "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:PAIRS::"
         },
         {
+          "name": "WATCH_PAIRS",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:WATCH_PAIRS::"
+        },
+        {
+          "name": "DATA_COLLECTION_MODE",
+          "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:DATA_COLLECTION_MODE::"
+        },
+        {
           "name": "LOG_LEVEL",
           "valueFrom": "arn:aws:secretsmanager:eu-west-1:688567279867:secret:polymarket-bot-env-QogeV2:LOG_LEVEL::"
         },

@@ -6,7 +6,6 @@ Falls back to 0.5 (neutral) if no model available.
 
 from __future__ import annotations
 
-import io
 import os
 import pickle
 import time
@@ -17,7 +16,16 @@ import structlog
 
 logger = structlog.get_logger()
 
-PAIRS = ["BTC_5m", "ETH_5m", "SOL_5m"]
+PAIRS = [
+    "BTC_5m",
+    "ETH_5m",
+    "SOL_5m",
+    "XRP_5m",
+    "BTC_1h",
+    "ETH_1h",
+    "SOL_1h",
+    "XRP_1h",
+]
 
 # Adaptive threshold bounds — raised after consecutive losses at low confidence
 _DEFAULT_GATE = 0.60
@@ -39,13 +47,16 @@ class ModelServer:
         try:
             profile = "playground" if not os.getenv("AWS_EXECUTION_ENV") else None
             import boto3
+
             session = boto3.Session(profile_name=profile, region_name=self._region)
             ssm = session.client("ssm")
             s3 = session.client("s3")
 
             for pair in PAIRS:
                 try:
-                    resp = ssm.get_parameter(Name=f"/polymarket/models/{pair}/latest_path")
+                    resp = ssm.get_parameter(
+                        Name=f"/polymarket/models/{pair}/latest_path"
+                    )
                     s3_path = resp["Parameter"]["Value"]
                     if not s3_path.startswith("s3://"):
                         continue
@@ -61,13 +72,17 @@ class ModelServer:
 
                     # Get model age
                     try:
-                        age_resp = ssm.get_parameter(Name=f"/polymarket/models/{pair}/trained_at")
+                        age_resp = ssm.get_parameter(
+                            Name=f"/polymarket/models/{pair}/trained_at"
+                        )
                         self._model_ages[pair] = float(age_resp["Parameter"]["Value"])
                     except Exception:
                         self._model_ages[pair] = time.time()
 
                     age_h = round((time.time() - self._model_ages[pair]) / 3600, 1)
-                    logger.info("model_loaded", pair=pair, path=s3_path, age_hours=age_h)
+                    logger.info(
+                        "model_loaded", pair=pair, path=s3_path, age_hours=age_h
+                    )
                 except ssm.exceptions.ParameterNotFound:
                     logger.debug("no_model", pair=pair)
                 except Exception as e:

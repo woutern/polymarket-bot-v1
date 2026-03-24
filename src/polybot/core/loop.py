@@ -202,8 +202,20 @@ class TradingLoop:
     def __init__(self, settings: Settings):
         self.settings = settings
         enabled = settings.enabled_pairs
-        # Unique assets needed for price feeds (add XRP for hourly markets)
-        assets = sorted({a for a, _ in enabled} | {"XRP"})
+        watched = list(getattr(settings, "watch_pair_list", []) or [])
+        tracked_5m: list[tuple[str, int]] = []
+        seen_pairs: set[tuple[str, int]] = set()
+        for pair in enabled + watched:
+            asset, dur = pair
+            if dur != 300:
+                continue
+            if pair in seen_pairs:
+                continue
+            tracked_5m.append(pair)
+            seen_pairs.add(pair)
+        # Unique assets needed for price feeds.
+        # Always include BTC/ETH/SOL/XRP so 1h watch-only states still get ticks.
+        assets = sorted({a for a, _ in tracked_5m} | {"BTC", "ETH", "SOL", "XRP"})
         self.coinbase = CoinbaseWS(assets=assets)
         self.risk = RiskManager(
             bankroll=settings.bankroll,
@@ -250,9 +262,9 @@ class TradingLoop:
             asset: self._load_base_rate_for(asset) for asset in assets
         }
 
-        # One AssetState per enabled pair (5m)
+        # One AssetState per tracked 5m pair. Trading remains gated by enabled_pairs.
         self.asset_states: dict[str, AssetState] = {}
-        for asset, dur in enabled:
+        for asset, dur in tracked_5m:
             key = f"{asset}_5m"
             self.asset_states[key] = AssetState(
                 asset=asset,
@@ -293,6 +305,11 @@ class TradingLoop:
         self._start_time = time.time()
         self._last_heartbeat = 0.0
         self._last_verify_sweep = 0.0
+
+    @staticmethod
+    def _timeframe_key(window_seconds: int) -> str:
+        mapping = {300: "5m", 900: "15m", 3600: "1h"}
+        return mapping.get(window_seconds, f"{window_seconds}s")
 
 
     async def start(self):
@@ -745,6 +762,56 @@ class TradingLoop:
         new_combined = (new_up_avg + new_down_avg) if (new_up_shares > 0 and new_down_shares > 0) else 0.0
         payout_floor = min(new_up_shares, new_down_shares)
         projected_total = round(current_total_notional + notional, 2)
+        cost_above_floor = max(round(projected_total - payout_floor, 2), 0.0)
+        expected_ev = self._v2_expected_position_ev(
+            prob_up=prob_up,
+            up_shares=new_up_shares,
+            down_shares=new_down_shares,
+            net_cost=projected_total,
+        )
+        return {
+            "combined_avg": round(new_combined, 4),
+            "payout_floor": payout_floor,
+            "cost_above_floor": round(cost_above_floor, 2),
+            "expected_ev": expected_ev,
+        }
+
+    def _v2_projected_sell_metrics(
+        self,
+        state: AssetState,
+        *,
+        prob_up: float,
+        current_total_notional: float,
+        side_up: bool,
+        shares: int,
+        proceeds: float,
+    ) -> dict[str, float | int]:
+        current_up_shares = int(state.early_up_shares)
+        current_down_shares = int(state.early_down_shares)
+        current_up_cost = float(state.early_up_cost)
+        current_down_cost = float(state.early_down_cost)
+
+        sell_from_shares = current_up_shares if side_up else current_down_shares
+        sell_from_cost = current_up_cost if side_up else current_down_cost
+        if sell_from_shares <= 0 or shares <= 0 or shares > sell_from_shares:
+            return {
+                "combined_avg": 9.99,
+                "payout_floor": 0,
+                "cost_above_floor": 9.99,
+                "expected_ev": -9.99,
+            }
+
+        unit_cost = sell_from_cost / sell_from_shares if sell_from_shares > 0 else 0.0
+        removed_cost = round(unit_cost * shares, 2)
+        new_up_shares = current_up_shares - shares if side_up else current_up_shares
+        new_down_shares = current_down_shares - shares if not side_up else current_down_shares
+        new_up_cost = max(round(current_up_cost - removed_cost, 2), 0.0) if side_up else current_up_cost
+        new_down_cost = max(round(current_down_cost - removed_cost, 2), 0.0) if not side_up else current_down_cost
+        new_up_avg = (new_up_cost / new_up_shares) if new_up_shares > 0 else 0.0
+        new_down_avg = (new_down_cost / new_down_shares) if new_down_shares > 0 else 0.0
+        new_combined = (new_up_avg + new_down_avg) if (new_up_shares > 0 and new_down_shares > 0) else 0.0
+        payout_floor = min(new_up_shares, new_down_shares)
+        projected_total = max(round(current_total_notional - proceeds, 2), 0.0)
         cost_above_floor = max(round(projected_total - payout_floor, 2), 0.0)
         expected_ev = self._v2_expected_position_ev(
             prob_up=prob_up,
@@ -2832,7 +2899,7 @@ class TradingLoop:
                         }
                     )
 
-            if not sell_candidates and bad_pair_now:
+            if not sell_candidates and bad_pair_now and current_position_ev < 0.05:
                 total_shares_now = int(state.early_up_shares) + int(state.early_down_shares)
                 for side_up, shares, bid in [
                     (True, int(state.early_up_shares), yes_bid),
@@ -2842,9 +2909,19 @@ class TradingLoop:
                         continue
                     if total_shares_now > 10 and shares - 5 < 5:
                         continue
-                    hold_value = self._v2_side_hold_value(prob_up, side_up)
-                    edge_over_hold = round(bid - hold_value, 3)
-                    if edge_over_hold < 0.03:
+                    projected_after_sell = self._v2_projected_sell_metrics(
+                        state,
+                        prob_up=prob_up,
+                        current_total_notional=current_total_notional,
+                        side_up=side_up,
+                        shares=5,
+                        proceeds=round(bid * 5, 2),
+                    )
+                    projected_cost_above_floor = float(projected_after_sell["cost_above_floor"])
+                    projected_position_ev = float(projected_after_sell["expected_ev"])
+                    cost_improvement = round(current_cost_above_floor - projected_cost_above_floor, 2)
+                    ev_improvement = round(projected_position_ev - current_position_ev, 2)
+                    if cost_improvement < 0.05 and ev_improvement < 0.05:
                         continue
                     sell_candidates.append(
                         {
@@ -2852,14 +2929,21 @@ class TradingLoop:
                             "side": "UP" if side_up else "DOWN",
                             "bid": bid,
                             "excess_shares": shares,
-                            "edge_over_hold": edge_over_hold,
+                            "edge_over_hold": round(bid - self._v2_side_hold_value(prob_up, side_up), 3),
+                            "cost_improvement": cost_improvement,
+                            "ev_improvement": ev_improvement,
                             "reason": "BAD_PAIR",
                         }
                     )
 
             if sell_candidates:
                 sell_candidates.sort(
-                    key=lambda item: (item["excess_shares"], item["edge_over_hold"]),
+                    key=lambda item: (
+                        item.get("ev_improvement", item["edge_over_hold"]),
+                        item.get("cost_improvement", 0.0),
+                        item["excess_shares"],
+                        item["edge_over_hold"],
+                    ),
                     reverse=True,
                 )
                 sell_side = sell_candidates[0]
@@ -4078,7 +4162,7 @@ class TradingLoop:
         # DATA_COLLECTION_MODE: log training data on every resolved window
         if os.getenv("DATA_COLLECTION_MODE", "").lower() == "true":
             try:
-                tf = "5m"
+                tf = self._timeframe_key(state.tracker.window_seconds)
                 pct_move = 0.0
                 if window.open_price and window.close_price and window.open_price > 0:
                     pct_move = (window.close_price - window.open_price) / window.open_price * 100

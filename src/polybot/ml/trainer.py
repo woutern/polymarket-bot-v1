@@ -31,7 +31,10 @@ FEATURE_COLUMNS = [
     # NOTE: move_pct_60s and move_pct_300s EXCLUDED — they are look-ahead features
 ]
 
-PAIRS = ["BTC_5m", "ETH_5m", "SOL_5m", "XRP_5m"]
+PAIRS = [
+    "BTC_5m", "ETH_5m", "SOL_5m", "XRP_5m",
+    "BTC_1h", "ETH_1h", "SOL_1h", "XRP_1h",
+]
 
 
 @dataclass
@@ -269,9 +272,11 @@ def train_pair(pair: str, items: list[dict], s3_client=None, ssm_client=None, s3
 JBECKER_BUCKET = "polymarket-bot-training-data-688567279867"
 
 
-def _load_jbecker_base(s3_client, asset: str) -> list[dict]:
+def _load_jbecker_base(s3_client, asset: str, timeframe: str) -> list[dict]:
     """Load Jon-Becker enriched data from S3 as base training set."""
     import io
+    if timeframe != "5m":
+        return []
     try:
         import pandas as pd
         key = f"jon-becker/enriched_5m_{asset.lower()}.parquet"
@@ -305,7 +310,7 @@ def train_all(region: str = "eu-west-1", s3_bucket: str = "polymarket-bot-data-6
         logger.info(f"Training {pair}...")
 
         # Load Jon-Becker base data (22K windows)
-        base_items = _load_jbecker_base(s3, asset)
+        base_items = _load_jbecker_base(s3, asset, tf)
 
         # Load live DynamoDB windows (recent data)
         live_items = load_training_data(table, asset, tf)

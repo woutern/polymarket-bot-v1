@@ -68,6 +68,7 @@ def _make_settings(mode="live", max_bet=20.0, enabled=True):
     s = MagicMock()
     s.mode = mode
     s.enabled_pairs = [("BTC", 300), ("ETH", 300), ("SOL", 300), ("XRP", 300)]
+    s.watch_pair_list = []
     s.early_entry_max_bet = max_bet
     s.early_entry_enabled = enabled
     s.early_entry_lgbm_threshold = 0.62
@@ -2073,6 +2074,70 @@ class TestExecutionSafety:
         assert round(sell_bid, 2) == 0.36
         assert reason == "BAD_PAIR"
         assert bot._early_sell.await_args.kwargs["sell_side_up"] is True
+
+    async def test_execution_tick_bad_complete_pair_can_trim_unfavored_side_when_model_is_bullish(self):
+        bot = _make_bot(max_bet=50.0)
+        bot._v2_check_secrets_refresh = AsyncMock()
+        bot._refresh_orderbook = _noop_refresh
+        bot._post_cheap_order = AsyncMock()
+        bot._v2_poll_fills = AsyncMock()
+        bot._early_sell = AsyncMock(return_value=1.80)
+        bot.model_server.predict = MagicMock(return_value=0.65)
+        window = _make_window()
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.62, no_bid=0.36, yes_ask=0.63, no_ask=0.37)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "yes123",
+            "hedge_token": "no456",
+            "shares": 10,
+            "entry_price": 0.69,
+            "hedge_entry_price": 0.43,
+            "direction_up": True,
+            "side": "YES",
+            "size": 11.10,
+        }
+        state.early_up_shares = 10
+        state.early_up_cost = 6.85
+        state.early_down_shares = 10
+        state.early_down_cost = 4.25
+        state.filled_position_cost_usd = 11.10
+        state.early_filled_notional = 11.10
+        up_order = bot._build_v2_tracked_order(
+            order_id="filled_up",
+            actual_shares=10,
+            actual_price=0.685,
+            actual_notional_usd=6.85,
+            side="UP",
+            target_size=6.85,
+        )
+        up_order["filled"] = True
+        up_order["filled_shares"] = 10
+        up_order["filled_notional_usd"] = 6.85
+        up_order["inventory_shares"] = 10
+        up_order["inventory_notional_usd"] = 6.85
+        dn_order = bot._build_v2_tracked_order(
+            order_id="filled_down",
+            actual_shares=10,
+            actual_price=0.425,
+            actual_notional_usd=4.25,
+            side="DOWN",
+            target_size=4.25,
+        )
+        dn_order["filled"] = True
+        dn_order["filled_shares"] = 10
+        dn_order["filled_notional_usd"] = 4.25
+        dn_order["inventory_shares"] = 10
+        dn_order["inventory_notional_usd"] = 4.25
+        state.early_dca_orders = [up_order, dn_order]
+
+        await bot._v2_execution_tick(state, 50_000.0, 120.0)
+
+        bot._early_sell.assert_awaited_once()
+        _, _, sell_bid, reason = bot._early_sell.await_args.args[:4]
+        assert round(sell_bid, 2) == 0.36
+        assert reason == "BAD_PAIR"
+        assert bot._early_sell.await_args.kwargs["sell_side_up"] is False
 
     async def test_execution_tick_blocks_new_buys_when_pair_state_is_bad(self):
         bot = _make_bot(max_bet=50.0)

@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # Default "" means all combinations of assets (5m only).
     # Set to e.g. "BTC_5m,ETH_5m" to enable only those pairs.
     pairs: str = ""
+    # Watch-only pairs — tracked for window resolution + training-data collection,
+    # but never used for live trading decisions.
+    watch_pairs: str = ""
 
     # Early entry strategy (T+14-18s, independent from Scenario C)
     early_entry_enabled: bool = False
@@ -81,6 +84,31 @@ class Settings(BaseSettings):
     def asset_list(self) -> list[str]:
         return [a.strip().upper() for a in self.assets.split(",") if a.strip()]
 
+    def _parse_pairs(self, raw_pairs: str, *, default_all_5m: bool) -> list[tuple[str, int]]:
+        if raw_pairs.strip():
+            result = []
+            for p in raw_pairs.split(","):
+                p = p.strip()
+                if not p:
+                    continue
+                p = p.replace(" ", "_").upper()
+                parts = p.rsplit("_", 1)
+                if len(parts) == 2:
+                    asset = parts[0]
+                    tf_key = parts[1].lower()
+                    if tf_key == "5m":
+                        result.append((asset, 300))
+                    elif tf_key == "15m":
+                        result.append((asset, 900))
+                    elif tf_key == "1h":
+                        result.append((asset, 3600))
+                else:
+                    result.append((p, 300))
+            return result
+        if default_all_5m:
+            return [(a, 300) for a in self.asset_list]
+        return []
+
     @property
     def enabled_pairs(self) -> list[tuple[str, int]]:
         """Return list of (asset, window_seconds) for all enabled pairs.
@@ -89,26 +117,12 @@ class Settings(BaseSettings):
         If `pairs` is empty, returns all assets with 5m windows.
         Otherwise, parses e.g. "BTC_5m,ETH_5m" into [("BTC", 300), ("ETH", 300)].
         """
-        if self.pairs.strip():
-            result = []
-            for p in self.pairs.split(","):
-                p = p.strip()
-                if not p:
-                    continue
-                # Accept "BTC_5m", "BTC_5M", "btc_5m", "BTC 5m"
-                p = p.replace(" ", "_").upper()
-                parts = p.rsplit("_", 1)
-                if len(parts) == 2:
-                    asset = parts[0]
-                    tf_key = parts[1].lower()
-                    if tf_key == "5m":
-                        result.append((asset, 300))
-                else:
-                    # Bare asset name, assume 5m
-                    result.append((p, 300))
-            return result
-        # Default: all assets × 5m
-        return [(a, 300) for a in self.asset_list]
+        return self._parse_pairs(self.pairs, default_all_5m=True)
+
+    @property
+    def watch_pair_list(self) -> list[tuple[str, int]]:
+        """Return pairs that should be tracked for data collection only."""
+        return self._parse_pairs(self.watch_pairs, default_all_5m=False)
 
     def min_move_for(self, asset: str, window_seconds: int = 300) -> float:
         """Return the calibrated min_move_pct for a given asset (5m only)."""
