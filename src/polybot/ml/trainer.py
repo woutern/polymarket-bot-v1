@@ -312,20 +312,21 @@ def train_all(region: str = "eu-west-1", s3_bucket: str = "polymarket-bot-data-6
         logger.info(f"  Live DynamoDB: {len(live_items)} rows")
 
         # Combine: Jon-Becker base + live windows, sorted by timestamp
-        # Dedup by slug (live data takes precedence for overlapping windows)
-        seen_slugs = set()
+        # Dedup by slug/window_id (live data takes precedence for overlapping windows)
+        # DynamoDB items use "window_id" (e.g. "BTC_5m_1773340200"); Jon-Becker items use "slug"
+        seen_keys = set()
         combined = []
         # Live items first (higher priority)
         for item in live_items:
-            slug = item.get("slug", item.get("window_slug", ""))
-            if slug and slug not in seen_slugs:
-                seen_slugs.add(slug)
+            key = item.get("slug") or item.get("window_slug") or item.get("window_id") or ""
+            if key and key not in seen_keys:
+                seen_keys.add(key)
                 combined.append(item)
         # Then Jon-Becker base
         for item in base_items:
-            slug = item.get("slug", "")
-            if slug and slug not in seen_slugs:
-                seen_slugs.add(slug)
+            key = item.get("slug") or item.get("window_id") or ""
+            if key and key not in seen_keys:
+                seen_keys.add(key)
                 combined.append(item)
 
         # Sort by timestamp

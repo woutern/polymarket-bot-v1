@@ -112,6 +112,7 @@ class AssetState:
     early_confirm_done: bool = False  # Phase 2 T+15s confirm fired for this window
     early_last_fill_ts: float = 0.0  # epoch time of last fill (for no-fill kicker)
     v2_last_sell_ts: float = 0.0    # epoch time of last sell (60s cooldown)
+    v2_last_rescue_ts: float = 0.0  # epoch time of last incomplete-pair rescue repost
 
 
 # ── Binance long/short ratio bias (free, no API key) ─────────────────────────
@@ -602,6 +603,15 @@ class TradingLoop:
     def _v2_sell_cooldown_seconds(self) -> float:
         return 30.0
 
+    def _v2_rescue_retry_seconds(self) -> float:
+        return 15.0
+
+    def _v2_salvage_start_seconds(self) -> float:
+        return 90.0
+
+    def _v2_orphan_salvage_min_bid(self) -> float:
+        return 0.30
+
     def _v2_allocation_split(self, prob_up: float) -> tuple[float, float]:
         if prob_up >= 0.70:
             return 0.80, 0.20
@@ -692,6 +702,18 @@ class TradingLoop:
             return 0.78
         return 0.82
 
+    def _v2_incomplete_pair_rescue_price(self, bid: float, ask: float, hard_cap: float) -> float:
+        """Use a more aggressive missing-side repost than the normal passive ladder."""
+        if ask > 0:
+            price = round(min(ask, hard_cap), 2)
+            if price >= 0.01:
+                return price
+        if bid > 0:
+            price = round(min(bid + 0.01, hard_cap), 2)
+            if price >= 0.01:
+                return price
+        return 0.0
+
     def _v2_expected_position_ev(
         self,
         prob_up: float,
@@ -733,6 +755,37 @@ class TradingLoop:
             "cost_above_floor": round(cost_above_floor, 2),
             "expected_ev": expected_ev,
         }
+
+    def _v2_orphan_pair_state(self, state: AssetState) -> tuple[bool, bool | None]:
+        up_shares = int(state.early_up_shares)
+        down_shares = int(state.early_down_shares)
+        if up_shares >= 5 and down_shares <= 0:
+            return True, False
+        if down_shares >= 5 and up_shares <= 0:
+            return True, True
+        return False, None
+
+    def _v2_should_salvage_orphan(
+        self,
+        *,
+        seconds_since_open: float,
+        current_bid: float,
+        projected: dict[str, float | int],
+        max_combined_avg: float,
+        max_cost_above_floor: float,
+    ) -> bool:
+        if seconds_since_open < self._v2_salvage_start_seconds():
+            return False
+        if current_bid < self._v2_orphan_salvage_min_bid():
+            return False
+        projected_combined = float(projected["combined_avg"])
+        projected_cost_above_floor = float(projected["cost_above_floor"])
+        projected_ev = float(projected["expected_ev"])
+        return (
+            projected_combined > max_combined_avg + 1e-9
+            or projected_cost_above_floor > max_cost_above_floor + 1e-9
+            or projected_ev < -0.01
+        )
 
     def _v2_budget_curve_pct(self, seconds_since_open: float) -> float:
         """Small open, main deployment mid-window, tight late-window add-on."""
@@ -889,6 +942,42 @@ class TradingLoop:
 
         state.early_dca_orders = [order for order in state.early_dca_orders if not order.get("closed")]
         return kept_prices_by_side, cancelled
+
+    def _v2_cancel_open_orders_for_side(self, state: AssetState, side: str, context: str) -> int:
+        cancel_client = self._v2_cancel_client()
+        cancelled = 0
+        for order in list(self._v2_open_orders(state)):
+            if self._v2_normalized_order_side(state, order) != side:
+                continue
+            oid = order.get("order_id", "")
+            try:
+                if cancel_client and oid:
+                    cancel_client(oid)
+                release_notional = self._v2_order_reserved_remaining(order)
+                if release_notional > 0 and not order.get("budget_released"):
+                    self._release_v2_budget(state, release_notional, context, side, oid)
+                self._set_v2_order_reserved_remaining(order, 0.0)
+                order["budget_released"] = True
+                order["closed"] = True
+                cancelled += 1
+                logger.info(
+                    "v2_side_orders_cancelled",
+                    asset=state.asset,
+                    side=side,
+                    context=context,
+                    order_id=oid[:16],
+                )
+            except Exception as e:
+                logger.warning(
+                    "v2_side_order_cancel_error",
+                    asset=state.asset,
+                    side=side,
+                    context=context,
+                    order_id=oid[:16],
+                    error=str(e)[:120],
+                )
+        state.early_dca_orders = [order for order in state.early_dca_orders if not order.get("closed")]
+        return cancelled
 
     def _v2_window_metrics(self, state: AssetState) -> dict[str, float | int | bool]:
         tracked_orders = state.early_dca_orders
@@ -2375,6 +2464,7 @@ class TradingLoop:
             net_cost=current_total_notional,
         )
         max_combined_avg, max_cost_above_floor = self._v2_pair_risk_limits(prob_up)
+        has_orphan, missing_side_up = self._v2_orphan_pair_state(state)
 
         from py_clob_client.clob_types import CreateOrderOptions
         options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
@@ -2494,11 +2584,127 @@ class TradingLoop:
                 except Exception:
                     self._release_v2_budget(state, notional, "exec_post_error", side)
 
+        # ── 5b. INCOMPLETE-PAIR RESCUE / SALVAGE ───────────────────────────
+        if has_orphan and missing_side_up is not None and seconds_since_open < buy_only_start:
+            missing_side = "UP" if missing_side_up else "DOWN"
+            filled_side = "DOWN" if missing_side_up else "UP"
+            missing_token = window.yes_token_id if missing_side_up else window.no_token_id
+            missing_bid = yes_bid if missing_side_up else no_bid
+            missing_ask = self._v2_float(state.orderbook.yes_best_ask if missing_side_up else state.orderbook.no_best_ask)
+            filled_bid = no_bid if missing_side_up else yes_bid
+            rescue_price = self._v2_incomplete_pair_rescue_price(missing_bid, missing_ask, HARD_CAP_PRICE)
+            rescue_notional = round(base_shares * rescue_price, 2) if rescue_price > 0 else 0.0
+            projected_rescue = (
+                self._v2_projected_pair_metrics(
+                    state,
+                    prob_up=prob_up,
+                    current_total_notional=current_total_notional,
+                    side_up=missing_side_up,
+                    shares=base_shares,
+                    notional=rescue_notional,
+                )
+                if rescue_notional > 0
+                else {"combined_avg": 9.99, "cost_above_floor": 9.99, "expected_ev": -9.99}
+            )
+            rescue_due = (
+                seconds_since_open >= 15.0
+                and (time.time() - getattr(state, "v2_last_rescue_ts", 0.0)) >= self._v2_rescue_retry_seconds()
+            )
+            rescue_allowed = (
+                rescue_due
+                and rescue_price >= 0.01
+                and rescue_price <= HARD_CAP_PRICE
+                and current_total_notional + rescue_notional <= max_bet + 1e-9
+                and not self._v2_should_salvage_orphan(
+                    seconds_since_open=seconds_since_open,
+                    current_bid=filled_bid,
+                    projected=projected_rescue,
+                    max_combined_avg=max_combined_avg,
+                    max_cost_above_floor=max_cost_above_floor,
+                )
+            )
+
+            if rescue_allowed and missing_token:
+                self._v2_cancel_open_orders_for_side(state, missing_side, "incomplete_pair_rescue")
+                if self._reserve_v2_budget(state, rescue_notional, f"rescue_{missing_side.lower()}", missing_side):
+                    try:
+                        await self._post_cheap_order(
+                            state,
+                            missing_token,
+                            rescue_price,
+                            base_shares,
+                            rescue_notional,
+                            missing_side_up,
+                            options,
+                            target_size=rescue_notional,
+                        )
+                        state.v2_last_rescue_ts = time.time()
+                        kept_prices_by_side.setdefault(missing_side, set()).add(rescue_price)
+                        if missing_side_up:
+                            posted_up += 1
+                        else:
+                            posted_down += 1
+                        logger.info(
+                            "v2_incomplete_pair_rescue",
+                            asset=state.asset,
+                            seconds=int(seconds_since_open),
+                            missing_side=missing_side,
+                            rescue_price=round(rescue_price, 2),
+                            rescue_notional=round(rescue_notional, 2),
+                            projected_combined=round(float(projected_rescue["combined_avg"]), 3),
+                            projected_cost_above_floor=round(float(projected_rescue["cost_above_floor"]), 2),
+                            projected_ev=round(float(projected_rescue["expected_ev"]), 2),
+                        )
+                    except Exception:
+                        self._release_v2_budget(state, rescue_notional, "rescue_post_error", missing_side)
+            elif self._v2_should_salvage_orphan(
+                seconds_since_open=seconds_since_open,
+                current_bid=filled_bid,
+                projected=projected_rescue,
+                max_combined_avg=max_combined_avg,
+                max_cost_above_floor=max_cost_above_floor,
+            ):
+                salvage_side_up = not missing_side_up
+                salvage_order = None
+                salvage_cost = 0.0
+                salvage_shares = 0
+                for order in state.early_dca_orders:
+                    if not order.get("filled"):
+                        continue
+                    side = self._v2_normalized_order_side(state, order)
+                    if (side == "UP") != salvage_side_up:
+                        continue
+                    inventory_shares = self._v2_order_inventory_shares(order)
+                    if inventory_shares < 5:
+                        continue
+                    salvage_order = order
+                    salvage_shares = min(inventory_shares, 5)
+                    inventory_notional = self._v2_order_inventory_notional(order)
+                    salvage_cost = round((inventory_notional / inventory_shares) * salvage_shares, 2) if inventory_shares > 0 else 0.0
+                    break
+                if salvage_order and salvage_shares >= 5:
+                    proceeds = await self._early_sell(
+                        state,
+                        pos,
+                        filled_bid,
+                        "ORPHAN_SALVAGE",
+                        sell_shares=salvage_shares,
+                        sell_cost=salvage_cost,
+                        sell_token_id=window.yes_token_id if salvage_side_up else window.no_token_id,
+                        sell_side_up=salvage_side_up,
+                        sell_order=salvage_order,
+                    )
+                    if proceeds and proceeds > 0:
+                        sell_fired = True
+                        sell_reason = "ORPHAN_SALVAGE"
+                        state.v2_last_sell_ts = time.time()
+                        await self._v2_poll_fills(state)
+
         # ── 6. SELL-AND-RECOVER (T+60 to T+180 only) ────────────────────
         # Sell excess inventory above the payout floor when the market bid is
         # richer than the model-implied hold value for that side.
-        sell_fired = False
-        sell_reason = ""
+        sell_fired = locals().get("sell_fired", False)
+        sell_reason = locals().get("sell_reason", "")
         up_avg = (state.early_up_cost / state.early_up_shares) if state.early_up_shares > 0 else 0
         dn_avg = (state.early_down_cost / state.early_down_shares) if state.early_down_shares > 0 else 0
         combined_avg = (up_avg + dn_avg) if (state.early_up_shares > 0 and state.early_down_shares > 0) else 0
@@ -2523,7 +2729,7 @@ class TradingLoop:
                     continue
                 hold_value = self._v2_side_hold_value(prob_up, side_up)
                 edge_over_hold = round(bid - hold_value, 3)
-                if edge_over_hold < 0.01:
+                if edge_over_hold < 0.005:
                     continue
                 sell_candidates.append(
                     {
@@ -3683,6 +3889,7 @@ class TradingLoop:
         state.early_confirm_done = False
         state.early_last_fill_ts = 0.0
         state.v2_last_sell_ts = 0.0
+        state.v2_last_rescue_ts = 0.0
         logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
         state.bayesian.reset(price, 0.5)
         try:

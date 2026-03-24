@@ -1963,6 +1963,53 @@ class TestExecutionSafety:
 
         bot._early_sell.assert_not_awaited()
 
+    async def test_execution_tick_recycle_can_fire_on_small_positive_edge(self):
+        bot = _make_bot(max_bet=50.0)
+        bot._v2_check_secrets_refresh = AsyncMock()
+        bot._refresh_orderbook = _noop_refresh
+        bot._post_cheap_order = AsyncMock()
+        bot._v2_poll_fills = AsyncMock()
+        bot._early_sell = AsyncMock(return_value=2.23)
+        bot.model_server.predict = MagicMock(return_value=0.55)
+        window = _make_window()
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.58, no_bid=0.48, yes_ask=0.59, no_ask=0.49)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "yes123",
+            "hedge_token": "no456",
+            "shares": 25,
+            "entry_price": 0.58,
+            "hedge_entry_price": 0.46,
+            "direction_up": True,
+            "side": "YES",
+            "size": 14.5,
+        }
+        state.early_up_shares = 25
+        state.early_up_cost = 14.5
+        state.early_down_shares = 30
+        state.early_down_cost = 13.8
+        state.filled_position_cost_usd = 28.3
+        state.early_filled_notional = 28.3
+        sell_order = bot._build_v2_tracked_order(
+            order_id="filled_down",
+            actual_shares=10,
+            actual_price=0.46,
+            actual_notional_usd=4.60,
+            side="DOWN",
+            target_size=4.60,
+        )
+        sell_order["filled"] = True
+        sell_order["filled_shares"] = 10
+        sell_order["filled_notional_usd"] = 4.60
+        sell_order["inventory_shares"] = 10
+        sell_order["inventory_notional_usd"] = 4.60
+        state.early_dca_orders = [sell_order]
+
+        await bot._v2_execution_tick(state, 50_000.0, 50.0)
+
+        bot._early_sell.assert_awaited_once()
+
     async def test_execution_tick_blocks_new_buys_when_pair_state_is_bad(self):
         bot = _make_bot(max_bet=50.0)
         bot._v2_check_secrets_refresh = AsyncMock()
@@ -2024,6 +2071,89 @@ class TestExecutionSafety:
         await bot._v2_execution_tick(state, 50_000.0, 90.0)
 
         bot._post_cheap_order.assert_not_awaited()
+
+    async def test_execution_tick_rescues_missing_side_when_pair_is_salvageable(self):
+        bot = _make_bot(max_bet=50.0)
+        bot._v2_check_secrets_refresh = AsyncMock()
+        bot._refresh_orderbook = _noop_refresh
+        bot._post_cheap_order = AsyncMock()
+        bot.model_server.predict = MagicMock(return_value=0.52)
+        window = _make_window()
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.46, no_bid=0.52, yes_ask=0.47, no_ask=0.53)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "no456",
+            "hedge_token": "yes123",
+            "shares": 5,
+            "entry_price": 0.52,
+            "hedge_entry_price": 0.46,
+            "direction_up": False,
+            "side": "NO",
+            "size": 2.60,
+        }
+        state.early_up_shares = 0
+        state.early_up_cost = 0.0
+        state.early_down_shares = 5
+        state.early_down_cost = 2.60
+        state.filled_position_cost_usd = 2.60
+        state.early_filled_notional = 2.60
+        state.v2_last_rescue_ts = time.time() - 30
+
+        await bot._v2_execution_tick(state, 50_000.0, 90.0)
+
+        posted_tokens = [call.args[1] for call in bot._post_cheap_order.await_args_list]
+        assert "yes123" in posted_tokens
+
+    async def test_execution_tick_salvages_orphan_when_pair_not_salvageable(self):
+        bot = _make_bot(max_bet=50.0)
+        bot._v2_check_secrets_refresh = AsyncMock()
+        bot._refresh_orderbook = _noop_refresh
+        bot._post_cheap_order = AsyncMock()
+        bot._early_sell = AsyncMock(return_value=1.80)
+        bot.model_server.predict = MagicMock(return_value=0.52)
+        window = _make_window()
+        state = _make_state(window=window)
+        state.orderbook = _make_orderbook(yes_bid=0.36, no_bid=0.52, yes_ask=0.90, no_ask=0.53)
+        state.early_position = {
+            "slug": "early_btc-updown-5m-1000000",
+            "token_id": "no456",
+            "hedge_token": "yes123",
+            "shares": 5,
+            "entry_price": 0.52,
+            "hedge_entry_price": 0.36,
+            "direction_up": False,
+            "side": "NO",
+            "size": 2.60,
+        }
+        state.early_up_shares = 0
+        state.early_up_cost = 0.0
+        state.early_down_shares = 5
+        state.early_down_cost = 2.60
+        state.filled_position_cost_usd = 2.60
+        state.early_filled_notional = 2.60
+        orphan_order = bot._build_v2_tracked_order(
+            order_id="filled_down",
+            actual_shares=5,
+            actual_price=0.52,
+            actual_notional_usd=2.60,
+            side="DOWN",
+            target_size=2.60,
+        )
+        orphan_order["filled"] = True
+        orphan_order["filled_shares"] = 5
+        orphan_order["filled_notional_usd"] = 2.60
+        orphan_order["inventory_shares"] = 5
+        orphan_order["inventory_notional_usd"] = 2.60
+        state.early_dca_orders = [orphan_order]
+        state.v2_last_rescue_ts = time.time() - 30
+
+        await bot._v2_execution_tick(state, 50_000.0, 120.0)
+
+        bot._early_sell.assert_awaited_once()
+        _, _, sell_bid, reason = bot._early_sell.await_args.args[:4]
+        assert round(sell_bid, 2) == 0.52
+        assert reason == "ORPHAN_SALVAGE"
 
     async def test_execution_tick_blocks_late_expensive_rich_side_add(self):
         bot = _make_bot(max_bet=50.0)
