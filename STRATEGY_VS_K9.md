@@ -6,61 +6,121 @@ Our bot trades BTC 5-minute binary options on Polymarket. K9 is the most profita
 
 ---
 
-## K9 Facts (from 25-minute data sample, ~4,900 trades)
+## K9 VERIFIED Facts (from k9_analysis.json — 40 windows, 3,417 trades)
 
-| Metric | K9 Value |
-|--------|----------|
-| Capital per 5m window | $1,300–$3,500 |
-| Markets traded simultaneously | ~23 (BTC/ETH/SOL/XRP × 5m/15m/1h) |
-| Average buy price | $0.43 |
-| Average sell price | $0.29 |
-| Fills per 5m window | 40–200 |
-| Peak buying zone | T+60 to T+120 (52% of volume) |
-| Open-phase spend | 12% of budget (small) |
-| Windows with zero sells | 56% |
-| Windows with sells | 44% |
-| Sell volume vs buy volume | 10% (sells are small/sparse) |
-| Sell direction | Whichever side is dropping in price |
-| Final position balance | 45–55% per side (roughly balanced) |
-| Hourly strategy | Zero sells, pure buy-and-hold both sides |
-| Order sizes | $0.50–$5 (micro-orders) |
-| Trades per minute | ~688 |
+| Metric | K9 Value (verified) | Source |
+|--------|---------------------|--------|
+| ROI | 13.4% | k9_analysis.json |
+| Total windows observed | 40 | 40 windows across BTC/ETH/SOL/XRP × 5m/15m/1h |
+| Total trades | 3,417 (3,053 buys + 364 sells) | summary |
+| Avg budget per window | $705 | aggregate |
+| Avg trades per window | 85.4 | aggregate |
+| Buys both sides | 98% of windows (39/40) | verified per_window |
+| Guaranteed profit rate | 69% (27/40 windows) | verified per_window |
+| GP windows avg combined | 0.857 | calculated |
+| Non-GP windows avg combined | 0.988 | calculated |
+| Windows with zero sells | 65% (26/40) | verified per_window |
+| Windows with sells | 35% (14/40) | verified per_window |
+| Sell ratio (sells/buys) | 11.9% (364/3,053) | summary |
+| Sells at loss | 61% | sell_pattern |
+| Rebuy after sell median | 2 seconds | sell_pattern |
+| Rebuy same second | 37% | sell_pattern |
+| Rebuy within 5 seconds | 66% | sell_pattern |
+| Avg sells per selling-window | 26.0 | calculated |
+| Max sells in one window | 52 | verified per_window |
+| Avg heavier side % | 70% | aggregate |
+| Windows ≤65% heavy side | 40% (16/40) — fairly balanced | verified |
+| Windows >80% heavy side | 22% (9/40) — sometimes very one-sided | verified |
+| Avg first trade offset | 27 seconds | aggregate |
+| Avg trade span | 209 seconds | aggregate |
+| Cheap fills (<25c) | 31% of all buys | aggregate |
+| Order size median | $3.50 | order_sizes |
+| Order size avg | $9.23 | order_sizes |
+| Max single order | $129.98 | order_sizes |
+| Max orders per second | 33 | clustering |
+| Avg batch size | 4.1 orders | clustering |
 
-## K9's Core Logic (Inferred)
+### K9 Buy Price Distribution (verified)
 
-1. **Open small on both sides** (12% of budget)
-2. **Let market pick a direction for 60 seconds**
-3. **One side gets cheap (30c), other gets expensive (70c)**
-4. **Load heavily on the cheap side** — 3-4x more shares per dollar
-5. **Occasionally sell the expensive/dropping side** — small batches, recover capital
-6. **Keep buying both sides throughout** — never stop mid-window
-7. **End roughly balanced** — asymmetric share count but balanced by value
-8. **Hold to resolution** — one side pays $1.00 per share
+| Price range | % of buys | Timing | Note |
+|-------------|-----------|--------|------|
+| 1–9c | 16% | avg T+172s | Lottery tickets, very late window |
+| 10–19c | 16% | avg T+149s | Cheap accumulation, mid-late window |
+| 20–29c | 10% | avg T+96s | Mid accumulation |
+| 30–39c | 11% | avg T+50s | Mid price, early-mid window |
+| 40–49c | 18% | avg T+25s | Open baseline |
+| 50–59c | 10% | avg T+32s | Open baseline |
+| 60–79c | 13% | avg T+90s | Winning side buys |
+| 80–99c | 6% | late | Winning side guaranteed return |
 
-K9's guaranteed-profit mechanic (47% of 5m windows):
-- Buy $1,313 total (both sides)
-- Sell $1,264 of cheap side back (at a small per-share loss)
-- Net cost collapses to ~$50
-- Hold 978 UP + 966 DOWN = either side wins ~$920
+**Key insight: 42% of K9's buys are under 20c.** These are the cheap fills that give 5-10x share count per dollar. K9 buys them mid-to-late window when the losing side has collapsed in price.
+
+**K9 also buys ABOVE 60c (19% of buys).** This disproves the "never buy above 50c" rule. K9 buys the winning side at 60-99c for guaranteed returns.
+
+### K9 Per-Market Performance (verified)
+
+| Market | Windows | GP rate | Avg combined | Avg buy $ | Avg sells/window |
+|--------|---------|---------|--------------|-----------|-----------------|
+| BTC 5m | 8 | 62% | 0.876 | $1,101 | 35.5 |
+| SOL 5m | 8 | 62% | 0.930 | $265 | 0.0 |
+| XRP 5m | 8 | 75% | 0.928 | $195 | 0.0 |
+| BTC 15m | 3 | 67% | 0.897 | $1,487 | 18.3 |
+| BTC 1h | 2 | 100% | 0.971 | $2,614 | 0.0 |
+
+**Critical finding: K9 only sells actively on BTC.** SOL, XRP, and hourly windows have zero sells. BTC 5m averages 35.5 sells per window when selling. This means BTC is where the sell-and-recover mechanic matters most.
+
+### K9 Sell Behavior (verified deep dive)
+
+Top 5 highest-sell windows:
+| Window | Sells | Trades | Combined | GP? | Buy $ | Heavy side |
+|--------|-------|--------|----------|-----|-------|-----------|
+| btc-5m-1774205400 | 52 | 226 | 1.029 | No | $1,673 | 61% |
+| btc-5m-1774204500 | 51 | 280 | 0.800 | Yes | $1,700 | 60% |
+| btc-5m-1774204200 | 50 | 136 | 0.578 | Yes | $647 | 54% |
+| btc-5m-1774205700 | 35 | 151 | 1.016 | No | $1,201 | 60% |
+| btc-5m-1774205100 | 32 | 165 | 0.809 | Yes | $849 | 55% |
+
+**Pattern: K9 sells most when combined is near 1.00 or above.** The 52-sell window had combined 1.029 (bad). The 50-sell window ended at 0.578 (excellent) — K9 sold aggressively and brought the combined way down.
+
+**K9's sell-and-rebuy cycle is FAST:** 66% of rebuys happen within 5 seconds of the sell. 37% happen in the SAME SECOND. K9 sells at the current bid, then immediately rebuys cheaper. This is continuous capital recycling, not occasional trimming.
+
+## K9's Core Logic (Verified from data)
+
+1. **Buy both sides in 98% of windows** — only 1 window was one-sided
+2. **Start trading at T+27 on average** — not at T+5 like us
+3. **Trade continuously for 209 seconds** — not just at open
+4. **32% of buys are under 20c** — heavy cheap accumulation mid-late window
+5. **19% of buys are above 60c** — also buys winning side
+6. **65% of windows: zero sells** — most windows are pure accumulate + hold
+7. **35% of windows: heavy selling (avg 26 sells)** — when K9 sells, it sells A LOT
+8. **Sells at loss 61% of the time** — sells to recover capital, not to lock profit
+9. **Rebuys within 2 seconds of selling** — sell-recycle-buy is one atomic operation
+10. **Ends with 70% on heavy side on average** — NOT 50/50 balanced. Directional lean is normal.
+11. **69% guaranteed profit rate** — combined < 1.00 in most windows
+12. **GP combined avg: 0.857** — when it works, the margin is 14.3c per share pair
 
 ---
 
-## Our Bot — Current State (Task Def :56, March 24 2026)
+## Our Bot — Current State (Task Def :60, March 24 2026)
 
-| Metric | Our Value | K9 Value | Gap |
-|--------|-----------|----------|-----|
-| Capital per 5m window | $100 | $1,300–$3,500 | 13-35x less |
-| Markets traded | BTC_5m only | ~23 | We're single-market |
-| Average fills per window | 5–15 | 40–200 | 3-40x fewer |
-| Peak buying zone | T+5 (front-loaded) | T+60–120 | We buy too early |
-| Open-phase spend | 10% of budget | 12% | Similar |
-| Windows with sells | ~10% | 44% | We sell too rarely |
-| Sell direction | Fixed in :55 — now sells expensive side | Drops price side | ✅ Fixed |
-| Budget actually deployed | $5–20 of $100 (guard blocks rest) | 80%+ | We freeze our budget |
-| Direction commitment | Lock at T+60 | Unclear, likely organic | New in :56 |
-| Pair guard | Very strict — blocks most buys | None observed | **#1 problem** |
-| Order repricing | Stale-only recycling | Aggressive cancel/rebuild | We're too passive |
-| Ladder width | 1-3 price levels | 5-8+ levels | Too narrow |
+| Metric | Our Value | K9 Value (verified) | Gap |
+|--------|-----------|---------------------|-----|
+| Capital per 5m window | $100 | $705 avg ($265-$3,706) | 7x less |
+| Markets traded | BTC_5m only | BTC/SOL/XRP/ETH × 5m/15m/1h | We're single-market |
+| Average fills per window | 5–15 | 85.4 | 6-17x fewer fills |
+| Trade span | T+5 to T+180 | T+27 to T+236 (209s span) | K9 starts later, trades longer |
+| Windows with sells | ~10-20% | 35% (and 26 sells avg when selling) | We sell too rarely, too few per window |
+| Sell-and-rebuy speed | 30s cooldown | 2s median (37% same second!) | We're 15x slower |
+| Budget actually deployed | $5–70 of $100 | 80%+ of $705 | We often freeze budget |
+| Guaranteed profit rate | 39% (11/28 recent) | 69% (27/40) | **30pp gap — biggest issue** |
+| Avg combined (GP windows) | ~0.85 | 0.857 | Similar when GP works |
+| Position balance | 75% cap | 70% avg heavy side | Similar |
+| Cheap fills (<25c) | ~10% | 31% | We miss cheap late fills |
+| Hard price cap | 55c | Buys up to 99c (6% above 80c) | **Our 55c cap is too strict** |
+| Direction commitment | Lock at T+60 | No explicit lock observed | K9 adapts continuously |
+| Pair guard | Favored bypass + 75% cap | None observed | Improving but still restrictive |
+| Ladder width | 1-3 price levels | Unknown but 85 trades/window suggests wide | Too narrow |
+| Order sizes | 5 shares fixed | $3.50 median, variable | We need variable sizing |
 
 ---
 
@@ -70,26 +130,36 @@ K9's guaranteed-profit mechanic (47% of 5m windows):
 |---------|--------|-------|
 | Both sides posted at open | ✅ Working | :38 |
 | Correct sell token (sells expensive side, not winning side) | ✅ Fixed | :55 |
-| BAD_PAIR detection | ✅ Working | :49 |
+| BAD_PAIR detection + trim | ✅ Working | :55 |
+| UNFAVORED_RICH sell trigger | ✅ Working | :56 |
 | Orphan rescue (try to complete missing side) | ✅ Working | :48 |
 | Orphan salvage (sell orphan if rescue is bad) | ✅ Working | :50 |
-| Direction lock at T+60 (stop chasing model flips) | ✅ New | :56 |
-| UNFAVORED_RICH sell trigger | ✅ New | :56 |
+| Direction lock at T+60 (stop chasing model flips) | ✅ New | :57 |
+| 75% balance cap | ✅ Working | :58 |
+| 55c hard buy cap | ✅ Working | :59 |
+| Anti-churn (don't rebuy above last sell price) | ✅ Working | :59 |
+| Late dump (sell near-worthless shares before commit) | ✅ Working | :59 |
+| Phantom inventory wipe guard | ✅ Fixed | :60 |
 | Shutdown cancels GTC orders | ✅ Working | :38 |
 | 8-stream data collection (4×5m + 4×1h) | ✅ Working | :52 |
 | Model retraining every 4h | ✅ Working | :47 (Claude fix) |
+| Deploy script auto-starts + waits for healthy | ✅ Working | :60 |
 | Budget scaled to $100 | ✅ Set | :56 |
 
-## What's Broken / Missing ❌
+## What's Broken / Missing ❌ (with K9 data evidence)
 
-| Problem | Impact | Root Cause |
-|---------|--------|------------|
-| **Pair guard blocks 90%+ of buys** | Bot sits on $93 unused budget | Guard too strict for any buy that worsens combined_avg |
-| **Not enough sells** | Capital stuck in losing side | Sell triggers too conservative |
-| **Front-loaded buying** | Pays market price at open instead of waiting for cheap fills | Budget curve ramps too early |
-| **Narrow ladder** | Only 1-3 price levels, few resting orders | Should be 5-8 levels per side |
-| **No continuous order management** | Stale orders sit far from touch | Should cancel/rebuild aggressively |
-| **Model flips cause whipsaw** | Bot buys both sides chasing each flip | Direction lock at T+60 is new, needs validation |
+| Problem | Impact | K9 evidence | Root Cause |
+|---------|--------|-------------|------------|
+| **55c hard cap too strict** | Can't buy winning side at 60-80c | K9 buys 19% above 60c, 6% above 80c | Our cap blocks profitable winning-side buys |
+| **Not enough sells / too slow** | Capital stuck in losing side | K9 averages 26 sells per selling-window, rebuys in 2s | Our 30s cooldown = 15x slower than K9 |
+| **No sell-and-rebuy cycle** | Can't recycle capital fast enough | K9 sells and rebuys in same second (37%) or within 5s (66%) | We sell then wait 30s+ before buying again |
+| **Missing cheap late fills** | Only 10% of fills under 25c | K9 gets 31% of fills under 25c, 16% under 10c | We commit at T+250, K9 trades until T+236 on average |
+| **Narrow ladder** | Only 1-3 price levels | K9 does 85 trades/window across many levels | Should be 5-8+ levels per side |
+| **Single market** | BTC_5m only | K9 trades BTC/SOL/XRP/ETH across 5m/15m/1h simultaneously | Need to add more pairs |
+| **GP rate 30pp below K9** | 39% vs 69% guaranteed profit | K9's sell-and-recover collapses net cost | At $100 we can't do the same capital recycling as $705 |
+| **Phantom inventory bug** | Shares vanish without sell | Guard added in :60 but root cause not fully identified | Need to monitor for v2_apply_sell_fill_BLOCKED warnings |
+| **Direction lock may be wrong** | K9 doesn't lock — adapts continuously | K9 has no explicit direction lock in data | Our T+60 lock may prevent beneficial reallocation |
+| **Fixed 5-share order size** | Can't do micro-orders | K9 median order $3.50, at 10c that's 35 shares | We always post 5 shares regardless of price |
 
 ---
 

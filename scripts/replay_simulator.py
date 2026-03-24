@@ -7,7 +7,7 @@ Two modes:
 Usage:
     # Replay real data
     python scripts/replay_simulator.py
-    python scripts/replay_simulator.py --strategy k9 --budget 150
+    python scripts/replay_simulator.py --strategy mm --budget 150
 
     # Synthetic scenarios
     python scripts/replay_simulator.py --synthetic --count 200
@@ -30,6 +30,10 @@ import random
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Allow importing strategies.py from the same directory
+sys.path.insert(0, str(Path(__file__).parent))
+from strategies import MarketMakerStrategy, MarketState, BTC_5M_PROFILE  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Position / order tracking
@@ -242,111 +246,105 @@ def reconstruct_market(window: dict, fills_by_ts: dict) -> list[MarketTick]:
 # ---------------------------------------------------------------------------
 
 
+def _normal_cdf(z: float) -> float:
+    """Standard normal CDF approximation (Abramowitz & Stegun)."""
+    if z < -8:
+        return 0.0
+    if z > 8:
+        return 1.0
+    k = 1.0 / (1.0 + 0.2316419 * abs(z))
+    poly = k * (
+        0.319381530
+        + k * (-0.356563782 + k * (1.781477937 + k * (-1.821255978 + k * 1.330274429)))
+    )
+    cdf = 1.0 - math.exp(-0.5 * z * z) / math.sqrt(2 * math.pi) * poly
+    return cdf if z >= 0 else 1.0 - cdf
+
+
 def generate_synthetic_window(
     scenario: str = "random",
     seed: int | None = None,
     duration: int = 300,
 ) -> dict:
-    """Generate a synthetic 5m market window with realistic price dynamics.
+    """Generate a realistic synthetic 5m BTC window using proper price dynamics.
 
-    Scenarios:
-    - "random": random walk with drift, can go either way
-    - "up": BTC trends up, YES gets expensive, NO gets cheap
-    - "down": BTC trends down, NO gets expensive, YES gets cheap
-    - "reversal_up_down": starts UP then reverses to DOWN mid-window
-    - "reversal_down_up": starts DOWN then reverses to UP mid-window
-    - "whipsaw": oscillates up and down rapidly
-    - "strong_trend": very strong directional move
-    - "flat": barely moves, stays near 50/50
+    Approach:
+    - Simulate BTC log-return path (GBM + fat-tail jumps)
+    - Derive yes_bid/no_bid from binary option pricing:
+        yes_bid = P(BTC_final > BTC_open | current position, time remaining)
+    - Resolution derived from final BTC price — NOT predetermined
+    - Outcome is genuinely uncertain: "up" scenario wins ~65-75%, not 100%
+
+    Scenarios affect drift magnitude only. Noise always present.
+    Fat-tail jumps (BTC spikes) fire ~0.8% of ticks (~2 per window).
     """
     rng = random.Random(seed)
 
-    # Starting state: both sides near 50c
-    yes_price = 0.50
-    no_price = 0.50
+    # Per-second log-return volatility
+    # Calibrated: BTC 5m std ≈ 0.30-0.55% → per_sec ≈ 0.017-0.032%
+    vol_per_sec = rng.uniform(0.00017, 0.00032)
 
-    # Model accuracy: 64% chance model agrees with eventual direction
-    # We pick the "true" outcome first, then set model accordingly
-    if scenario == "random":
-        true_up = rng.random() < 0.50
-    elif scenario in ("up", "reversal_up_down", "strong_trend_up"):
-        true_up = True
-    elif scenario in ("down", "reversal_down_up", "strong_trend_down"):
-        true_up = False
-    elif scenario == "whipsaw":
-        true_up = rng.random() < 0.50
+    # Base drift per second (tiny vs vol — scenarios affect direction, not certainty)
+    if scenario == "up":
+        drift = rng.uniform(0.000006, 0.000015)       # +0.18-0.45% over 300s
+    elif scenario == "down":
+        drift = rng.uniform(-0.000015, -0.000006)
+    elif scenario in ("strong_trend_up", "strong_trend"):
+        drift = rng.uniform(0.000020, 0.000040)        # +0.6-1.2% over 300s
+    elif scenario == "strong_trend_down":
+        drift = rng.uniform(-0.000040, -0.000020)
     elif scenario == "flat":
-        true_up = rng.random() < 0.50
+        drift = rng.uniform(-0.000002, 0.000002)
+        vol_per_sec *= 0.45                            # low vol = stays near 50/50
     else:
-        true_up = rng.random() < 0.50
+        drift = rng.gauss(0, 0.000004)                 # random: tiny random drift
 
-    # Model prediction (64% accurate)
-    if rng.random() < 0.64:
-        model_up = true_up
-    else:
-        model_up = not true_up
+    # Market maker spread: yes_bid + no_bid ≈ 0.96-0.98
+    spread = rng.uniform(0.02, 0.04)
 
-    prob_up_base = (
-        0.60 + rng.uniform(0, 0.15) if model_up else 0.25 + rng.uniform(0, 0.15)
-    )
-
-    # Generate price path
+    btc_log_change = 0.0
     ticks = []
-    volatility = rng.uniform(0.002, 0.008)  # per-tick volatility
 
     for sec in range(5, 255):
-        t = sec / 300.0  # normalized time 0-1
-
-        # Drift based on scenario
-        if scenario == "up":
-            drift = 0.003 * (1 + t)
-        elif scenario == "down":
-            drift = -0.003 * (1 + t)
-        elif scenario == "reversal_up_down":
-            if t < 0.4:
-                drift = 0.005
-            else:
-                drift = -0.008
+        # Scenario-specific per-tick drift
+        if scenario == "reversal_up_down":
+            tick_drift = 0.000018 if sec < 150 else -0.000028
         elif scenario == "reversal_down_up":
-            if t < 0.4:
-                drift = -0.005
-            else:
-                drift = 0.008
+            tick_drift = -0.000018 if sec < 150 else 0.000028
         elif scenario == "whipsaw":
-            drift = 0.005 * math.sin(t * 12)
-        elif scenario in ("strong_trend_up", "strong_trend"):
-            drift = 0.008 * (1 + 2 * t)
-        elif scenario == "strong_trend_down":
-            drift = -0.008 * (1 + 2 * t)
-        elif scenario == "flat":
-            drift = 0.0
-        else:  # random
-            drift = rng.gauss(0, 0.001)
+            tick_drift = 0.000020 * math.sin(sec / 300.0 * 5 * math.pi)
+        else:
+            tick_drift = drift
 
-        # Random walk with drift
-        shock = rng.gauss(drift, volatility)
-        yes_price = max(0.01, min(0.99, yes_price + shock))
-        no_price = max(0.01, min(0.99, 1.0 - yes_price + rng.gauss(0, 0.005)))
+        # Diffusion step
+        btc_log_change += rng.gauss(tick_drift, vol_per_sec)
 
-        # Ensure yes + no stays near 1.00 (binary market constraint)
-        total = yes_price + no_price
-        if total > 0:
-            yes_price = max(0.01, min(0.99, yes_price / total))
-            no_price = max(0.01, min(0.99, 1.0 - yes_price))
+        # Fat-tail jump (~0.8% per tick ≈ 2 jumps per window)
+        if rng.random() < 0.008:
+            btc_log_change += rng.choice([-1, 1]) * rng.uniform(0.0008, 0.0030)
 
-        # Model prob evolves slowly, with some noise
-        prob_noise = rng.gauss(0, 0.02)
-        # Model gradually aligns with price direction
-        price_signal = 0.5 + (yes_price - 0.5) * 0.3
-        prob_up = 0.7 * prob_up_base + 0.2 * price_signal + 0.1 * prob_noise
-        prob_up = max(0.10, min(0.90, prob_up))
+        # Binary option pricing: P(BTC_final > BTC_open | now, T_remaining)
+        # P = N(btc_log_change / (vol_per_sec * sqrt(T_remaining)))
+        seconds_remaining = max(300 - sec, 1)
+        std_remaining = vol_per_sec * math.sqrt(seconds_remaining)
+        z = btc_log_change / std_remaining if std_remaining > 0 else (100 if btc_log_change > 0 else -100)
+        prob_up_true = _normal_cdf(z)
+
+        # yes_bid / no_bid with spread deducted
+        yes_bid = max(0.02, min(0.98, prob_up_true - spread / 2))
+        no_bid = max(0.02, min(0.98, (1.0 - prob_up_true) - spread / 2))
+
+        # Model prediction: 64% correlated with true direction, plus noise
+        # (model doesn't know future — it reads current signal noisily)
+        model_base = prob_up_true if rng.random() < 0.64 else (1.0 - prob_up_true)
+        prob_up_model = max(0.10, min(0.90, model_base + rng.gauss(0, 0.08)))
 
         ticks.append(
             {
                 "seconds": sec,
-                "prob_up": round(prob_up, 3),
-                "up_pct": round(prob_up, 2),
-                "down_pct": round(1.0 - prob_up, 2),
+                "prob_up": round(prob_up_model, 3),
+                "up_pct": round(prob_up_model, 2),
+                "down_pct": round(1.0 - prob_up_model, 2),
                 "combined_avg": 0,
                 "up_avg": 0,
                 "down_avg": 0,
@@ -365,13 +363,15 @@ def generate_synthetic_window(
                 "stale_orders_cancelled": 0,
                 "payout_floor": 0,
                 "cost_above_floor": 0,
-                # Synthetic-only fields for market state
-                "_yes_bid": round(yes_price, 3),
-                "_no_bid": round(no_price, 3),
-                "_true_up": true_up,
+                "_yes_bid": round(yes_bid, 3),
+                "_no_bid": round(no_bid, 3),
+                "_true_up": btc_log_change > 0,  # current state (for debugging)
                 "_scenario": scenario,
             }
         )
+
+    # Resolution: where did BTC actually close vs open?
+    true_up = btc_log_change > 0
 
     return {
         "timestamp": f"synthetic_{scenario}_{seed or rng.randint(0, 99999)}",
@@ -469,6 +469,37 @@ class Strategy:
 # ---------------------------------------------------------------------------
 # Strategy: "what we actually did" (replay from data)
 # ---------------------------------------------------------------------------
+# MarketMakerStrategy adapter (bridges MarketTick → MarketState interface)
+# ---------------------------------------------------------------------------
+
+
+class MarketMakerAdapter(Strategy):
+    """Wraps MarketMakerStrategy from strategies.py for use in the simulator."""
+
+    def __init__(self, budget: float = 150.0):
+        super().__init__(budget)
+        self.name = "mm"
+        self.inner = MarketMakerStrategy(BTC_5M_PROFILE)
+
+    def on_tick(
+        self,
+        tick: "MarketTick",
+        position: "Position",
+        budget_remaining: float,
+        seconds: int,
+    ) -> "StrategyAction":
+        market = MarketState(
+            seconds=tick.seconds,
+            yes_bid=tick.yes_bid,
+            no_bid=tick.no_bid,
+            yes_ask=round(min(tick.yes_bid + 0.01, 0.99), 2),
+            no_ask=round(min(tick.no_bid + 0.01, 0.99), 2),
+            prob_up=tick.prob_up,
+        )
+        return self.inner.on_tick(market, position, budget_remaining)
+
+
+# ---------------------------------------------------------------------------
 
 
 class ActualStrategy(Strategy):
@@ -508,8 +539,8 @@ class ActualStrategy(Strategy):
 # ---------------------------------------------------------------------------
 
 
-class K9Strategy(Strategy):
-    """K9-style strategy based on our definitive ruleset.
+class LegacyStrategy(Strategy):
+    """Older inline strategy (kept for --strategy legacy comparisons).
 
     Core principles:
     1. Market price is truth (yes_bid vs no_bid determines winner)
@@ -522,7 +553,7 @@ class K9Strategy(Strategy):
 
     def __init__(self, budget: float = 150.0):
         super().__init__(budget)
-        self.name = "k9"
+        self.name = "legacy"
         self.last_sell_seconds = -999
         self.sell_cooldown = 10  # seconds between sells
 
@@ -748,6 +779,10 @@ def simulate_window(
     budget_remaining = strategy.budget
 
     # Reset strategy state
+    if hasattr(strategy, "inner") and hasattr(strategy.inner, "reset"):
+        strategy.inner.reset()
+    elif hasattr(strategy, "reset"):
+        strategy.reset()
     if hasattr(strategy, "last_sell_seconds"):
         strategy.last_sell_seconds = -999
 
@@ -838,9 +873,9 @@ def main():
     parser = argparse.ArgumentParser(description="Replay simulator for BTC 5m windows")
     parser.add_argument(
         "--strategy",
-        choices=["actual", "k9"],
-        default="k9",
-        help="Strategy to simulate (default: k9)",
+        choices=["actual", "legacy", "mm"],
+        default="mm",
+        help="Strategy to simulate (default: mm)",
     )
     parser.add_argument(
         "--budget", type=float, default=150.0, help="Budget per window (default: 150)"
@@ -852,7 +887,7 @@ def main():
         "--verbose", action="store_true", help="Show tick-by-tick output"
     )
     parser.add_argument(
-        "--compare", action="store_true", help="Run both actual and k9 side by side"
+        "--compare", action="store_true", help="Run both actual and mm side by side"
     )
     parser.add_argument(
         "--synthetic",
@@ -915,12 +950,14 @@ def main():
     if args.compare:
         strategies = [
             ActualStrategy(budget=args.budget),
-            K9Strategy(budget=args.budget),
+            MarketMakerAdapter(budget=args.budget),
         ]
     elif args.strategy == "actual":
         strategies = [ActualStrategy(budget=args.budget)]
+    elif args.strategy == "mm":
+        strategies = [MarketMakerAdapter(budget=args.budget)]
     else:
-        strategies = [K9Strategy(budget=args.budget)]
+        strategies = [LegacyStrategy(budget=args.budget)]
 
     for strategy in strategies:
         print(f"{'=' * 80}")

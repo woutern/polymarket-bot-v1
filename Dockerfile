@@ -22,6 +22,7 @@ RUN mkdir -p src/polybot && touch src/polybot/__init__.py && \
 # Copy source and entrypoint (overwrites the stub)
 COPY src/ src/
 COPY scripts/ scripts/
+COPY arbitrage/ arbitrage/
 
 # Install Node.js dependencies for auto-claim
 COPY package.json package-lock.json ./

@@ -12,7 +12,7 @@ Update your section when you start, finish, block, or hand off. This is the sing
 
 ## Codex — current work
 
-**Status:** LIVE on :57 — monitoring BTC_5m with pair-guard fix + UNFAVORED_RICH sells
+**Status:** LIVE on :57 + `btc_5m_arb_scanner_v3` deployed in ECR image, one-off ECS scanner run validated, interactive ECS Exec task running for manual login; now validating `btc_5m_arb_sniper_v2.py` guardrails/tuning from live logs
 **Last commit:** 0109c17 (model accuracy analysis + per-pair profiles)
 
 ### What's deployed (task def :57, March 24 2026)
@@ -63,11 +63,12 @@ See STRATEGY_VS_K9.md for full details. Key differences:
 - Simulations: UP +$31.32, DOWN +$27.67, RANGE $0.00
 
 ### Next steps (Codex)
-1. Monitor BTC_5m :57 for 5-10 windows
-2. Build per-pair profile config in code (not just docs)
-3. Enable ETH_5m with conservative profile
-4. Build 1h training pipeline from S3 candle data (don't deploy 1h trading)
-5. Investigate wider ladder (5-6 price levels vs current 1-3)
+1. User login via ECS Exec into task `6e1a4ebe5f2e427a9c123ba82847747a` and run `arbitrage/btc_5m_arb_scanner_v3.py`
+2. Monitor BTC_5m :57 for 5-10 windows
+3. Build per-pair profile config in code (not just docs)
+4. Enable ETH_5m with conservative profile
+5. Build 1h training pipeline from S3 candle data (don't deploy 1h trading)
+6. Investigate wider ladder (5-6 price levels vs current 1-3)
 
 ---
 

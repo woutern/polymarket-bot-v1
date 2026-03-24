@@ -6,10 +6,10 @@ Architecture:
     Each pair/timeframe gets its own Strategy instance with different parameters.
 
 Strategies:
-    K9v2Strategy — market-driven, handles reversals, no direction lock
+    MarketMakerStrategy — market-driven, handles reversals, no direction lock
     AccumulateOnlyStrategy — for SOL/XRP/hourly: just buy both sides, no sells
 
-All strategies follow the K9 Ruleset (see K9_RULESET.md).
+Rules derived from observed market data (see K9_RULESET.md).
 """
 
 from __future__ import annotations
@@ -151,9 +151,9 @@ class StrategyProfile:
     # Price caps
     hard_cap: float = 0.82  # never buy above this
 
-    # Balance
-    early_balance_cap: float = 0.75  # max % one side before T+120
-    late_balance_cap: float = 0.90  # max % one side after T+120
+    # Balance caps (reduced from 75%/90% to avoid over-committing one side)
+    early_balance_cap: float = 0.65  # max % one side before T+120
+    late_balance_cap: float = 0.70  # max % one side after T+120
 
     # Selling
     sells_enabled: bool = True  # False for SOL/XRP/hourly
@@ -164,10 +164,38 @@ class StrategyProfile:
     unfavored_rich_threshold: float = 0.50  # sell unfavored if avg > this
     late_dump_start: int = 180  # start selling near-worthless
     late_dump_threshold: float = 0.25  # bid below this = near-worthless
+    late_dump_min_ticks: int = 5  # require N consecutive ticks below threshold
+
+    # Reversal controls
+    max_reversal_sell_pct: float = 0.25  # max 25% of position per tick during reversal
+    reversal_hedge_pct: float = 0.30  # buy 30% of freed capital on opposite side
+    no_new_risk_seconds: int = 230  # stop increasing net exposure after this
+    disable_reversals_seconds: int = 260  # don't reverse position after this
 
     # Dying side
     dying_side_threshold: float = 0.70  # don't buy if other bid > this
     dying_side_start: int = 60  # only after this many seconds
+
+    # No-trade zone: skip buys when market is near 50/50 (avoid noise churn)
+    no_trade_zone: float = 0.02  # skip buys if |yes_bid - no_bid| < this
+
+    # Direction confidence filter: require minimum spread to act
+    min_spread_early: float = 0.04  # early window: 4c minimum spread
+    min_spread_late: float = 0.07  # late window: 7c minimum spread
+    spread_threshold_late_start: int = 120  # switch to late threshold at this second
+
+    # Dynamic flip threshold: smaller edge needed to flip direction late in window
+    flip_threshold_early: float = 0.10  # early window flip threshold
+    flip_threshold_late: float = 0.06  # late window flip threshold (react faster)
+    flip_threshold_late_start: int = 200  # switch to late threshold at this second
+
+    # Chop detection: reduce size when market flip-flops
+    chop_flip_threshold: int = 4  # >N flips in first 120s = choppy regime
+    chop_size_multiplier: float = 0.60  # scale down to 60% size in choppy regime
+
+    # Soft stop loss: freeze budget ramp if unrealized loss is too large
+    soft_stop_loss_pct: float = 0.15  # 15% unrealized loss freezes the ramp
+    soft_stop_start: int = 60  # only check after this many seconds
 
     # Timing
     commit_seconds: int = 250  # stop all trading
@@ -240,12 +268,12 @@ BTC_1H_PROFILE = StrategyProfile(
 
 
 # ---------------------------------------------------------------------------
-# K9v2 Strategy — handles reversals
+# MarketMaker Strategy — handles reversals
 # ---------------------------------------------------------------------------
 
 
-class K9v2Strategy:
-    """K9-style strategy v2: market-driven, handles reversals.
+class MarketMakerStrategy:
+    """Market-driven dual-side strategy: no direction lock, handles reversals.
 
     Core principles (from K9_RULESET.md):
     1. Market price is truth. yes_bid vs no_bid determines winner. Every tick.
@@ -261,12 +289,12 @@ class K9v2Strategy:
     - When direction flips (yes_bid was > no_bid, now it's <), that's a reversal
     - On reversal: aggressively sell the now-losing side
     - On reversal: start buying the now-winning side
-    - Don't wait — K9 rebuys within 2 seconds of selling
+    - Don't wait — rebuy within 2 seconds of selling
     """
 
     def __init__(self, profile: StrategyProfile | None = None):
         self.profile = profile or BTC_5M_PROFILE
-        self.name = f"k9v2_{self.profile.name}"
+        self.name = f"mm_{self.profile.name}"
 
         # State tracked across ticks within one window
         self.last_sell_seconds: int = -999
@@ -279,6 +307,12 @@ class K9v2Strategy:
         self.prev_no_bid: float = 0.50
         self.peak_yes_bid: float = 0.50  # track peak to detect reversals early
         self.peak_no_bid: float = 0.50
+        # Chop detection
+        self.chop_flip_count: int = 0
+        self.chop_regime: bool = False
+        # Late dump consecutive tick counters
+        self.late_dump_ticks_up: int = 0
+        self.late_dump_ticks_down: int = 0
 
     def reset(self):
         """Call at start of each new window."""
@@ -292,6 +326,10 @@ class K9v2Strategy:
         self.prev_no_bid = 0.50
         self.peak_yes_bid = 0.50
         self.peak_no_bid = 0.50
+        self.chop_flip_count = 0
+        self.chop_regime = False
+        self.late_dump_ticks_up = 0
+        self.late_dump_ticks_down = 0
 
     def _determine_direction(self, market: MarketState) -> tuple[bool, float, str]:
         """Determine who is winning: market-first, model-second.
@@ -354,7 +392,11 @@ class K9v2Strategy:
             return round(1.0 - win_pct, 2), win_pct
 
     def _budget_curve(self, seconds: int) -> float:
-        """How much of the budget can be deployed by this point in time."""
+        """How much of the budget can be deployed by this point in time.
+
+        Slowed down vs original to reduce early over-commitment:
+        10% → 22% by T+60 → 60% by T+180 → 85% by T+240
+        """
         p = self.profile
         open_pct = p.open_budget_pct
 
@@ -365,11 +407,11 @@ class K9v2Strategy:
             return open_pct + 0.12 * progress  # → 22%
         elif seconds <= 180:
             progress = (seconds - 60) / 120.0
-            return 0.22 + 0.60 * progress  # → 82%
+            return 0.22 + 0.38 * progress  # → 60%
         elif seconds <= p.commit_seconds:
             progress = (seconds - 180) / max(p.commit_seconds - 180, 1)
-            return 0.82 + 0.10 * progress  # → 92%
-        return 0.92
+            return 0.60 + 0.25 * progress  # → 85%
+        return 0.85
 
     def _detect_reversal(self, market: MarketState, winning_up: bool) -> bool:
         """Detect reversals early by tracking peak prices.
@@ -416,6 +458,11 @@ class K9v2Strategy:
             # Reset peaks for the new direction
             self.peak_yes_bid = yes_bid
             self.peak_no_bid = no_bid
+            # Track flips in first 120s for chop detection
+            if market.seconds <= 120:
+                self.chop_flip_count += 1
+                if self.chop_flip_count > self.profile.chop_flip_threshold:
+                    self.chop_regime = True
 
         # Stay in reversal selling mode for 30 seconds after detection
         if self.reversal_selling:
@@ -451,28 +498,56 @@ class K9v2Strategy:
         # ── REVERSAL DETECTION ──
         self.reversal_detected = self._detect_reversal(market, winning_up)
 
+        # ── NO-TRADE ZONE: skip all action when bids are nearly equal ──
+        spread = abs(yes_bid - no_bid)
+        if spread < p.no_trade_zone:
+            return action  # avoid churn on noise
+
         # ── SELL LOGIC ──
         # Sell the LOSING side. Never sell the winning side.
         # Market determines who is losing, not the model.
+        # Don't reverse after disable_reversals_seconds.
+        in_reversal_mode = self.reversal_detected or self.reversal_selling
+        if in_reversal_mode and seconds >= p.disable_reversals_seconds:
+            in_reversal_mode = False
+
         if p.sells_enabled and seconds >= p.sell_start and seconds <= p.sell_end:
             sell_cooldown_ok = (seconds - self.last_sell_seconds) >= p.sell_cooldown
 
-            # On reversal or during reversal selling mode: skip cooldown
-            if (self.reversal_detected or self.reversal_selling) and seconds >= 30:
+            # On reversal: skip cooldown (need to exit fast)
+            if in_reversal_mode and seconds >= 30:
                 sell_cooldown_ok = True
 
             if sell_cooldown_ok:
                 action = self._decide_sell(
-                    market, position, winning_up, confidence, action
+                    market, position, winning_up, confidence, action,
+                    in_reversal_mode=in_reversal_mode,
                 )
 
         # ── BUY LOGIC ──
         # Buy both sides, weighted by direction.
         # Don't buy dying shares.
         max_deploy = p.budget * self._budget_curve(seconds)
+
+        # Soft stop loss: if unrealized loss > 15% of deployed after T+60, freeze ramp
+        if seconds >= p.soft_stop_start and position.net_cost > 0:
+            pnl_best = max(position.pnl_if_up(), position.pnl_if_down())
+            loss_pct = -pnl_best / position.net_cost if pnl_best < 0 else 0.0
+            if loss_pct > p.soft_stop_loss_pct:
+                # Freeze at current deployed — don't increase ramp
+                max_deploy = min(max_deploy, position.net_cost)
+
+        # No-new-risk zone: don't increase net exposure after T+230
+        if seconds >= p.no_new_risk_seconds:
+            max_deploy = min(max_deploy, position.net_cost)
+
         currently_deployed = position.net_cost
         curve_remaining = max(max_deploy - currently_deployed, 0)
         usable = min(budget_remaining, curve_remaining)
+
+        # Chop regime: scale down buy size
+        if self.chop_regime:
+            usable *= p.chop_size_multiplier
 
         if usable >= 0.50 and seconds < p.commit_seconds:
             action = self._decide_buy(
@@ -488,15 +563,16 @@ class K9v2Strategy:
         winning_up: bool,
         confidence: float,
         action: StrategyAction,
+        in_reversal_mode: bool = False,
     ) -> StrategyAction:
         """Decide what to sell on this tick.
 
         Rules:
         1. Only sell the LOSING side (determined by market)
         2. DEAD_SIDE: if other bid > 80c, sell everything on losing side
-        3. UNFAVORED_RICH: if losing side avg > 50c and market edge > 10c
-        4. LATE_DUMP: after T+180, sell anything with bid < 25c
-        5. REVERSAL: on direction flip, sell the now-losing side immediately
+        3. REVERSAL: on direction flip, sell the now-losing side (capped at 25% of position)
+        4. UNFAVORED_RICH: if losing side avg > 50c and market edge > 10c
+        5. LATE_DUMP: after T+180, sell anything with bid < 25c for N consecutive ticks
         6. Never sell the winning side
         """
         p = self.profile
@@ -507,17 +583,30 @@ class K9v2Strategy:
 
         losing_up = not winning_up
 
+        # Update late dump tick counters
+        if seconds >= p.late_dump_start:
+            if yes_bid < p.late_dump_threshold and yes_bid > 0:
+                self.late_dump_ticks_up += 1
+            else:
+                self.late_dump_ticks_up = 0
+            if no_bid < p.late_dump_threshold and no_bid > 0:
+                self.late_dump_ticks_down += 1
+            else:
+                self.late_dump_ticks_down = 0
+
         # Which side are we considering selling?
         if losing_up:
             losing_shares = position.up_shares
             losing_bid = yes_bid
             losing_avg = position.up_avg
             other_bid = no_bid
+            late_dump_ticks = self.late_dump_ticks_up
         else:
             losing_shares = position.down_shares
             losing_bid = no_bid
             losing_avg = position.down_avg
             other_bid = yes_bid
+            late_dump_ticks = self.late_dump_ticks_down
 
         shares_to_sell = 0
         sell_price = losing_bid
@@ -529,16 +618,16 @@ class K9v2Strategy:
             shares_to_sell = min(losing_shares, p.shares_per_order * 3)
             reason = "DEAD_SIDE"
 
-        # REVERSAL / REVERSAL_SELLING: direction flipped or momentum shifted
-        # Sell AGGRESSIVELY — up to 15 shares per tick during reversal mode
+        # REVERSAL: direction flipped or momentum shifted
+        # Capped at max_reversal_sell_pct of current position to avoid panic flip
         elif (
-            (self.reversal_detected or self.reversal_selling)
+            in_reversal_mode
             and losing_shares >= p.shares_per_order
             and seconds >= 20
         ):
-            # Sell more on first detection, then steady 10/tick during reversal mode
+            max_shares = max(int(losing_shares * p.max_reversal_sell_pct), p.shares_per_order)
             if self.reversal_detected:
-                shares_to_sell = min(losing_shares, p.shares_per_order * 3)
+                shares_to_sell = min(losing_shares, max_shares)
             else:
                 shares_to_sell = min(losing_shares, p.shares_per_order * 2)
             reason = "REVERSAL"
@@ -553,9 +642,10 @@ class K9v2Strategy:
             reason = "UNFAVORED_RICH"
 
         # LATE_DUMP: near end of window, dump worthless shares
+        # Require N consecutive ticks below threshold (avoid selling recoveries)
         elif (
             seconds >= p.late_dump_start
-            and losing_bid < p.late_dump_threshold
+            and late_dump_ticks >= p.late_dump_min_ticks
             and losing_bid > 0
             and losing_shares >= p.shares_per_order
         ):
@@ -802,21 +892,20 @@ class AccumulateOnlyStrategy:
 # ---------------------------------------------------------------------------
 
 
-def get_strategy(pair: str) -> K9v2Strategy | AccumulateOnlyStrategy:
+def get_strategy(pair: str) -> MarketMakerStrategy | AccumulateOnlyStrategy:
     """Get the right strategy for a given pair.
 
-    Uses K9 data to determine:
-    - BTC_5m: K9v2 with sells (K9 sells actively on BTC)
-    - SOL_5m: AccumulateOnly (K9 has zero sells on SOL)
-    - XRP_5m: AccumulateOnly (K9 has zero sells on XRP)
-    - ETH_5m: K9v2 with sells (no K9 data, assume BTC-style)
-    - *_1h: AccumulateOnly (K9 has zero sells on hourly)
+    - BTC_5m: MarketMaker with sells (data: sells actively on BTC)
+    - SOL_5m: AccumulateOnly (data: zero sells on SOL)
+    - XRP_5m: AccumulateOnly (data: zero sells on XRP)
+    - ETH_5m: MarketMaker with sells (no data, assume BTC-style)
+    - *_1h: AccumulateOnly (data: zero sells on hourly)
     """
     pair = pair.upper()
 
     profiles = {
-        "BTC_5M": (K9v2Strategy, BTC_5M_PROFILE),
-        "ETH_5M": (K9v2Strategy, ETH_5M_PROFILE),
+        "BTC_5M": (MarketMakerStrategy, BTC_5M_PROFILE),
+        "ETH_5M": (MarketMakerStrategy, ETH_5M_PROFILE),
         "SOL_5M": (AccumulateOnlyStrategy, SOL_5M_PROFILE),
         "XRP_5M": (AccumulateOnlyStrategy, XRP_5M_PROFILE),
         "BTC_1H": (AccumulateOnlyStrategy, BTC_1H_PROFILE),
@@ -840,7 +929,7 @@ def get_strategy(pair: str) -> K9v2Strategy | AccumulateOnlyStrategy:
         ),
     }
 
-    strategy_cls, profile = profiles.get(pair, (K9v2Strategy, BTC_5M_PROFILE))
+    strategy_cls, profile = profiles.get(pair, (MarketMakerStrategy, BTC_5M_PROFILE))
     return strategy_cls(profile=profile)
 
 
@@ -849,10 +938,10 @@ def get_strategy(pair: str) -> K9v2Strategy | AccumulateOnlyStrategy:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # Quick test: run K9v2 against a simple scenario
-    print("Testing K9v2Strategy...")
+    # Quick test: run MarketMakerStrategy against a simple scenario
+    print("Testing MarketMakerStrategy...")
 
-    strategy = K9v2Strategy(profile=BTC_5M_PROFILE)
+    strategy = MarketMakerStrategy(profile=BTC_5M_PROFILE)
     strategy.reset()
     pos = Position()
     budget = 150.0
@@ -911,7 +1000,7 @@ if __name__ == "__main__":
 
     # Test reversal scenario
     print("\n\nTesting reversal scenario...")
-    strategy = K9v2Strategy(profile=BTC_5M_PROFILE)
+    strategy = MarketMakerStrategy(profile=BTC_5M_PROFILE)
     strategy.reset()
     pos = Position()
     budget = 150.0

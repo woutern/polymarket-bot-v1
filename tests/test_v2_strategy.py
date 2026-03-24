@@ -2101,8 +2101,9 @@ class TestExecutionSafety:
         bot.model_server.predict = MagicMock(return_value=0.68)
         window = _make_window()
         state = _make_state(window=window)
+        # market_edge=0.14 (<=0.15) → no budget_scale boost → reserved order caps out budget
         state.orderbook = _make_orderbook(
-            yes_bid=0.70, no_bid=0.28, yes_ask=0.71, no_ask=0.29
+            yes_bid=0.62, no_bid=0.48, yes_ask=0.63, no_ask=0.49
         )
         state.early_position = {
             "slug": "early_btc-updown-5m-1000000",
@@ -2587,8 +2588,9 @@ class TestExecutionSafety:
         bot.model_server.predict = MagicMock(return_value=0.52)
         window = _make_window()
         state = _make_state(window=window)
+        # market_edge=0.14 (<=0.15) → no budget_scale boost → budget too small for any order
         state.orderbook = _make_orderbook(
-            yes_bid=0.36, no_bid=0.52, yes_ask=0.90, no_ask=0.53
+            yes_bid=0.38, no_bid=0.52, yes_ask=0.90, no_ask=0.53
         )
         state.early_position = {
             "slug": "early_btc-updown-5m-1000000",
@@ -2596,7 +2598,7 @@ class TestExecutionSafety:
             "hedge_token": "yes123",
             "shares": 5,
             "entry_price": 0.52,
-            "hedge_entry_price": 0.36,
+            "hedge_entry_price": 0.38,
             "direction_up": False,
             "side": "NO",
             "size": 2.60,

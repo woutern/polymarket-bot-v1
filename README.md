@@ -4,15 +4,17 @@ Algorithmic trading system for Polymarket prediction markets.
 
 **Status:** Deployed on AWS ECS (eu-west-1)
 **Dashboard:** https://d2rj5lnnfnptd.cloudfront.net/
-**Tests:** 641 passing
+**Tests:** 888 passing
 **V2 both-sides:** gated by `EARLY_ENTRY_ENABLED=true` and pair-level `PAIRS`
 
 ## Three Trading Strategies
 
 ### 1. V2 Both-Sides (profile-driven 5m engine)
 Current live focus is `BTC_5m`, with other pairs enabled only after pair-specific tuning.
+`WATCH_PAIRS` can track non-trading 5m markets for data collection.
 
 - **Scope:** 5-minute windows only for the current V2 rollout, enabled per pair via `PAIRS`
+- **Watch-only collection:** additional 5m pairs can be tracked via `WATCH_PAIRS` without becoming tradable
 - **Cadence:** evaluate every 1s, but only trade when budget, pair-quality, and stale-order rules allow
 - **Phase 1 — Open (T+5s to T+15s):** small two-sided open
   - uses 10% of per-window budget
@@ -80,6 +82,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete system diagram.
 | Secrets | AWS Secrets Manager, eu-west-1 |
 
 Deployments use `scripts/deploy_aws.sh`, which now registers a fresh ECS task definition revision before forcing the service deployment.
+The ECS task definition now maps both `WATCH_PAIRS` and `DATA_COLLECTION_MODE` from Secrets Manager.
 
 ## Safety Guards
 
@@ -116,7 +119,7 @@ Deployments use `scripts/deploy_aws.sh`, which now registers a fresh ECS task de
 
 ```bash
 # Local development
-uv run pytest tests/          # 641 tests
+uv run pytest tests/          # 888 tests
 uv run python scripts/run.py  # Start 5min bot
 
 # Deploy to AWS
@@ -131,10 +134,20 @@ PYTHONPATH=src uv run python scripts/opportunity_bot.py
 
 ### Immediate
 - Keep refining `BTC_5m` as the control profile until live windows are consistently sane
-- Tighten payout-floor-based recycle rules without reintroducing churn
+- Tighten bad-pair and payout-floor recycle rules without reintroducing churn
 - Keep weak/sideways windows small, deploy harder only in strong mid-window setups, and spend extra only on the favored side
 - Fix runtime Secrets Manager refresh permissions so `EARLY_ENTRY_ENABLED=false` can finish the current window and skip the next one reliably
-- Keep retraining healthy across all live pairs; BTC/SOL are currently fresh, while ETH/XRP still need enough rows to refresh cleanly
+- Keep retraining healthy across all 8 collection streams; 5m is immediately trainable, 1h will begin as live-only models once enough rows accumulate
+
+### Collection / retrain
+- Live trading remains `BTC_5m` only via `PAIRS=BTC_5m`
+- Use `WATCH_PAIRS=ETH_5m,SOL_5m,XRP_5m` to collect 5m rows without trading them
+- Hourly states (`BTC_1h`, `ETH_1h`, `SOL_1h`, `XRP_1h`) are always tracked for resolution/training-data collection
+- Training-data rows now use the actual timeframe (`5m`, `15m`, `1h`) instead of hardcoding `5m`
+- Auto-retrain now attempts all 8 streams every 4h:
+  - `BTC_5m`, `ETH_5m`, `SOL_5m`, `XRP_5m`
+  - `BTC_1h`, `ETH_1h`, `SOL_1h`, `XRP_1h`
+- Jon-Becker base data is only used for `5m`; hourly models start as live-data-only until enough rows accumulate
 
 ### Overnight / Tomorrow
 - Let `BTC_5m` run by itself overnight; do not add `ETH_5m`, `SOL_5m`, or `XRP_5m` yet

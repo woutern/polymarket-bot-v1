@@ -2970,13 +2970,15 @@ class TradingLoop:
     async def _v2_execution_tick(
         self, state: AssetState, price: float, seconds_since_open: float
     ):
-        """5m execution split into open, main deploy, buy-only late phase, and hold.
+        """K9-style execution: market-driven, no locks, continuous adaptation.
 
-        Phases:
-        1. T+5-60: small open + light follow-up
-        2. T+60-180: main deployment + limited sell-and-recover
-        3. T+180-250: buy-only, frozen split, no sells
-        4. T+250+: commit/hold
+        Core principles (from K9 data + today's losses):
+        1. Market price is truth. If UP bid > 60c, UP is winning. Period.
+        2. No direction lock. Adapt every tick.
+        3. Sell the LOSING side (determined by market, not model).
+        4. Buy both sides, weighted by model, but market overrides model.
+        5. Deploy 80%+ of budget.
+        6. Don't buy dying shares (other side bid > 70c).
         """
         pos = state.early_position
         if not pos or not self._v2_order_execution_enabled():
@@ -2998,7 +3000,10 @@ class TradingLoop:
         max_bet = self._v2_max_bet_per_asset()
         HARD_CAP_PRICE = 0.82
 
-        # ── 1. MODEL → ALLOCATION SPLIT ───────────────────────────────────
+        # ── 1. DETERMINE DIRECTION: MARKET FIRST, MODEL SECOND ───────────
+        # The market (bid prices) tells us who is winning RIGHT NOW.
+        # The model (prob_up) is a hint that's right 64% of the time.
+        # When they disagree, trust the market.
         import math as _math
         from datetime import datetime as _dt
         from datetime import timezone as _tz
@@ -3046,61 +3051,44 @@ class TradingLoop:
         except Exception:
             prob_up = 0.50
 
-        # Model-weighted allocation split + spend cap when the signal is weak.
-        up_pct, down_pct = self._v2_allocation_split(prob_up)
+        # Market-derived direction: which side has the higher bid?
+        # This is the real-time signal that overrides the model when they disagree.
+        market_up = yes_bid > no_bid
+        market_edge = abs(yes_bid - no_bid)  # how strong is the market signal
+        model_up = prob_up >= 0.50
+
+        # Combined direction: market wins when market edge is strong (> 10c)
+        # Model wins when market is roughly 50/50 (edge < 5c)
+        if market_edge > 0.10:
+            # Market has a clear opinion — trust it
+            winning_up = market_up
+        elif market_edge > 0.05:
+            # Market has mild opinion — go with market unless model strongly disagrees
+            winning_up = market_up
+        else:
+            # Market is roughly 50/50 — use model
+            winning_up = model_up
+
+        # Allocation split: winning side gets more budget
+        # But both sides always get orders (K9 buys both sides 98% of windows)
+        if market_edge > 0.20:
+            # Very clear direction — 80/20 split
+            up_pct = 0.80 if winning_up else 0.20
+        elif market_edge > 0.10:
+            # Clear direction — 70/30
+            up_pct = 0.70 if winning_up else 0.30
+        else:
+            # Unclear — use model-weighted split
+            up_pct, _ = self._v2_allocation_split(prob_up)
+        down_pct = round(1.0 - up_pct, 2)
+
         budget_scale = self._v2_confidence_budget_scale(prob_up)
+        # Market clarity also boosts budget scale
+        if market_edge > 0.15:
+            budget_scale = max(budget_scale, 1.0)
 
         buy_only_start = self._v2_buy_only_start_seconds()
         commit_start = self._v2_commit_start_seconds()
-
-        # Direction commitment at T+60: lock the allocation split so the bot
-        # stops chasing model flips mid-window.  Before T+60 the model can
-        # update the split freely.  At T+60 the current split is frozen and
-        # reused for the rest of the main phase + buy-only phase.
-        DIRECTION_LOCK_SECONDS = 60.0
-        if seconds_since_open >= DIRECTION_LOCK_SECONDS:
-            if "locked_up_pct" not in pos:
-                # First tick after lock point — freeze current allocation
-                pos["locked_prob_up"] = prob_up
-                pos["locked_up_pct"] = up_pct
-                pos["locked_down_pct"] = down_pct
-                pos["locked_budget_scale"] = budget_scale
-                logger.info(
-                    "v2_direction_locked",
-                    asset=state.asset,
-                    seconds=int(seconds_since_open),
-                    prob_up=round(prob_up, 3),
-                    up_pct=up_pct,
-                    down_pct=down_pct,
-                    budget_scale=round(budget_scale, 2),
-                )
-            else:
-                # After lock: use frozen values, ignore model flips
-                prob_up = pos.get("locked_prob_up", prob_up)
-                up_pct = pos.get("locked_up_pct", up_pct)
-                down_pct = pos.get("locked_down_pct", down_pct)
-                budget_scale = pos.get("locked_budget_scale", budget_scale)
-
-        if seconds_since_open >= buy_only_start:
-            if "late_phase_up_pct" not in pos:
-                pos["late_phase_prob_up"] = prob_up
-                pos["late_phase_up_pct"] = up_pct
-                pos["late_phase_down_pct"] = down_pct
-                pos["late_phase_budget_scale"] = budget_scale
-                logger.info(
-                    "v2_buy_only_mode_entered",
-                    asset=state.asset,
-                    seconds=int(seconds_since_open),
-                    prob_up=round(prob_up, 3),
-                    up_pct=up_pct,
-                    down_pct=down_pct,
-                    budget_scale=round(budget_scale, 2),
-                )
-            else:
-                prob_up = pos.get("late_phase_prob_up", prob_up)
-                up_pct = pos.get("late_phase_up_pct", up_pct)
-                down_pct = pos.get("late_phase_down_pct", down_pct)
-                budget_scale = pos.get("late_phase_budget_scale", budget_scale)
 
         # ── 2a. LATE-WINDOW DUMP (T+210 to T+250) ────────────────────────
         # Sell near-worthless losing shares before commit. Even 3c per share
