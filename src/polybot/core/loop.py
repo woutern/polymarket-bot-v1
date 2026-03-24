@@ -20,13 +20,17 @@ from polybot.execution.live_trader import LiveTrader
 from polybot.execution.paper_trader import PaperTrader
 from polybot.feeds.coinbase_ws import CoinbaseWS
 from polybot.feeds.polymarket_rest import get_orderbook
+from polybot.feeds.rtds_ws import (
+    RTDSClient,
+    compute_oracle_probability,
+    compute_realized_vol,
+)
 from polybot.market.market_resolver import resolve_window
 from polybot.market.window_tracker import WindowState, WindowTracker
 from polybot.models import Direction, OrderbookSnapshot, Window
 from polybot.risk.manager import RiskManager
 from polybot.storage.db import Database
 from polybot.storage.dynamo import DynamoStore
-from polybot.feeds.rtds_ws import RTDSClient, compute_oracle_probability, compute_realized_vol
 from polybot.strategy.base_rate import BaseRateTable
 from polybot.strategy.bayesian import BayesianUpdater
 from polybot.strategy.directional import generate_directional_signal
@@ -37,22 +41,37 @@ logger = structlog.get_logger()
 # regardless of the working directory.
 _SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts")
 
+
 def _import_claim_all():
     """Lazily import claim_all from scripts/claim_winnings.py."""
     import importlib.util
+
     script_path = os.path.normpath(os.path.join(_SCRIPTS_DIR, "claim_winnings.py"))
     spec = importlib.util.spec_from_file_location("claim_winnings", script_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod.claim_all
 
+
 S3_BUCKET = "polymarket-bot-data-688567279867-euw1"
 
 # Per-asset parquet config: asset symbol -> (local path, S3 key, /tmp fallback)
 _ASSET_PARQUET: dict[str, tuple[str, str, str]] = {
-    "BTC": ("data/candles/btc_usd_1min.parquet", "candles/btc_usd_1min.parquet", "/tmp/btc_usd_1min.parquet"),
-    "ETH": ("data/candles/eth_usd_1min.parquet", "candles/eth_usd_1min.parquet", "/tmp/eth_usd_1min.parquet"),
-    "SOL": ("data/candles/sol_usd_1min.parquet", "candles/sol_usd_1min.parquet", "/tmp/sol_usd_1min.parquet"),
+    "BTC": (
+        "data/candles/btc_usd_1min.parquet",
+        "candles/btc_usd_1min.parquet",
+        "/tmp/btc_usd_1min.parquet",
+    ),
+    "ETH": (
+        "data/candles/eth_usd_1min.parquet",
+        "candles/eth_usd_1min.parquet",
+        "/tmp/eth_usd_1min.parquet",
+    ),
+    "SOL": (
+        "data/candles/sol_usd_1min.parquet",
+        "candles/sol_usd_1min.parquet",
+        "/tmp/sol_usd_1min.parquet",
+    ),
 }
 
 
@@ -68,8 +87,12 @@ class AssetState:
     prev_window: Window | None = None
     traded_this_window: bool = False
     orderbook_age: float = 0.0
-    price_history: deque = field(default_factory=lambda: deque(maxlen=200))  # for realized vol
-    vol_history: deque = field(default_factory=lambda: deque(maxlen=12))  # rolling vol for vol_ma_1h
+    price_history: deque = field(
+        default_factory=lambda: deque(maxlen=200)
+    )  # for realized vol
+    vol_history: deque = field(
+        default_factory=lambda: deque(maxlen=12)
+    )  # rolling vol for vol_ma_1h
     window_high: float = 0.0  # track high/low within first 15s for body_ratio
     window_low: float = float("inf")
     window_tick_count: int = 0
@@ -86,32 +109,50 @@ class AssetState:
     early_entry_evaluated: bool = False
     early_entry_traded: bool = False
     # Early entry position tracking (for checkpoints at T+60/120/180s)
-    early_position: dict | None = None  # {slug, token_id, shares, entry_price, direction_up, side}
+    early_position: dict | None = (
+        None  # {slug, token_id, shares, entry_price, direction_up, side}
+    )
     early_checkpoints_done: set = field(default_factory=set)  # {60, 120, 180}
     # DCA + hedge tracking
-    early_dca_orders: list = field(default_factory=list)   # [{order_id, side, price, size, filled}]
+    early_dca_orders: list = field(
+        default_factory=list
+    )  # [{order_id, side, price, size, filled}]
     early_hedge_order_id: str | None = None
-    early_main_filled: float = 0.0    # total USD filled on main side
-    early_hedge_filled: float = 0.0   # total USD filled on hedge side
-    early_dca_done: set = field(default_factory=set)  # {15, 45, 90} — which DCA rounds fired
+    early_main_filled: float = 0.0  # total USD filled on main side
+    early_hedge_filled: float = 0.0  # total USD filled on hedge side
+    early_dca_done: set = field(
+        default_factory=set
+    )  # {15, 45, 90} — which DCA rounds fired
     # Per-side share tracking (for stop-and-rotate)
     early_up_shares: float = 0.0
     early_up_cost: float = 0.0
     early_down_shares: float = 0.0
     early_down_cost: float = 0.0
-    early_rotate_done: set = field(default_factory=set)  # which 30s intervals posted cheap limits
-    early_activity_log: list = field(default_factory=list)  # last 20 actions for dashboard
-    early_accum_ticks: set = field(default_factory=set)   # which 3s ticks fired accumulation
-    early_status_logged: set = field(default_factory=set)  # which 15s intervals logged status
-    early_cheap_posted: float = 0.0   # cumulative USD successfully posted this window
-    early_cheap_filled: float = 0.0   # compatibility alias for filled_position_cost_usd
+    early_rotate_done: set = field(
+        default_factory=set
+    )  # which 30s intervals posted cheap limits
+    early_activity_log: list = field(
+        default_factory=list
+    )  # last 20 actions for dashboard
+    early_accum_ticks: set = field(
+        default_factory=set
+    )  # which 3s ticks fired accumulation
+    early_status_logged: set = field(
+        default_factory=set
+    )  # which 15s intervals logged status
+    early_cheap_posted: float = 0.0  # cumulative USD successfully posted this window
+    early_cheap_filled: float = 0.0  # compatibility alias for filled_position_cost_usd
     reserved_open_order_usd: float = 0.0  # reserved USD on open early-entry orders
     filled_position_cost_usd: float = 0.0  # actual filled USD on early-entry orders
-    early_reserved_notional: float = 0.0  # compatibility alias for reserved_open_order_usd
-    early_filled_notional: float = 0.0  # compatibility alias for filled_position_cost_usd
+    early_reserved_notional: float = (
+        0.0  # compatibility alias for reserved_open_order_usd
+    )
+    early_filled_notional: float = (
+        0.0  # compatibility alias for filled_position_cost_usd
+    )
     early_confirm_done: bool = False  # Phase 2 T+15s confirm fired for this window
     early_last_fill_ts: float = 0.0  # epoch time of last fill (for no-fill kicker)
-    v2_last_sell_ts: float = 0.0    # epoch time of last sell (60s cooldown)
+    v2_last_sell_ts: float = 0.0  # epoch time of last sell (60s cooldown)
     v2_last_rescue_ts: float = 0.0  # epoch time of last incomplete-pair rescue repost
 
 
@@ -140,6 +181,7 @@ async def fetch_liq_cluster_bias(symbol: str = "BTC") -> float:
 
     try:
         import httpx
+
         binance_sym = _BINANCE_SYMBOLS.get(symbol, f"{symbol}USDT")
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(
@@ -186,15 +228,20 @@ class TradingLoop:
         for path in (local_path, tmp_path):
             if os.path.exists(path):
                 table.load_from_parquet(path)
-                logger.info("base_rates_loaded", asset=asset, source=path, bins=len(table.bins))
+                logger.info(
+                    "base_rates_loaded", asset=asset, source=path, bins=len(table.bins)
+                )
                 return table
 
         try:
             import boto3
+
             s3 = boto3.client("s3", region_name="eu-west-1")
             s3.download_file(S3_BUCKET, s3_key, tmp_path)
             table.load_from_parquet(tmp_path)
-            logger.info("base_rates_loaded", asset=asset, source="s3", bins=len(table.bins))
+            logger.info(
+                "base_rates_loaded", asset=asset, source="s3", bins=len(table.bins)
+            )
         except Exception as e:
             logger.warning("base_rates_load_failed", asset=asset, error=str(e))
         return table
@@ -229,12 +276,14 @@ class TradingLoop:
         self.db.attach_dynamo(self.dynamo)
 
         # LightGBM model server
-        from polybot.ml.server import ModelServer
         from polybot.ml.kpi_tracker import KPITracker
+        from polybot.ml.server import ModelServer
+
         self.model_server = ModelServer()
         self.kpi_tracker = KPITracker()
         # Macro features (fear/greed, funding, OI) — collected for future model retrains
         from polybot.features.macro_features import MacroFeatures
+
         self._macro = MacroFeatures()
         try:
             self.model_server.load_models()
@@ -311,7 +360,6 @@ class TradingLoop:
         mapping = {300: "5m", 900: "15m", 3600: "1h"}
         return mapping.get(window_seconds, f"{window_seconds}s")
 
-
     async def start(self):
         logger.info(
             "loop_starting",
@@ -327,6 +375,7 @@ class TradingLoop:
 
         # Smoke test all dependencies before trading
         from polybot.core.smoke_test import run_smoke_tests
+
         smoke = await run_smoke_tests(self.settings)
         if smoke.failed:
             raise RuntimeError(f"Smoke test failed: {smoke.failed}")
@@ -335,14 +384,21 @@ class TradingLoop:
         if self._wallet_address:
             try:
                 from polybot.market.balance_checker import BalanceChecker
+
                 checker = BalanceChecker()
                 balances = await checker.check(self._wallet_address)
                 logger.info("wallet_balance", **balances)
                 if self.settings.mode == "live":
                     polygon_usdc = balances.get("polygon_usdc", 0.0)
-                    if polygon_usdc > 0 and abs(polygon_usdc - self.risk.bankroll) > 0.50:
+                    if (
+                        polygon_usdc > 0
+                        and abs(polygon_usdc - self.risk.bankroll) > 0.50
+                    ):
                         self.risk.bankroll = polygon_usdc
-                        logger.info("bankroll_updated_from_balance", bankroll=round(polygon_usdc, 2))
+                        logger.info(
+                            "bankroll_updated_from_balance",
+                            bankroll=round(polygon_usdc, 2),
+                        )
             except Exception as e:
                 logger.warning("startup_balance_check_failed", error=str(e))
 
@@ -382,9 +438,13 @@ class TradingLoop:
                             self.trader.client.cancel(oid)
                             order["closed"] = True
                             cancel_count += 1
-                            logger.info("shutdown_cancel", asset=asset_key, oid=oid[:16])
+                            logger.info(
+                                "shutdown_cancel", asset=asset_key, oid=oid[:16]
+                            )
                     except Exception as e:
-                        logger.warning("shutdown_cancel_fail", oid=oid[:16], err=str(e)[:80])
+                        logger.warning(
+                            "shutdown_cancel_fail", oid=oid[:16], err=str(e)[:80]
+                        )
         logger.info("shutdown_cancelled_orders", count=cancel_count)
         await self.coinbase.close()
         await self.rtds.close()
@@ -396,7 +456,9 @@ class TradingLoop:
         return getattr(self.settings, "early_entry_max_bet", 25.0) or 25.0
 
     def _v2_reserved_open_order_usd(self, state: AssetState) -> float:
-        return round(max(state.reserved_open_order_usd, state.early_reserved_notional), 2)
+        return round(
+            max(state.reserved_open_order_usd, state.early_reserved_notional), 2
+        )
 
     def _set_v2_reserved_open_order_usd(self, state: AssetState, amount: float) -> None:
         reserved = round(max(amount, 0.0), 2)
@@ -404,9 +466,18 @@ class TradingLoop:
         state.early_reserved_notional = reserved
 
     def _v2_filled_position_cost_usd(self, state: AssetState) -> float:
-        return round(max(state.filled_position_cost_usd, state.early_filled_notional, state.early_cheap_filled), 2)
+        return round(
+            max(
+                state.filled_position_cost_usd,
+                state.early_filled_notional,
+                state.early_cheap_filled,
+            ),
+            2,
+        )
 
-    def _set_v2_filled_position_cost_usd(self, state: AssetState, amount: float) -> None:
+    def _set_v2_filled_position_cost_usd(
+        self, state: AssetState, amount: float
+    ) -> None:
         filled = round(max(amount, 0.0), 2)
         state.filled_position_cost_usd = filled
         state.early_filled_notional = filled
@@ -419,7 +490,11 @@ class TradingLoop:
         self._set_v2_filled_position_cost_usd(state, amount)
 
     def _v2_current_total_notional(self, state: AssetState) -> float:
-        return round(self._v2_filled_position_cost_usd(state) + self._v2_reserved_open_order_usd(state), 2)
+        return round(
+            self._v2_filled_position_cost_usd(state)
+            + self._v2_reserved_open_order_usd(state),
+            2,
+        )
 
     def _v2_min_order_shares(self) -> int:
         return 5
@@ -445,18 +520,24 @@ class TradingLoop:
         return self._v2_float(order.get("actual_price", order.get("price", 0)))
 
     def _v2_order_actual_notional(self, order: dict) -> float:
-        return round(self._v2_float(order.get("actual_notional_usd", order.get("size", 0))), 2)
+        return round(
+            self._v2_float(order.get("actual_notional_usd", order.get("size", 0))), 2
+        )
 
     def _v2_order_inventory_shares(self, order: dict) -> int:
         return int(order.get("inventory_shares", order.get("filled_shares", 0)) or 0)
 
     def _v2_order_inventory_notional(self, order: dict) -> float:
         return round(
-            self._v2_float(order.get("inventory_notional_usd", order.get("filled_notional_usd", 0))),
+            self._v2_float(
+                order.get("inventory_notional_usd", order.get("filled_notional_usd", 0))
+            ),
             2,
         )
 
-    def _set_v2_order_inventory(self, order: dict, shares: int, notional: float) -> None:
+    def _set_v2_order_inventory(
+        self, order: dict, shares: int, notional: float
+    ) -> None:
         order["inventory_shares"] = max(int(shares), 0)
         order["inventory_notional_usd"] = round(max(notional, 0.0), 2)
 
@@ -465,7 +546,10 @@ class TradingLoop:
             self._v2_float(
                 order.get(
                     "remaining_reserved_notional_usd",
-                    order.get("reserved_notional_usd_remaining", self._v2_order_actual_notional(order)),
+                    order.get(
+                        "reserved_notional_usd_remaining",
+                        self._v2_order_actual_notional(order),
+                    ),
                 )
             ),
             2,
@@ -510,18 +594,36 @@ class TradingLoop:
         actual_price = self._v2_order_actual_price(order)
         actual_notional_usd = self._v2_order_actual_notional(order)
         prev_filled_shares = int(order.get("filled_shares", 0) or 0)
-        prev_filled_notional = round(self._v2_float(order.get("filled_notional_usd", 0)), 2)
+        prev_filled_notional = round(
+            self._v2_float(order.get("filled_notional_usd", 0)), 2
+        )
         status = str(resp.get("status", "") if isinstance(resp, dict) else "").upper()
 
         if status in ("MATCHED", "FILLED"):
             return actual_shares, actual_notional_usd, True
 
-        size_matched = self._v2_float(resp.get("size_matched", 0) if isinstance(resp, dict) else 0)
-        total_filled_shares = int(round(size_matched)) if size_matched > 0 else prev_filled_shares
-        total_filled_shares = max(min(total_filled_shares, actual_shares), prev_filled_shares)
-        total_filled_notional = round(total_filled_shares * actual_price, 2) if actual_price > 0 else prev_filled_notional
-        total_filled_notional = max(min(total_filled_notional, actual_notional_usd), prev_filled_notional)
-        is_complete = total_filled_notional >= actual_notional_usd - 1e-9 if actual_notional_usd > 0 else False
+        size_matched = self._v2_float(
+            resp.get("size_matched", 0) if isinstance(resp, dict) else 0
+        )
+        total_filled_shares = (
+            int(round(size_matched)) if size_matched > 0 else prev_filled_shares
+        )
+        total_filled_shares = max(
+            min(total_filled_shares, actual_shares), prev_filled_shares
+        )
+        total_filled_notional = (
+            round(total_filled_shares * actual_price, 2)
+            if actual_price > 0
+            else prev_filled_notional
+        )
+        total_filled_notional = max(
+            min(total_filled_notional, actual_notional_usd), prev_filled_notional
+        )
+        is_complete = (
+            total_filled_notional >= actual_notional_usd - 1e-9
+            if actual_notional_usd > 0
+            else False
+        )
         return total_filled_shares, total_filled_notional, is_complete
 
     def _sync_v2_position_from_fills(self, state: AssetState) -> None:
@@ -545,7 +647,9 @@ class TradingLoop:
         return (state.asset, state.tracker.window_seconds) in enabled_pairs
 
     def _v2_order_execution_enabled(self) -> bool:
-        return self.settings.mode in ("live", "paper") and hasattr(self.trader, "client")
+        return self.settings.mode in ("live", "paper") and hasattr(
+            self.trader, "client"
+        )
 
     def _v2_get_order_status(self, state: AssetState, order: dict) -> dict:
         oid = order.get("order_id", "")
@@ -557,7 +661,14 @@ class TradingLoop:
             return resp
 
         status = str(resp.get("status", "") if isinstance(resp, dict) else "").upper()
-        if status in ("MATCHED", "FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"):
+        if status in (
+            "MATCHED",
+            "FILLED",
+            "CANCELED",
+            "CANCELLED",
+            "REJECTED",
+            "EXPIRED",
+        ):
             return resp
 
         direction = self._v2_order_direction(state, order)
@@ -579,7 +690,9 @@ class TradingLoop:
 
     def _v2_remaining_budget(self, state: AssetState) -> float:
         max_bet_per_asset = self._v2_max_bet_per_asset()
-        return round(max(max_bet_per_asset - self._v2_current_total_notional(state), 0.0), 2)
+        return round(
+            max(max_bet_per_asset - self._v2_current_total_notional(state), 0.0), 2
+        )
 
     def _v2_order_direction(self, state: AssetState, order: dict) -> bool | None:
         pos = state.early_position or {}
@@ -695,7 +808,9 @@ class TradingLoop:
         if favored_budget >= target_favored_budget - 1e-9:
             return up_budget, down_budget
 
-        transfer = min(unfavored_budget, round(target_favored_budget - favored_budget, 2))
+        transfer = min(
+            unfavored_budget, round(target_favored_budget - favored_budget, 2)
+        )
         if transfer <= 0:
             return up_budget, down_budget
 
@@ -722,7 +837,9 @@ class TradingLoop:
             return 0.78
         return 0.82
 
-    def _v2_incomplete_pair_rescue_price(self, bid: float, ask: float, hard_cap: float) -> float:
+    def _v2_incomplete_pair_rescue_price(
+        self, bid: float, ask: float, hard_cap: float
+    ) -> float:
         """Use a more aggressive missing-side repost than the normal passive ladder."""
         if ask > 0:
             price = round(min(ask, hard_cap), 2)
@@ -756,10 +873,16 @@ class TradingLoop:
         new_up_shares = int(state.early_up_shares) + (shares if side_up else 0)
         new_down_shares = int(state.early_down_shares) + (shares if not side_up else 0)
         new_up_cost = float(state.early_up_cost) + (notional if side_up else 0.0)
-        new_down_cost = float(state.early_down_cost) + (notional if not side_up else 0.0)
+        new_down_cost = float(state.early_down_cost) + (
+            notional if not side_up else 0.0
+        )
         new_up_avg = (new_up_cost / new_up_shares) if new_up_shares > 0 else 0.0
         new_down_avg = (new_down_cost / new_down_shares) if new_down_shares > 0 else 0.0
-        new_combined = (new_up_avg + new_down_avg) if (new_up_shares > 0 and new_down_shares > 0) else 0.0
+        new_combined = (
+            (new_up_avg + new_down_avg)
+            if (new_up_shares > 0 and new_down_shares > 0)
+            else 0.0
+        )
         payout_floor = min(new_up_shares, new_down_shares)
         projected_total = round(current_total_notional + notional, 2)
         cost_above_floor = max(round(projected_total - payout_floor, 2), 0.0)
@@ -804,12 +927,26 @@ class TradingLoop:
         unit_cost = sell_from_cost / sell_from_shares if sell_from_shares > 0 else 0.0
         removed_cost = round(unit_cost * shares, 2)
         new_up_shares = current_up_shares - shares if side_up else current_up_shares
-        new_down_shares = current_down_shares - shares if not side_up else current_down_shares
-        new_up_cost = max(round(current_up_cost - removed_cost, 2), 0.0) if side_up else current_up_cost
-        new_down_cost = max(round(current_down_cost - removed_cost, 2), 0.0) if not side_up else current_down_cost
+        new_down_shares = (
+            current_down_shares - shares if not side_up else current_down_shares
+        )
+        new_up_cost = (
+            max(round(current_up_cost - removed_cost, 2), 0.0)
+            if side_up
+            else current_up_cost
+        )
+        new_down_cost = (
+            max(round(current_down_cost - removed_cost, 2), 0.0)
+            if not side_up
+            else current_down_cost
+        )
         new_up_avg = (new_up_cost / new_up_shares) if new_up_shares > 0 else 0.0
         new_down_avg = (new_down_cost / new_down_shares) if new_down_shares > 0 else 0.0
-        new_combined = (new_up_avg + new_down_avg) if (new_up_shares > 0 and new_down_shares > 0) else 0.0
+        new_combined = (
+            (new_up_avg + new_down_avg)
+            if (new_up_shares > 0 and new_down_shares > 0)
+            else 0.0
+        )
         payout_floor = min(new_up_shares, new_down_shares)
         projected_total = max(round(current_total_notional - proceeds, 2), 0.0)
         cost_above_floor = max(round(projected_total - payout_floor, 2), 0.0)
@@ -906,9 +1043,9 @@ class TradingLoop:
     ) -> bool:
         """Detect complete pairs that are bad enough to justify trimming a rich side."""
         return (
-            current_combined_avg > max_combined_avg + 0.03
-            or current_cost_above_floor > max_cost_above_floor + 0.25
-            or current_position_ev < -0.10
+            current_combined_avg > max_combined_avg + 0.01
+            or current_cost_above_floor > max_cost_above_floor + 0.10
+            or current_position_ev < -0.02
         )
 
     def _v2_budget_curve_pct(self, seconds_since_open: float) -> float:
@@ -936,7 +1073,11 @@ class TradingLoop:
         return max(value, 0.0)
 
     def _v2_open_orders(self, state: AssetState) -> list[dict]:
-        return [order for order in state.early_dca_orders if not order.get("filled") and not order.get("closed")]
+        return [
+            order
+            for order in state.early_dca_orders
+            if not order.get("filled") and not order.get("closed")
+        ]
 
     def _v2_normalized_order_side(self, state: AssetState, order: dict) -> str:
         direction = self._v2_order_direction(state, order)
@@ -948,7 +1089,11 @@ class TradingLoop:
 
     def _v2_accum_plan(self, bid: float) -> tuple[list[float], float, str]:
         if bid <= 0.15:
-            return [0.00, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08], 0.35, "lottery"
+            return (
+                [0.00, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08],
+                0.35,
+                "lottery",
+            )
         if bid <= 0.35:
             return [0.00, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06], 0.25, "cheap"
         if bid <= 0.60:
@@ -1006,14 +1151,18 @@ class TradingLoop:
             desired_prices = desired_prices_by_side.get(side, [])
             actual_price = round(self._v2_order_actual_price(order), 2)
             created_at_raw = order.get("created_at", now)
-            created_at = created_at_raw if isinstance(created_at_raw, (int, float)) else now
+            created_at = (
+                created_at_raw if isinstance(created_at_raw, (int, float)) else now
+            )
             order_age_seconds = max(now - float(created_at), 0.0)
 
             nearest_desired_price = actual_price
             price_gap = 0.0
             near_market = True
             if desired_prices:
-                nearest_desired_price = min(desired_prices, key=lambda price: abs(price - actual_price))
+                nearest_desired_price = min(
+                    desired_prices, key=lambda price: abs(price - actual_price)
+                )
                 price_gap = round(abs(nearest_desired_price - actual_price), 2)
                 near_market = price_gap <= tolerance + 1e-9
             else:
@@ -1034,7 +1183,9 @@ class TradingLoop:
                     cancel_client(oid)
                 release_notional = self._v2_order_reserved_remaining(order)
                 if release_notional > 0 and not order.get("budget_released"):
-                    self._release_v2_budget(state, release_notional, "stale_cancel", side, oid)
+                    self._release_v2_budget(
+                        state, release_notional, "stale_cancel", side, oid
+                    )
                 self._set_v2_order_reserved_remaining(order, 0.0)
                 order["budget_released"] = True
                 order["closed"] = True
@@ -1064,10 +1215,14 @@ class TradingLoop:
                     error=str(e)[:120],
                 )
 
-        state.early_dca_orders = [order for order in state.early_dca_orders if not order.get("closed")]
+        state.early_dca_orders = [
+            order for order in state.early_dca_orders if not order.get("closed")
+        ]
         return kept_prices_by_side, cancelled
 
-    def _v2_cancel_open_orders_for_side(self, state: AssetState, side: str, context: str) -> int:
+    def _v2_cancel_open_orders_for_side(
+        self, state: AssetState, side: str, context: str
+    ) -> int:
         cancel_client = self._v2_cancel_client()
         cancelled = 0
         for order in list(self._v2_open_orders(state)):
@@ -1100,20 +1255,40 @@ class TradingLoop:
                     order_id=oid[:16],
                     error=str(e)[:120],
                 )
-        state.early_dca_orders = [order for order in state.early_dca_orders if not order.get("closed")]
+        state.early_dca_orders = [
+            order for order in state.early_dca_orders if not order.get("closed")
+        ]
         return cancelled
 
     def _v2_window_metrics(self, state: AssetState) -> dict[str, float | int | bool]:
         tracked_orders = state.early_dca_orders
         filled_orders = [
-            o for o in tracked_orders if o.get("filled") or self._v2_float(o.get("filled_notional_usd", 0)) > 0
+            o
+            for o in tracked_orders
+            if o.get("filled") or self._v2_float(o.get("filled_notional_usd", 0)) > 0
         ]
         cheap_buy_count = len(tracked_orders)
-        cheap_buy_usd = round(sum(float(o.get("actual_notional_usd", o.get("size", 0)) or 0) for o in tracked_orders), 2)
-        under_25_count = sum(1 for o in tracked_orders if float(o.get("price", 1) or 1) < 0.25)
-        percent_buys_under_0_25 = round((under_25_count / cheap_buy_count) * 100, 1) if cheap_buy_count else 0.0
-        directions = [self._v2_order_direction(state, order) for order in tracked_orders]
-        filled_directions = [self._v2_order_direction(state, order) for order in filled_orders]
+        cheap_buy_usd = round(
+            sum(
+                float(o.get("actual_notional_usd", o.get("size", 0)) or 0)
+                for o in tracked_orders
+            ),
+            2,
+        )
+        under_25_count = sum(
+            1 for o in tracked_orders if float(o.get("price", 1) or 1) < 0.25
+        )
+        percent_buys_under_0_25 = (
+            round((under_25_count / cheap_buy_count) * 100, 1)
+            if cheap_buy_count
+            else 0.0
+        )
+        directions = [
+            self._v2_order_direction(state, order) for order in tracked_orders
+        ]
+        filled_directions = [
+            self._v2_order_direction(state, order) for order in filled_orders
+        ]
         reserved_open_order_usd = self._v2_reserved_open_order_usd(state)
         filled_position_cost_usd = self._v2_filled_position_cost_usd(state)
         return {
@@ -1123,7 +1298,9 @@ class TradingLoop:
             "trades_per_window": len(filled_orders),
             "both_sides_posted": any(direction is True for direction in directions)
             and any(direction is False for direction in directions),
-            "both_sides_filled": any(direction is True for direction in filled_directions)
+            "both_sides_filled": any(
+                direction is True for direction in filled_directions
+            )
             and any(direction is False for direction in filled_directions),
             "reserved_open_order_usd": reserved_open_order_usd,
             "filled_position_cost_usd": filled_position_cost_usd,
@@ -1145,7 +1322,9 @@ class TradingLoop:
     def _v2_side_hold_value(self, prob_up: float, side_up: bool) -> float:
         return prob_up if side_up else (1.0 - prob_up)
 
-    def _reserve_v2_budget(self, state: AssetState, actual_notional_usd: float, context: str, side: str) -> bool:
+    def _reserve_v2_budget(
+        self, state: AssetState, actual_notional_usd: float, context: str, side: str
+    ) -> bool:
         max_bet_per_asset = self._v2_max_bet_per_asset()
         current_reserved = self._v2_reserved_open_order_usd(state)
         current_filled = self._v2_filled_position_cost_usd(state)
@@ -1165,7 +1344,9 @@ class TradingLoop:
                 remaining_budget=remaining_budget,
             )
             return False
-        self._set_v2_reserved_open_order_usd(state, current_reserved + actual_notional_usd)
+        self._set_v2_reserved_open_order_usd(
+            state, current_reserved + actual_notional_usd
+        )
         logger.info(
             "v2_budget_reserved",
             asset=state.asset,
@@ -1189,8 +1370,12 @@ class TradingLoop:
         order_id: str = "",
     ) -> None:
         max_bet_per_asset = self._v2_max_bet_per_asset()
-        self._set_v2_reserved_open_order_usd(state, self._v2_reserved_open_order_usd(state) - actual_notional_usd)
-        self._set_v2_filled_position_cost_usd(state, self._v2_filled_position_cost_usd(state) + actual_notional_usd)
+        self._set_v2_reserved_open_order_usd(
+            state, self._v2_reserved_open_order_usd(state) - actual_notional_usd
+        )
+        self._set_v2_filled_position_cost_usd(
+            state, self._v2_filled_position_cost_usd(state) + actual_notional_usd
+        )
         logger.info(
             "v2_budget_filled",
             asset=state.asset,
@@ -1214,7 +1399,9 @@ class TradingLoop:
         order_id: str = "",
     ) -> None:
         max_bet_per_asset = self._v2_max_bet_per_asset()
-        self._set_v2_reserved_open_order_usd(state, self._v2_reserved_open_order_usd(state) - actual_notional_usd)
+        self._set_v2_reserved_open_order_usd(
+            state, self._v2_reserved_open_order_usd(state) - actual_notional_usd
+        )
         logger.info(
             "v2_budget_released",
             asset=state.asset,
@@ -1254,8 +1441,7 @@ class TradingLoop:
     async def _strategy_loop(self):
         # Wait for first price
         while self._running and all(
-            self.coinbase.get_price(s.asset) == 0
-            for s in self.asset_states.values()
+            self.coinbase.get_price(s.asset) == 0 for s in self.asset_states.values()
         ):
             await asyncio.sleep(0.25)
 
@@ -1276,13 +1462,18 @@ class TradingLoop:
                 try:
                     await self._tick_asset(state, price)
                 except Exception as e:
-                    logger.error("tick_asset_error", key=key, error=str(e), exc_info=True)
+                    logger.error(
+                        "tick_asset_error", key=key, error=str(e), exc_info=True
+                    )
 
             # Warn if all prices have been zero for > 60 seconds
             if any_price:
                 _last_price_log = time.time()
             elif time.time() - _last_price_log > 60:
-                logger.warning("price_feed_stale_all_zero", seconds=round(time.time() - _last_price_log))
+                logger.warning(
+                    "price_feed_stale_all_zero",
+                    seconds=round(time.time() - _last_price_log),
+                )
                 _last_price_log = time.time()  # reset so we don't spam
 
             await asyncio.sleep(0.25)
@@ -1291,7 +1482,9 @@ class TradingLoop:
             if time.time() - self._last_heartbeat >= 60:
                 self._last_heartbeat = time.time()
                 uptime = round((time.time() - self._start_time) / 60, 1)
-                logger.info("heartbeat", uptime_min=uptime, tasks=len(asyncio.all_tasks()))
+                logger.info(
+                    "heartbeat", uptime_min=uptime, tasks=len(asyncio.all_tasks())
+                )
                 try:
                     open("/tmp/heartbeat", "w").write(str(time.time()))
                 except Exception:
@@ -1319,12 +1512,16 @@ class TradingLoop:
 
         early_entry_active = self._early_entry_active_for_state(state)
         _sso = time.time() - window.open_ts
-        logger.info("tick", asset=state.asset, seconds=int(_sso),
-                    early_enabled=early_entry_active,
-                    early_master_enabled=self.settings.early_entry_enabled,
-                    has_position=bool(state.early_position),
-                    early_traded=state.early_entry_traded,
-                    early_evaluated=state.early_entry_evaluated)
+        logger.info(
+            "tick",
+            asset=state.asset,
+            seconds=int(_sso),
+            early_enabled=early_entry_active,
+            early_master_enabled=self.settings.early_entry_enabled,
+            has_position=bool(state.early_position),
+            early_traded=state.early_entry_traded,
+            early_evaluated=state.early_entry_evaluated,
+        )
 
         # Track price history for realized vol calculation
         state.price_history.append(price)
@@ -1356,8 +1553,13 @@ class TradingLoop:
 
         # Log progress every 60s for debugging
         if int(seconds_since_open) % 60 == 0 and int(seconds_since_open) > 0:
-            logger.debug("tick_progress", asset=state.asset, seconds=int(seconds_since_open),
-                         target=self.settings.late_entry_seconds, evaluated=state.late_entry_evaluated)
+            logger.debug(
+                "tick_progress",
+                asset=state.asset,
+                seconds=int(seconds_since_open),
+                target=self.settings.late_entry_seconds,
+                evaluated=state.late_entry_evaluated,
+            )
 
         # ── V2 EARLY ENTRY PLAYBOOK ──────────────────────────────────────────
         # Two gates:
@@ -1371,19 +1573,34 @@ class TradingLoop:
             cutoff = win_secs - 30
 
             # SAFETY: Skip this window if we joined late (prevents stacking on restart)
-            if not state.early_entry_traded and not state.early_position and seconds_since_open > 15:
+            if (
+                not state.early_entry_traded
+                and not state.early_position
+                and seconds_since_open > 15
+            ):
                 if int(seconds_since_open) % 60 == 0:
-                    logger.info("v2_skipped_late_join", asset=state.asset,
-                                seconds=int(seconds_since_open))
+                    logger.info(
+                        "v2_skipped_late_join",
+                        asset=state.asset,
+                        seconds=int(seconds_since_open),
+                    )
                 # Don't open position — wait for next window
                 pass  # fall through to end of early_entry_active block
             # PHASE 1: Open both sides at T+5–15s (requires early_entry_active — new positions only)
-            elif (early_entry_active and not state.early_entry_traded and not state.early_position
-                    and 5 <= seconds_since_open <= 15):
+            elif (
+                early_entry_active
+                and not state.early_entry_traded
+                and not state.early_position
+                and 5 <= seconds_since_open <= 15
+            ):
                 await self._v2_open_position(state, price)
 
             # PHASE 2: Confirm direction at T+15-20s (once per window)
-            if state.early_position and 15 <= seconds_since_open <= 20 and not state.early_confirm_done:
+            if (
+                state.early_position
+                and 15 <= seconds_since_open <= 20
+                and not state.early_confirm_done
+            ):
                 state.early_confirm_done = True
                 await self._v2_confirm(state, price)
 
@@ -1413,7 +1630,11 @@ class TradingLoop:
                     self._log_v2_status(state, seconds_since_open)
 
             # Cancel unfilled at cutoff, then hold everything to resolution
-            if state.early_position and seconds_since_open >= cutoff and cutoff not in state.early_checkpoints_done:
+            if (
+                state.early_position
+                and seconds_since_open >= cutoff
+                and cutoff not in state.early_checkpoints_done
+            ):
                 state.early_checkpoints_done.add(cutoff)
                 await self._early_cancel_unfilled(state)
 
@@ -1436,7 +1657,9 @@ class TradingLoop:
 
     # 223 lines removed (dead method)
 
-    async def _scan_tick(self, state: AssetState, price: float, seconds_since_open: float):
+    async def _scan_tick(
+        self, state: AssetState, price: float, seconds_since_open: float
+    ):
         """Scan window logic: T+210s–T+255s, find best entry price.
 
         Phase 1 (T+210s): Start scan — record direction and initial ask.
@@ -1452,6 +1675,7 @@ class TradingLoop:
 
         # Time-of-day + weekend liquidity filter
         from datetime import datetime, timezone
+
         _now_filter = datetime.now(timezone.utc)
         utc_hour = _now_filter.hour
         is_weekend = _now_filter.weekday() >= 5  # Sat=5, Sun=6
@@ -1459,7 +1683,11 @@ class TradingLoop:
         EARLY_ENTRY_ASK = 0.72 if is_weekend else (0.68 if weak_hours else 0.58)
 
         # Phase 1: Start scan at T+210s
-        if seconds_since_open >= SCAN_START and not state.scan_active and not state.scan_direction_flipped:
+        if (
+            seconds_since_open >= SCAN_START
+            and not state.scan_active
+            and not state.scan_direction_flipped
+        ):
             await self._refresh_orderbook(state)
             yes_ask = state.orderbook.yes_best_ask
             no_ask = state.orderbook.no_best_ask
@@ -1476,12 +1704,19 @@ class TradingLoop:
             state.scan_best_ask_ts = time.time()
             state.scan_last_checked = time.time()
 
-            logger.info("scan_started", asset=state.asset, direction=direction,
-                        ask=round(current_ask, 3), seconds=round(seconds_since_open, 1))
+            logger.info(
+                "scan_started",
+                asset=state.asset,
+                direction=direction,
+                ask=round(current_ask, 3),
+                seconds=round(seconds_since_open, 1),
+            )
 
             # Early entry: cheap enough, don't wait
             if 0.55 <= current_ask <= EARLY_ENTRY_ASK:
-                logger.info("scan_early_entry", asset=state.asset, ask=round(current_ask, 3))
+                logger.info(
+                    "scan_early_entry", asset=state.asset, ask=round(current_ask, 3)
+                )
                 await self._execute_scan_entry(state, price)
                 return
             return
@@ -1489,7 +1724,10 @@ class TradingLoop:
         # Phase 2: Scan in progress — check every 3s
         if state.scan_active and seconds_since_open < SCAN_END:
             now = time.time()
-            if state.scan_last_checked and (now - state.scan_last_checked) < SCAN_INTERVAL:
+            if (
+                state.scan_last_checked
+                and (now - state.scan_last_checked) < SCAN_INTERVAL
+            ):
                 return  # too soon, wait
 
             await self._refresh_orderbook(state)
@@ -1508,9 +1746,13 @@ class TradingLoop:
             if direction != state.scan_direction:
                 state.scan_direction_flipped = True
                 state.scan_active = False
-                logger.info("scan_direction_flipped", asset=state.asset,
-                            original=state.scan_direction, new=direction,
-                            seconds=round(seconds_since_open, 1))
+                logger.info(
+                    "scan_direction_flipped",
+                    asset=state.asset,
+                    original=state.scan_direction,
+                    new=direction,
+                    seconds=round(seconds_since_open, 1),
+                )
                 # Log the skip to DynamoDB
                 self._log_scan_signal(state, price, skip_reason="direction_unstable")
                 state.late_entry_evaluated = True
@@ -1520,14 +1762,20 @@ class TradingLoop:
             if current_ask < state.scan_best_ask:
                 state.scan_best_ask = current_ask
                 state.scan_best_ask_ts = now
-                logger.debug("scan_better_ask", asset=state.asset,
-                             ask=round(current_ask, 3), seconds=round(seconds_since_open, 1))
+                logger.debug(
+                    "scan_better_ask",
+                    asset=state.asset,
+                    ask=round(current_ask, 3),
+                    seconds=round(seconds_since_open, 1),
+                )
 
             # Early entry: cheap enough
             if 0.55 <= current_ask <= EARLY_ENTRY_ASK:
                 state.scan_best_ask = current_ask
                 state.scan_best_ask_ts = now
-                logger.info("scan_early_entry", asset=state.asset, ask=round(current_ask, 3))
+                logger.info(
+                    "scan_early_entry", asset=state.asset, ask=round(current_ask, 3)
+                )
                 await self._execute_scan_entry(state, price)
                 return
             return
@@ -1541,13 +1789,20 @@ class TradingLoop:
         if seconds_since_open >= SCAN_DEADLINE and not state.late_entry_evaluated:
             state.late_entry_evaluated = True
 
-    def _log_scan_signal(self, state: AssetState, price: float, skip_reason: str = "", extra: dict | None = None):
+    def _log_scan_signal(
+        self,
+        state: AssetState,
+        price: float,
+        skip_reason: str = "",
+        extra: dict | None = None,
+    ):
         """Log a scan evaluation to DynamoDB signals table with full backtest data."""
         from datetime import datetime, timezone
+
         window = state.tracker.current
         if not window:
             return
-        scan_duration = (time.time() - (state.scan_best_ask_ts or time.time()))
+        scan_duration = time.time() - (state.scan_best_ask_ts or time.time())
         try:
             record = {
                 "window_slug": window.slug,
@@ -1594,6 +1849,7 @@ class TradingLoop:
 
         # Time-of-day + weekend liquidity filter
         from datetime import datetime, timezone
+
         _now_exec = datetime.now(timezone.utc)
         utc_hour = _now_exec.hour
         is_weekend = _now_exec.weekday() >= 5  # Sat=5, Sun=6
@@ -1602,7 +1858,11 @@ class TradingLoop:
 
         # Volatility filter — skip choppy markets
         vol_now = compute_realized_vol(list(state.price_history))
-        vol_avg = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol_now
+        vol_avg = (
+            sum(state.vol_history) / len(state.vol_history)
+            if state.vol_history
+            else vol_now
+        )
         choppy = vol_now > 2 * vol_avg if vol_avg > 0 else False
 
         is_peak = not weak_hours and not is_weekend
@@ -1614,9 +1874,14 @@ class TradingLoop:
         try:
             import math as _math
             from datetime import datetime as _dt2
+
             _now_utc = _dt2.now(timezone.utc)
             vol = compute_realized_vol(list(state.price_history))
-            vol_ma = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol
+            vol_ma = (
+                sum(state.vol_history) / len(state.vol_history)
+                if state.vol_history
+                else vol
+            )
             vol_ratio = vol / vol_ma if vol_ma > 0 else 1.0
             hl_range = state.window_high - state.window_low
             body = abs(price - (window.open_price or price))
@@ -1626,12 +1891,25 @@ class TradingLoop:
                 "realized_vol_5m": vol,
                 "vol_ratio": vol_ratio,
                 "body_ratio": body_ratio,
-                "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price
-                    and state.prev_window.open_price and state.prev_window.close_price >= state.prev_window.open_price else -1)
-                    if state.prev_window else 0,
-                "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price)
-                    / state.prev_window.open_price * 100) if state.prev_window and state.prev_window.open_price
-                    and state.prev_window.close_price else 0,
+                "prev_window_direction": (
+                    1
+                    if state.prev_window
+                    and state.prev_window.close_price
+                    and state.prev_window.open_price
+                    and state.prev_window.close_price >= state.prev_window.open_price
+                    else -1
+                )
+                if state.prev_window
+                else 0,
+                "prev_window_move_pct": (
+                    (state.prev_window.close_price - state.prev_window.open_price)
+                    / state.prev_window.open_price
+                    * 100
+                )
+                if state.prev_window
+                and state.prev_window.open_price
+                and state.prev_window.close_price
+                else 0,
                 "hour_sin": _math.sin(2 * _math.pi * _now_utc.hour / 24),
                 "hour_cos": _math.cos(2 * _math.pi * _now_utc.hour / 24),
                 "dow_sin": _math.sin(2 * _math.pi * _now_utc.weekday() / 7),
@@ -1674,7 +1952,9 @@ class TradingLoop:
             elif 0.88 < current_ask <= 0.95 and lgbm_prob >= 0.80:
                 size = 5.00  # Very high ask + very high conviction
             elif current_ask > max_ask:
-                skip_reason = "fully_priced"  # Above per-asset max, lgbm not high enough
+                skip_reason = (
+                    "fully_priced"  # Above per-asset max, lgbm not high enough
+                )
             elif current_ask >= 0.75 and is_peak:
                 size = 10.00  # Normal high conviction, peak hours
             else:
@@ -1684,7 +1964,11 @@ class TradingLoop:
         btc_move_pct = 0.0
         if state.asset != "BTC":
             btc_state = self.asset_states.get("BTC_5m")
-            if btc_state and btc_state.tracker.current and btc_state.tracker.current.open_price:
+            if (
+                btc_state
+                and btc_state.tracker.current
+                and btc_state.tracker.current.open_price
+            ):
                 btc_price = self.coinbase.get_price("BTC")
                 btc_open = btc_state.tracker.current.open_price
                 if btc_open > 0:
@@ -1693,42 +1977,57 @@ class TradingLoop:
         # Log evaluation
         logger.info(
             "late_entry_eval",
-            asset=state.asset, slug=window.slug,
+            asset=state.asset,
+            slug=window.slug,
             direction="UP" if direction_up else "DOWN",
             current_ask=round(current_ask, 3),
-            max_ask=max_ask, min_ask=min_ask,
+            max_ask=max_ask,
+            min_ask=min_ask,
             size=size,
             pct_move=round(pct_move, 4),
             seconds_remaining=round(remaining, 1),
             scan_duration_s=round(scan_duration, 1),
             direction_flipped=state.scan_direction_flipped,
-            utc_hour=utc_hour, weak_hours=weak_hours,
+            utc_hour=utc_hour,
+            weak_hours=weak_hours,
             lgbm_prob=round(lgbm_prob, 4),
             btc_move_pct=round(btc_move_pct, 4),
             skip_reason=skip_reason or "TRADE",
         )
 
         # Log to DynamoDB with all backtest fields
-        self._log_scan_signal(state, price, skip_reason=skip_reason,
-                              extra={
-                                  "utc_hour": utc_hour, "weak_hours": weak_hours,
-                                  "open_price": round(window.open_price or 0, 4),
-                                  "current_price": round(price, 4),
-                                  "window_high": round(state.window_high, 4),
-                                  "window_low": round(state.window_low, 4),
-                                  "realized_vol": round(compute_realized_vol(list(state.price_history)), 6),
-                                  "lgbm_prob": round(lgbm_prob, 4),
-                                  "p_bayesian": round(state.bayesian.probability, 4),
-                                  "btc_move_pct": round(btc_move_pct, 4),
-                                  "size": size,
-                                  "tier": "high" if current_ask >= 0.75 else "mid" if current_ask >= 0.65 else "low",
-                              })
+        self._log_scan_signal(
+            state,
+            price,
+            skip_reason=skip_reason,
+            extra={
+                "utc_hour": utc_hour,
+                "weak_hours": weak_hours,
+                "open_price": round(window.open_price or 0, 4),
+                "current_price": round(price, 4),
+                "window_high": round(state.window_high, 4),
+                "window_low": round(state.window_low, 4),
+                "realized_vol": round(
+                    compute_realized_vol(list(state.price_history)), 6
+                ),
+                "lgbm_prob": round(lgbm_prob, 4),
+                "p_bayesian": round(state.bayesian.probability, 4),
+                "btc_move_pct": round(btc_move_pct, 4),
+                "size": size,
+                "tier": "high"
+                if current_ask >= 0.75
+                else "mid"
+                if current_ask >= 0.65
+                else "low",
+            },
+        )
 
         if skip_reason:
             return
 
         # Build signal and execute
         from polybot.models import Direction, Signal, SignalSource
+
         direction = Direction.UP if direction_up else Direction.DOWN
 
         # Refresh orderbook one final time for accurate yes/no asks
@@ -1754,9 +2053,11 @@ class TradingLoop:
 
         logger.info(
             "late_entry_trade",
-            asset=state.asset, slug=window.slug,
+            asset=state.asset,
+            slug=window.slug,
             direction="UP" if direction_up else "DOWN",
-            ask=round(current_ask, 3), size=round(size, 2),
+            ask=round(current_ask, 3),
+            size=round(size, 2),
             scan_duration_s=round(scan_duration, 1),
             strategy="late_momentum_v3_scan",
         )
@@ -1782,14 +2083,22 @@ class TradingLoop:
         btc_move = 0.0
         if state.asset != "BTC":
             btc_state = self.asset_states.get("BTC_5m")
-            if btc_state and btc_state.tracker.current and btc_state.tracker.current.open_price:
+            if (
+                btc_state
+                and btc_state.tracker.current
+                and btc_state.tracker.current.open_price
+            ):
                 btc_price = self.coinbase.get_price("BTC")
                 btc_open = btc_state.tracker.current.open_price
                 if btc_open > 0:
                     btc_move = (btc_price - btc_open) / btc_open * 100
 
         await self._refresh_orderbook(state)
-        current_ask = state.orderbook.yes_best_ask if pct_move >= 0 else state.orderbook.no_best_ask
+        current_ask = (
+            state.orderbook.yes_best_ask
+            if pct_move >= 0
+            else state.orderbook.no_best_ask
+        )
 
         score = compute_score(
             ofi_at_2s=state.ofi_at_2s or 0,
@@ -1802,28 +2111,55 @@ class TradingLoop:
             ask_at_open=state.ask_at_open or current_ask,
             ask_now=current_ask,
             window_volume=state.window_tick_count,
-            avg_prior_volume=(sum(state.prior_window_tick_counts) / len(state.prior_window_tick_counts)
-                              if state.prior_window_tick_counts else 0),
+            avg_prior_volume=(
+                sum(state.prior_window_tick_counts)
+                / len(state.prior_window_tick_counts)
+                if state.prior_window_tick_counts
+                else 0
+            ),
         )
 
         # LightGBM prediction
         pair = f"{state.asset}_5m"
         vol = compute_realized_vol(list(state.price_history))
-        vol_ma = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol
+        vol_ma = (
+            sum(state.vol_history) / len(state.vol_history)
+            if state.vol_history
+            else vol
+        )
         vol_ratio = vol / vol_ma if vol_ma > 0 else 1.0
         hl_range = state.window_high - state.window_low
         body = abs(price - (window.open_price or price))
         body_ratio = body / hl_range if hl_range > 0 else 0.5
         seconds_since_open = (window.close_ts - window.open_ts) - remaining
-        import math as _math, datetime as _dt
+        import datetime as _dt
+        import math as _math
+
         now_utc = _dt.datetime.now(_dt.timezone.utc)
         features = {
             "move_pct_15s": pct_move,
             "realized_vol_5m": vol,
             "vol_ratio": vol_ratio,
             "body_ratio": body_ratio,
-            "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price and state.prev_window.open_price and state.prev_window.close_price >= state.prev_window.open_price else -1) if state.prev_window else 0,
-            "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price) / state.prev_window.open_price * 100) if state.prev_window and state.prev_window.open_price and state.prev_window.close_price else 0,
+            "prev_window_direction": (
+                1
+                if state.prev_window
+                and state.prev_window.close_price
+                and state.prev_window.open_price
+                and state.prev_window.close_price >= state.prev_window.open_price
+                else -1
+            )
+            if state.prev_window
+            else 0,
+            "prev_window_move_pct": (
+                (state.prev_window.close_price - state.prev_window.open_price)
+                / state.prev_window.open_price
+                * 100
+            )
+            if state.prev_window
+            and state.prev_window.open_price
+            and state.prev_window.close_price
+            else 0,
             "hour_sin": _math.sin(2 * _math.pi * now_utc.hour / 24),
             "hour_cos": _math.cos(2 * _math.pi * now_utc.hour / 24),
             "dow_sin": _math.sin(2 * _math.pi * now_utc.weekday() / 7),
@@ -1843,10 +2179,14 @@ class TradingLoop:
 
         logger.info(
             "window_score",
-            asset=state.asset, slug=window.slug,
+            asset=state.asset,
+            slug=window.slug,
             score=score.total,
-            ofi=score.ofi, no_rev=score.no_reversal,
-            cross=score.cross_asset, pm=score.pm_pressure, vol=score.volume,
+            ofi=score.ofi,
+            no_rev=score.no_reversal,
+            cross=score.cross_asset,
+            pm=score.pm_pressure,
+            vol=score.volume,
             lgbm_prob=round(lgbm_prob, 4),
             ask=round(current_ask, 3),
             pct_move=round(pct_move, 4),
@@ -1855,36 +2195,42 @@ class TradingLoop:
 
         # Log to DynamoDB signals table
         try:
-            self.dynamo.put_signal({
-                "window_slug": window.slug,
-                "timestamp": time.time(),
-                "asset": state.asset,
-                "timeframe": "5m",
-                "score_total": score.total,
-                "score_ofi": int(score.ofi),
-                "score_no_reversal": int(score.no_reversal),
-                "score_cross_asset": int(score.cross_asset),
-                "score_polymarket_pressure": int(score.pm_pressure),
-                "score_volume": int(score.volume),
-                "direction": "up" if pct_move >= 0 else "down",
-                "pct_move": round(pct_move, 6),
-                "model_prob": round(lgbm_prob, 4),
-                "market_price": round(current_ask, 4),
-                "ev": round(ev, 4),
-                "p_bayesian": round(state.bayesian.probability, 4),
-                "seconds_remaining": round(remaining, 1),
-                "yes_ask": round(state.orderbook.yes_best_ask, 4),
-                "no_ask": round(state.orderbook.no_best_ask, 4),
-                "current_price": round(price, 2),
-                "open_price": round(window.open_price, 2) if window.open_price else 0,
-            })
+            self.dynamo.put_signal(
+                {
+                    "window_slug": window.slug,
+                    "timestamp": time.time(),
+                    "asset": state.asset,
+                    "timeframe": "5m",
+                    "score_total": score.total,
+                    "score_ofi": int(score.ofi),
+                    "score_no_reversal": int(score.no_reversal),
+                    "score_cross_asset": int(score.cross_asset),
+                    "score_polymarket_pressure": int(score.pm_pressure),
+                    "score_volume": int(score.volume),
+                    "direction": "up" if pct_move >= 0 else "down",
+                    "pct_move": round(pct_move, 6),
+                    "model_prob": round(lgbm_prob, 4),
+                    "market_price": round(current_ask, 4),
+                    "ev": round(ev, 4),
+                    "p_bayesian": round(state.bayesian.probability, 4),
+                    "seconds_remaining": round(remaining, 1),
+                    "yes_ask": round(state.orderbook.yes_best_ask, 4),
+                    "no_ask": round(state.orderbook.no_best_ask, 4),
+                    "current_price": round(price, 2),
+                    "open_price": round(window.open_price, 2)
+                    if window.open_price
+                    else 0,
+                }
+            )
         except Exception:
             pass
 
         # HARD CEILING — applies to ALL entry paths (taker, maker, override)
         # This is the first check. Nothing trades above $0.55.
         if current_ask > self.settings.max_market_price:
-            skip_reason = f"ask_{current_ask:.2f}_above_{self.settings.max_market_price}"
+            skip_reason = (
+                f"ask_{current_ask:.2f}_above_{self.settings.max_market_price}"
+            )
         # TIERED MOVE FILTER — small moves need stronger confirmation
         elif abs(pct_move) < 0.03:
             # Small move (0.015-0.03%): require BTC confirmation + higher lgbm
@@ -1895,15 +2241,33 @@ class TradingLoop:
             elif ev < 0.05:
                 skip_reason = "small_move_low_ev"
             else:
-                entry_type = "override" if lgbm_prob >= 0.68 and current_ask <= 0.55 and ev >= 0.10 else "taker"
-                logger.info("small_move_confirmed", asset=state.asset, slug=window.slug,
-                            move=round(pct_move, 4), lgbm=round(lgbm_prob, 4), btc=btc_confirms)
+                entry_type = (
+                    "override"
+                    if lgbm_prob >= 0.68 and current_ask <= 0.55 and ev >= 0.10
+                    else "taker"
+                )
+                logger.info(
+                    "small_move_confirmed",
+                    asset=state.asset,
+                    slug=window.slug,
+                    move=round(pct_move, 4),
+                    lgbm=round(lgbm_prob, 4),
+                    btc=btc_confirms,
+                )
         # Decision based on score — with hard filter override
-        elif lgbm_prob >= 0.65 and current_ask <= 0.55 and current_ask > 0 and ev >= 0.10:
+        elif (
+            lgbm_prob >= 0.65 and current_ask <= 0.55 and current_ask > 0 and ev >= 0.10
+        ):
             entry_type = "override"
-            logger.info("score_override", asset=state.asset, slug=window.slug,
-                        score=score.total, lgbm=round(lgbm_prob, 4),
-                        ask=round(current_ask, 3), ev=round(ev, 4))
+            logger.info(
+                "score_override",
+                asset=state.asset,
+                slug=window.slug,
+                score=score.total,
+                lgbm=round(lgbm_prob, 4),
+                ask=round(current_ask, 3),
+                ev=round(ev, 4),
+            )
         elif score.total >= 4:
             # HIGH CONVICTION: taker FOK
             if lgbm_prob < 0.60:
@@ -1924,13 +2288,21 @@ class TradingLoop:
             skip_reason = f"low_score_{score.total}"
 
         if entry_type == "skipped":
-            logger.info("score_skip", asset=state.asset, slug=window.slug,
-                        score=score.total, reason=skip_reason, lgbm=round(lgbm_prob, 4),
-                        ask=round(current_ask, 3), ev=round(ev, 4))
+            logger.info(
+                "score_skip",
+                asset=state.asset,
+                slug=window.slug,
+                score=score.total,
+                reason=skip_reason,
+                lgbm=round(lgbm_prob, 4),
+                ask=round(current_ask, 3),
+                ev=round(ev, 4),
+            )
             return
 
         # Build signal
         from polybot.models import Direction, Signal, SignalSource
+
         direction = Direction.UP if pct_move >= 0 else Direction.DOWN
         market_price = current_ask
 
@@ -1963,16 +2335,26 @@ class TradingLoop:
 
         logger.info(
             "score_entry",
-            asset=state.asset, slug=window.slug,
-            entry_type=entry_type, score=score.total,
-            ask=round(market_price, 3), size=round(size, 2),
-            lgbm=round(lgbm_prob, 4), ev=round(ev, 4),
+            asset=state.asset,
+            slug=window.slug,
+            entry_type=entry_type,
+            score=score.total,
+            ask=round(market_price, 3),
+            size=round(size, 2),
+            lgbm=round(lgbm_prob, 4),
+            ev=round(ev, 4),
         )
 
         t_start = time.time()
         if not self.settings.scenario_c_enabled:
-            logger.info("scenario_c_paused", asset=state.asset, slug=window.slug,
-                        entry_type=entry_type, ask=round(market_price, 3), lgbm=round(lgbm_prob, 4))
+            logger.info(
+                "scenario_c_paused",
+                asset=state.asset,
+                slug=window.slug,
+                entry_type=entry_type,
+                ask=round(market_price, 3),
+                lgbm=round(lgbm_prob, 4),
+            )
             return
         if entry_type in ("taker", "override"):
             # FOK at market ask — override uses same execution as taker
@@ -1995,16 +2377,23 @@ class TradingLoop:
 
         window = state.tracker.current
         if not window or not window.yes_token_id or not window.no_token_id:
-            logger.info("v2_open_no_tokens", asset=state.asset,
-                        slug=window.slug if window else "none",
-                        yes_token=window.yes_token_id[:12] if window and window.yes_token_id else "",
-                        no_token=window.no_token_id[:12] if window and window.no_token_id else "")
+            logger.info(
+                "v2_open_no_tokens",
+                asset=state.asset,
+                slug=window.slug if window else "none",
+                yes_token=window.yes_token_id[:12]
+                if window and window.yes_token_id
+                else "",
+                no_token=window.no_token_id[:12]
+                if window and window.no_token_id
+                else "",
+            )
             return
 
         early_slug = f"early_{window.slug}"
 
         # Dedup
-        if not hasattr(self, '_early_traded_slugs'):
+        if not hasattr(self, "_early_traded_slugs"):
             self._early_traded_slugs = set()
         if early_slug in self._early_traded_slugs:
             logger.info("v2_open_dedup", asset=state.asset, slug=early_slug)
@@ -2013,30 +2402,50 @@ class TradingLoop:
 
         # Determine direction via LGBM (neutral fallback if no model)
         import math as _math
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
         _now = _dt.now(_tz.utc)
         vol = compute_realized_vol(list(state.price_history))
         features = {
-            "move_pct_15s": 0.0, "realized_vol_5m": vol,
-            "vol_ratio": 1.0, "body_ratio": 0.5,
-            "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price
+            "move_pct_15s": 0.0,
+            "realized_vol_5m": vol,
+            "vol_ratio": 1.0,
+            "body_ratio": 0.5,
+            "prev_window_direction": (
+                1
+                if state.prev_window
+                and state.prev_window.close_price
                 and state.prev_window.open_price
-                and state.prev_window.close_price >= state.prev_window.open_price else -1)
-                if state.prev_window else 0,
-            "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price)
-                / state.prev_window.open_price * 100) if state.prev_window
-                and state.prev_window.open_price and state.prev_window.close_price else 0,
+                and state.prev_window.close_price >= state.prev_window.open_price
+                else -1
+            )
+            if state.prev_window
+            else 0,
+            "prev_window_move_pct": (
+                (state.prev_window.close_price - state.prev_window.open_price)
+                / state.prev_window.open_price
+                * 100
+            )
+            if state.prev_window
+            and state.prev_window.open_price
+            and state.prev_window.close_price
+            else 0,
             "hour_sin": _math.sin(2 * _math.pi * _now.hour / 24),
             "hour_cos": _math.cos(2 * _math.pi * _now.hour / 24),
             "dow_sin": _math.sin(2 * _math.pi * _now.weekday() / 7),
             "dow_cos": _math.cos(2 * _math.pi * _now.weekday() / 7),
-            "signal_move_pct": 0.0, "signal_ask_price": 0.50,
-            "signal_seconds": 0, "signal_ev": 0,
+            "signal_move_pct": 0.0,
+            "signal_ask_price": 0.50,
+            "signal_seconds": 0,
+            "signal_ev": 0,
         }
         try:
             lgbm_raw = self.model_server.predict(f"{state.asset}_5m", features)
         except Exception as model_err:
-            logger.info("v2_open_model_fallback", asset=state.asset, error=str(model_err)[:60])
+            logger.info(
+                "v2_open_model_fallback", asset=state.asset, error=str(model_err)[:60]
+            )
             lgbm_raw = 0.50
         direction_up = lgbm_raw >= 0.50
 
@@ -2054,18 +2463,29 @@ class TradingLoop:
         up_size = round(open_budget * up_pct, 2)
         down_size = round(open_budget * down_pct, 2)
 
-        logger.info("v2_open_orderbook", asset=state.asset,
-                    direction="UP" if direction_up else "DOWN",
-                    lgbm=round(lgbm_raw, 3), up_pct=up_pct, down_pct=down_pct,
-                    budget_scale=round(budget_scale, 2),
-                    yes_bid=round(yes_bid, 3), no_bid=round(no_bid, 3),
-                    yes_ask=round(state.orderbook.yes_best_ask, 3),
-                    no_ask=round(state.orderbook.no_best_ask, 3))
+        logger.info(
+            "v2_open_orderbook",
+            asset=state.asset,
+            direction="UP" if direction_up else "DOWN",
+            lgbm=round(lgbm_raw, 3),
+            up_pct=up_pct,
+            down_pct=down_pct,
+            budget_scale=round(budget_scale, 2),
+            yes_bid=round(yes_bid, 3),
+            no_bid=round(no_bid, 3),
+            yes_ask=round(state.orderbook.yes_best_ask, 3),
+            no_ask=round(state.orderbook.no_best_ask, 3),
+        )
 
         # Post GTC on both sides immediately.
         try:
-            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
+            from py_clob_client.clob_types import (
+                CreateOrderOptions,
+                OrderArgs,
+                OrderType,
+            )
             from py_clob_client.order_builder.constants import BUY
+
             options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
 
             for token, bid, sz, label, side_up in [
@@ -2074,7 +2494,9 @@ class TradingLoop:
             ]:
                 if not token or not bid or bid <= 0:
                     continue
-                post_price = round(bid + 0.01, 2)  # post at bid+1¢ (aggressive, want fills at open)
+                post_price = round(
+                    bid + 0.01, 2
+                )  # post at bid+1¢ (aggressive, want fills at open)
                 if post_price <= 0 or post_price > HARD_CAP_PRICE:
                     continue
                 shares, actual_notional_usd = self._v2_order_size(sz, post_price)
@@ -2082,16 +2504,32 @@ class TradingLoop:
                     continue
                 # No combined filter at open — both sides need fills ASAP
                 # Hard cap ($0.90) is already checked above
-                if not self._reserve_v2_budget(state, actual_notional_usd, "open", label):
+                if not self._reserve_v2_budget(
+                    state, actual_notional_usd, "open", label
+                ):
                     break
                 try:
-                    logger.info("v2_open_placing", asset=state.asset, side=label,
-                                token=token[:16], price=post_price, shares=shares,
-                                sz=actual_notional_usd, target_size=sz)
-                    args = OrderArgs(price=post_price, size=shares, side=BUY, token_id=token)
+                    logger.info(
+                        "v2_open_placing",
+                        asset=state.asset,
+                        side=label,
+                        token=token[:16],
+                        price=post_price,
+                        shares=shares,
+                        sz=actual_notional_usd,
+                        target_size=sz,
+                    )
+                    args = OrderArgs(
+                        price=post_price, size=shares, side=BUY, token_id=token
+                    )
                     signed = self.trader.client.create_order(args, options)
                     resp = self.trader.client.post_order(signed, OrderType.GTC)
-                    logger.info("v2_open_response", asset=state.asset, side=label, resp=str(resp)[:120])
+                    logger.info(
+                        "v2_open_response",
+                        asset=state.asset,
+                        side=label,
+                        resp=str(resp)[:120],
+                    )
                     oid = resp.get("orderID", "")
                     if oid:
                         state.early_dca_orders.append(
@@ -2104,18 +2542,42 @@ class TradingLoop:
                                 side=label,
                             )
                         )
-                        logger.info("v2_open_posted", asset=state.asset, slug=early_slug,
-                                    side=label, actual_price=post_price, actual_notional_usd=actual_notional_usd,
-                                    target_size=sz, actual_shares=shares, order_id=oid[:16],
-                                    direction="UP" if direction_up else "DOWN")
+                        logger.info(
+                            "v2_open_posted",
+                            asset=state.asset,
+                            slug=early_slug,
+                            side=label,
+                            actual_price=post_price,
+                            actual_notional_usd=actual_notional_usd,
+                            target_size=sz,
+                            actual_shares=shares,
+                            order_id=oid[:16],
+                            direction="UP" if direction_up else "DOWN",
+                        )
                     else:
-                        self._release_v2_budget(state, actual_notional_usd, "open_no_order_id", label)
-                        logger.warning("v2_open_no_order_id", asset=state.asset, side=label, resp=str(resp)[:200])
+                        self._release_v2_budget(
+                            state, actual_notional_usd, "open_no_order_id", label
+                        )
+                        logger.warning(
+                            "v2_open_no_order_id",
+                            asset=state.asset,
+                            side=label,
+                            resp=str(resp)[:200],
+                        )
                 except Exception as e:
-                    self._release_v2_budget(state, actual_notional_usd, "open_post_error", label)
-                    logger.warning("v2_open_error", asset=state.asset, side=label, error=str(e)[:200])
+                    self._release_v2_budget(
+                        state, actual_notional_usd, "open_post_error", label
+                    )
+                    logger.warning(
+                        "v2_open_error",
+                        asset=state.asset,
+                        side=label,
+                        error=str(e)[:200],
+                    )
         except Exception as e:
-            logger.warning("v2_open_import_error", asset=state.asset, error=str(e)[:200])
+            logger.warning(
+                "v2_open_import_error", asset=state.asset, error=str(e)[:200]
+            )
 
         # Always set position so accumulation loop fires even if orders failed
         state.early_entry_traded = True
@@ -2135,12 +2597,22 @@ class TradingLoop:
             "side": "YES" if direction_up else "NO",
             "size": 0.0,
         }
-        logger.info("v2_open_complete", asset=state.asset, slug=early_slug,
-                    direction="UP" if direction_up else "DOWN", lgbm=round(lgbm_raw, 3),
-                    budget_scale=round(budget_scale, 2),
-                    up_size=up_size, down_size=down_size, max_bet=max_bet)
-        self._log_activity(state, f"OPEN {'UP' if direction_up else 'DOWN'}",
-                           f"up=${up_size} down=${down_size} lgbm={lgbm_raw:.2f}")
+        logger.info(
+            "v2_open_complete",
+            asset=state.asset,
+            slug=early_slug,
+            direction="UP" if direction_up else "DOWN",
+            lgbm=round(lgbm_raw, 3),
+            budget_scale=round(budget_scale, 2),
+            up_size=up_size,
+            down_size=down_size,
+            max_bet=max_bet,
+        )
+        self._log_activity(
+            state,
+            f"OPEN {'UP' if direction_up else 'DOWN'}",
+            f"up=${up_size} down=${down_size} lgbm={lgbm_raw:.2f}",
+        )
 
     async def _v2_confirm(self, state: AssetState, price: float):
         """Observe the T+15 model update without mutating live inventory.
@@ -2156,33 +2628,62 @@ class TradingLoop:
             return
 
         import math as _math
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
         _now = _dt.now(_tz.utc)
-        pct_move = ((price - window.open_price) / window.open_price * 100) if window.open_price > 0 else 0
+        pct_move = (
+            ((price - window.open_price) / window.open_price * 100)
+            if window.open_price > 0
+            else 0
+        )
         vol = compute_realized_vol(list(state.price_history))
-        vol_ma = sum(state.vol_history) / len(state.vol_history) if state.vol_history else vol
+        vol_ma = (
+            sum(state.vol_history) / len(state.vol_history)
+            if state.vol_history
+            else vol
+        )
         features = {
-            "move_pct_15s": pct_move, "realized_vol_5m": vol,
+            "move_pct_15s": pct_move,
+            "realized_vol_5m": vol,
             "vol_ratio": vol / vol_ma if vol_ma > 0 else 1.0,
             "body_ratio": abs(pct_move) / 0.1 if pct_move != 0 else 0.5,
-            "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price
+            "prev_window_direction": (
+                1
+                if state.prev_window
+                and state.prev_window.close_price
                 and state.prev_window.open_price
-                and state.prev_window.close_price >= state.prev_window.open_price else -1)
-                if state.prev_window else 0,
-            "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price)
-                / state.prev_window.open_price * 100) if state.prev_window
-                and state.prev_window.open_price and state.prev_window.close_price else 0,
+                and state.prev_window.close_price >= state.prev_window.open_price
+                else -1
+            )
+            if state.prev_window
+            else 0,
+            "prev_window_move_pct": (
+                (state.prev_window.close_price - state.prev_window.open_price)
+                / state.prev_window.open_price
+                * 100
+            )
+            if state.prev_window
+            and state.prev_window.open_price
+            and state.prev_window.close_price
+            else 0,
             "hour_sin": _math.sin(2 * _math.pi * _now.hour / 24),
             "hour_cos": _math.cos(2 * _math.pi * _now.hour / 24),
             "dow_sin": _math.sin(2 * _math.pi * _now.weekday() / 7),
             "dow_cos": _math.cos(2 * _math.pi * _now.weekday() / 7),
-            "signal_move_pct": abs(pct_move), "signal_ask_price": pos["entry_price"],
-            "signal_seconds": 15, "signal_ev": 0,
+            "signal_move_pct": abs(pct_move),
+            "signal_ask_price": pos["entry_price"],
+            "signal_seconds": 15,
+            "signal_ev": 0,
         }
         try:
             lgbm_raw = self.model_server.predict(f"{state.asset}_5m", features)
         except Exception as model_err:
-            logger.info("v2_confirm_model_fallback", asset=state.asset, error=str(model_err)[:60])
+            logger.info(
+                "v2_confirm_model_fallback",
+                asset=state.asset,
+                error=str(model_err)[:60],
+            )
             lgbm_raw = 0.50
 
         confirm_direction_up = lgbm_raw >= 0.50
@@ -2204,7 +2705,9 @@ class TradingLoop:
         )
 
     # ── V2 ACCUMULATE CHEAP + POLL FILLS ─────────────────────────────────
-    async def _v2_accumulate_cheap(self, state: AssetState, price: float, seconds_since_open: float = 0.0):
+    async def _v2_accumulate_cheap(
+        self, state: AssetState, price: float, seconds_since_open: float = 0.0
+    ):
         """Every 3s: post GTC ladders on BOTH sides below current bid.
 
         Dense both-sides ladder:
@@ -2228,12 +2731,16 @@ class TradingLoop:
         # Hard cap: accumulation may only deploy 40% of budget.
         # Remaining 60% is reserved for directional rebalance activity.
         MAX_INITIAL_DEPLOY = 0.40
-        if self._v2_filled_position_cost_usd(state) >= MAX_INITIAL_DEPLOY * max_bet_per_asset:
+        if (
+            self._v2_filled_position_cost_usd(state)
+            >= MAX_INITIAL_DEPLOY * max_bet_per_asset
+        ):
             return
 
         await self._refresh_orderbook(state)
 
         from py_clob_client.clob_types import CreateOrderOptions
+
         options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
 
         order_tasks = []
@@ -2243,42 +2750,61 @@ class TradingLoop:
         tick_under_25 = 0
         num_open_orders_before = len(self._v2_open_orders(state))
         desired_specs_by_side: dict[str, list[dict]] = {"UP": [], "DOWN": []}
-        for side_up, token_id in [(True, window.yes_token_id), (False, window.no_token_id)]:
+        for side_up, token_id in [
+            (True, window.yes_token_id),
+            (False, window.no_token_id),
+        ]:
             if not token_id:
                 continue
-            bid = state.orderbook.yes_best_bid if side_up else state.orderbook.no_best_bid
+            bid = (
+                state.orderbook.yes_best_bid if side_up else state.orderbook.no_best_bid
+            )
             if not bid or bid <= 0:
                 continue
             side = "UP" if side_up else "DOWN"
             tier, desired_specs = self._v2_accum_specs(bid)
             desired_specs_by_side[side] = desired_specs
 
-            logger.info("v2_accum_side", asset=state.asset,
-                        side=side,
-                        bid=round(bid, 3),
-                        reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
-                        filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
-                        current_total_notional_usd=self._v2_current_total_notional(state),
-                        remaining_budget=self._v2_remaining_budget(state),
-                        max_bet_per_asset=round(max_bet_per_asset, 2))
+            logger.info(
+                "v2_accum_side",
+                asset=state.asset,
+                side=side,
+                bid=round(bid, 3),
+                reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
+                filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
+                current_total_notional_usd=self._v2_current_total_notional(state),
+                remaining_budget=self._v2_remaining_budget(state),
+                max_bet_per_asset=round(max_bet_per_asset, 2),
+            )
 
-            logger.info("v2_accum_tier", asset=state.asset,
-                        side=side,
-                        bid=round(bid, 3),
-                        tier=tier,
-                        offsets=str([round(bid - spec["post_price"], 2) for spec in desired_specs]),
-                        num_orders=len(desired_specs))
+            logger.info(
+                "v2_accum_tier",
+                asset=state.asset,
+                side=side,
+                bid=round(bid, 3),
+                tier=tier,
+                offsets=str(
+                    [round(bid - spec["post_price"], 2) for spec in desired_specs]
+                ),
+                num_orders=len(desired_specs),
+            )
 
         desired_prices_by_side = {
             side: [spec["post_price"] for spec in specs]
             for side, specs in desired_specs_by_side.items()
         }
-        kept_prices_by_side, stale_orders_cancelled = await self._v2_recycle_stale_orders(
+        (
+            kept_prices_by_side,
+            stale_orders_cancelled,
+        ) = await self._v2_recycle_stale_orders(
             state,
             desired_prices_by_side,
         )
 
-        for side_up, token_id in [(True, window.yes_token_id), (False, window.no_token_id)]:
+        for side_up, token_id in [
+            (True, window.yes_token_id),
+            (False, window.no_token_id),
+        ]:
             if not token_id:
                 continue
             side = "UP" if side_up else "DOWN"
@@ -2286,7 +2812,12 @@ class TradingLoop:
                 if spec["post_price"] in kept_prices_by_side[side]:
                     continue
                 actual_notional_usd = spec["actual_notional_usd"]
-                if not self._reserve_v2_budget(state, actual_notional_usd, "accumulate", "UP" if side_up else "DOWN"):
+                if not self._reserve_v2_budget(
+                    state,
+                    actual_notional_usd,
+                    "accumulate",
+                    "UP" if side_up else "DOWN",
+                ):
                     continue  # skip this spec, try cheaper ones
                 tick_sides_posted.add(side)
                 tick_order_count += 1
@@ -2315,33 +2846,50 @@ class TradingLoop:
             self._v2_normalized_order_side(state, order)
             for order in self._v2_open_orders(state)
         }
-        logger.info("v2_reprice_cycle", asset=state.asset,
-                    seconds=int(seconds_since_open),
-                    stale_orders_cancelled=stale_orders_cancelled,
-                    repriced_orders_posted=len(order_tasks),
-                    num_open_orders_before=num_open_orders_before,
-                    num_open_orders_after=num_open_orders_after)
-        logger.info("v2_accumulate_tick", asset=state.asset,
-                    orders=len(order_tasks),
-                    seconds=int(seconds_since_open),
-                    cheap_buy_count=tick_order_count,
-                    cheap_buy_usd=round(tick_order_usd, 2),
-                    percent_buys_under_0_25=round((tick_under_25 / tick_order_count) * 100, 1) if tick_order_count else 0.0,
-                    trades_per_window=window_metrics["trades_per_window"],
-                    both_sides_posted=("UP" in open_sides_after and "DOWN" in open_sides_after),
-                    both_sides_filled=window_metrics["both_sides_filled"],
-                    reserved_open_order_usd=window_metrics["reserved_open_order_usd"],
-                    filled_position_cost_usd=window_metrics["filled_position_cost_usd"],
-                    current_reserved_budget=window_metrics["current_reserved_budget"],
-                    remaining_budget=window_metrics["remaining_budget"],
-                    max_bet_per_asset=window_metrics["max_bet_per_asset"])
+        logger.info(
+            "v2_reprice_cycle",
+            asset=state.asset,
+            seconds=int(seconds_since_open),
+            stale_orders_cancelled=stale_orders_cancelled,
+            repriced_orders_posted=len(order_tasks),
+            num_open_orders_before=num_open_orders_before,
+            num_open_orders_after=num_open_orders_after,
+        )
+        logger.info(
+            "v2_accumulate_tick",
+            asset=state.asset,
+            orders=len(order_tasks),
+            seconds=int(seconds_since_open),
+            cheap_buy_count=tick_order_count,
+            cheap_buy_usd=round(tick_order_usd, 2),
+            percent_buys_under_0_25=round((tick_under_25 / tick_order_count) * 100, 1)
+            if tick_order_count
+            else 0.0,
+            trades_per_window=window_metrics["trades_per_window"],
+            both_sides_posted=("UP" in open_sides_after and "DOWN" in open_sides_after),
+            both_sides_filled=window_metrics["both_sides_filled"],
+            reserved_open_order_usd=window_metrics["reserved_open_order_usd"],
+            filled_position_cost_usd=window_metrics["filled_position_cost_usd"],
+            current_reserved_budget=window_metrics["current_reserved_budget"],
+            remaining_budget=window_metrics["remaining_budget"],
+            max_bet_per_asset=window_metrics["max_bet_per_asset"],
+        )
 
-    async def _post_cheap_order(self, state: AssetState, token_id: str, post_price: float,
-                                shares: int, size: float, side_up: bool, options,
-                                target_size: float | None = None) -> None:
+    async def _post_cheap_order(
+        self,
+        state: AssetState,
+        token_id: str,
+        post_price: float,
+        shares: int,
+        size: float,
+        side_up: bool,
+        options,
+        target_size: float | None = None,
+    ) -> None:
         """Post one cheap limit order and track it. Full error logging."""
         from py_clob_client.clob_types import OrderArgs, OrderType
         from py_clob_client.order_builder.constants import BUY
+
         side = "UP" if side_up else "DOWN"
         try:
             args = OrderArgs(price=post_price, size=shares, side=BUY, token_id=token_id)
@@ -2360,29 +2908,55 @@ class TradingLoop:
                         side=side,
                     )
                 )
-                logger.info("v2_cheap_posted", asset=state.asset, side=side,
-                            actual_price=post_price, actual_notional_usd=size, target_size=target_size,
-                            actual_shares=shares, order_id=oid[:16],
-                            reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
-                            filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
-                            remaining_budget=self._v2_remaining_budget(state))
-                logger.info("repriced_order_posted", asset=state.asset, side=side,
-                            actual_price=post_price, actual_notional_usd=size, target_size=target_size,
-                            actual_shares=shares, order_id=oid[:16],
-                            reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
-                            filled_position_cost_usd=self._v2_filled_position_cost_usd(state))
+                logger.info(
+                    "v2_cheap_posted",
+                    asset=state.asset,
+                    side=side,
+                    actual_price=post_price,
+                    actual_notional_usd=size,
+                    target_size=target_size,
+                    actual_shares=shares,
+                    order_id=oid[:16],
+                    reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
+                    filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
+                    remaining_budget=self._v2_remaining_budget(state),
+                )
+                logger.info(
+                    "repriced_order_posted",
+                    asset=state.asset,
+                    side=side,
+                    actual_price=post_price,
+                    actual_notional_usd=size,
+                    target_size=target_size,
+                    actual_shares=shares,
+                    order_id=oid[:16],
+                    reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
+                    filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
+                )
             else:
                 self._release_v2_budget(state, size, "cheap_no_order_id", side)
-                logger.warning("v2_cheap_no_order_id", asset=state.asset, side=side,
-                               price=post_price, resp=str(resp)[:200])
+                logger.warning(
+                    "v2_cheap_no_order_id",
+                    asset=state.asset,
+                    side=side,
+                    price=post_price,
+                    resp=str(resp)[:200],
+                )
         except Exception as e:
             self._release_v2_budget(state, size, "cheap_post_error", side)
-            logger.warning("v2_cheap_post_error", asset=state.asset, side=side,
-                           price=post_price, error=str(e))
+            logger.warning(
+                "v2_cheap_post_error",
+                asset=state.asset,
+                side=side,
+                price=post_price,
+                error=str(e),
+            )
 
     # ── V2 UNIFIED EXECUTION TICK ────────────────────────────────────────────
 
-    async def _v2_execution_tick(self, state: AssetState, price: float, seconds_since_open: float):
+    async def _v2_execution_tick(
+        self, state: AssetState, price: float, seconds_since_open: float
+    ):
         """5m execution split into open, main deploy, buy-only late phase, and hold.
 
         Phases:
@@ -2413,22 +2987,38 @@ class TradingLoop:
 
         # ── 1. MODEL → ALLOCATION SPLIT ───────────────────────────────────
         import math as _math
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
         _now = _dt.now(_tz.utc)
         vol = compute_realized_vol(list(state.price_history))
         window_open = window.open_price or price
         move_pct = ((price - window_open) / window_open * 100) if window_open > 0 else 0
 
         features = {
-            "move_pct_15s": move_pct, "realized_vol_5m": vol,
-            "vol_ratio": 1.0, "body_ratio": 0.5,
-            "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price
+            "move_pct_15s": move_pct,
+            "realized_vol_5m": vol,
+            "vol_ratio": 1.0,
+            "body_ratio": 0.5,
+            "prev_window_direction": (
+                1
+                if state.prev_window
+                and state.prev_window.close_price
                 and state.prev_window.open_price
-                and state.prev_window.close_price >= state.prev_window.open_price else -1)
-                if state.prev_window else 0,
-            "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price)
-                / state.prev_window.open_price * 100) if state.prev_window
-                and state.prev_window.open_price and state.prev_window.close_price else 0,
+                and state.prev_window.close_price >= state.prev_window.open_price
+                else -1
+            )
+            if state.prev_window
+            else 0,
+            "prev_window_move_pct": (
+                (state.prev_window.close_price - state.prev_window.open_price)
+                / state.prev_window.open_price
+                * 100
+            )
+            if state.prev_window
+            and state.prev_window.open_price
+            and state.prev_window.close_price
+            else 0,
             "hour_sin": _math.sin(2 * _math.pi * _now.hour / 24),
             "hour_cos": _math.cos(2 * _math.pi * _now.hour / 24),
             "dow_sin": _math.sin(2 * _math.pi * _now.weekday() / 7),
@@ -2483,28 +3073,48 @@ class TradingLoop:
                     release = self._v2_order_reserved_remaining(order)
                     if release > 0 and not order.get("budget_released"):
                         side = self._v2_normalized_order_side(state, order)
-                        self._release_v2_budget(state, release, "commit_cancel", side, oid)
+                        self._release_v2_budget(
+                            state, release, "commit_cancel", side, oid
+                        )
                     self._set_v2_order_reserved_remaining(order, 0.0)
                     order["budget_released"] = True
                     order["closed"] = True
                     cancelled += 1
                 except Exception:
                     pass
-            state.early_dca_orders = [o for o in state.early_dca_orders if not o.get("closed")]
+            state.early_dca_orders = [
+                o for o in state.early_dca_orders if not o.get("closed")
+            ]
 
-            up_avg = (state.early_up_cost / state.early_up_shares) if state.early_up_shares > 0 else 0
-            dn_avg = (state.early_down_cost / state.early_down_shares) if state.early_down_shares > 0 else 0
-            combined = (up_avg + dn_avg) if (state.early_up_shares > 0 and state.early_down_shares > 0) else 0
+            up_avg = (
+                (state.early_up_cost / state.early_up_shares)
+                if state.early_up_shares > 0
+                else 0
+            )
+            dn_avg = (
+                (state.early_down_cost / state.early_down_shares)
+                if state.early_down_shares > 0
+                else 0
+            )
+            combined = (
+                (up_avg + dn_avg)
+                if (state.early_up_shares > 0 and state.early_down_shares > 0)
+                else 0
+            )
 
             if seconds_since_open % 15 < 1:
-                logger.info("v2_committed", asset=state.asset,
-                            seconds=int(seconds_since_open),
-                            prob_up=round(prob_up, 3),
-                            up_shares=int(state.early_up_shares),
-                            down_shares=int(state.early_down_shares),
-                            up_avg=round(up_avg, 3), down_avg=round(dn_avg, 3),
-                            combined_avg=round(combined, 3),
-                            cancelled=cancelled)
+                logger.info(
+                    "v2_committed",
+                    asset=state.asset,
+                    seconds=int(seconds_since_open),
+                    prob_up=round(prob_up, 3),
+                    up_shares=int(state.early_up_shares),
+                    down_shares=int(state.early_down_shares),
+                    up_avg=round(up_avg, 3),
+                    down_avg=round(dn_avg, 3),
+                    combined_avg=round(combined, 3),
+                    cancelled=cancelled,
+                )
             return
 
         # ── 3. BUDGET CURVE (smooth ramp from the open allocation) ───────
@@ -2542,7 +3152,10 @@ class TradingLoop:
             desired_prices_by_side[side] = desired_prices
 
         # ── 4. RECYCLE STALE OPEN ORDERS ──────────────────────────────────
-        kept_prices_by_side, stale_orders_cancelled = await self._v2_recycle_stale_orders(
+        (
+            kept_prices_by_side,
+            stale_orders_cancelled,
+        ) = await self._v2_recycle_stale_orders(
             state,
             desired_prices_by_side,
         )
@@ -2572,15 +3185,27 @@ class TradingLoop:
             down_shares=int(state.early_down_shares),
         )
 
-        current_up_avg = (state.early_up_cost / state.early_up_shares) if state.early_up_shares > 0 else 0.0
-        current_down_avg = (state.early_down_cost / state.early_down_shares) if state.early_down_shares > 0 else 0.0
+        current_up_avg = (
+            (state.early_up_cost / state.early_up_shares)
+            if state.early_up_shares > 0
+            else 0.0
+        )
+        current_down_avg = (
+            (state.early_down_cost / state.early_down_shares)
+            if state.early_down_shares > 0
+            else 0.0
+        )
         current_combined_avg = (
             current_up_avg + current_down_avg
             if (state.early_up_shares > 0 and state.early_down_shares > 0)
             else 0.0
         )
-        current_payout_floor = min(int(state.early_up_shares), int(state.early_down_shares))
-        current_cost_above_floor = max(round(current_total_notional - current_payout_floor, 2), 0.0)
+        current_payout_floor = min(
+            int(state.early_up_shares), int(state.early_down_shares)
+        )
+        current_cost_above_floor = max(
+            round(current_total_notional - current_payout_floor, 2), 0.0
+        )
         current_position_ev = self._v2_expected_position_ev(
             prob_up=prob_up,
             up_shares=int(state.early_up_shares),
@@ -2591,6 +3216,7 @@ class TradingLoop:
         has_orphan, missing_side_up = self._v2_orphan_pair_state(state)
 
         from py_clob_client.clob_types import CreateOrderOptions
+
         options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
         base_shares = 5
 
@@ -2624,12 +3250,26 @@ class TradingLoop:
                 if notional > side_budget:
                     continue
 
-                side_shares = int(state.early_up_shares) if side_up else int(state.early_down_shares)
-                other_shares = int(state.early_down_shares) if side_up else int(state.early_up_shares)
+                side_shares = (
+                    int(state.early_up_shares)
+                    if side_up
+                    else int(state.early_down_shares)
+                )
+                other_shares = (
+                    int(state.early_down_shares)
+                    if side_up
+                    else int(state.early_up_shares)
+                )
                 lagging_side = side_shares < other_shares
                 other_avg = current_down_avg if side_up else current_up_avg
-                expensive_side_cap = self._v2_expensive_side_price_cap(seconds_since_open)
-                if other_avg > 0 and post_price > other_avg and post_price > expensive_side_cap:
+                expensive_side_cap = self._v2_expensive_side_price_cap(
+                    seconds_since_open
+                )
+                if (
+                    other_avg > 0
+                    and post_price > other_avg
+                    and post_price > expensive_side_cap
+                ):
                     pair_guard_skipped += 1
                     continue
                 projected = self._v2_projected_pair_metrics(
@@ -2656,15 +3296,14 @@ class TradingLoop:
                 # missing side at 0.65 against an existing 0.52 fill in a weak-signal window.
                 if projected_pair_exists:
                     strong_directional_edge = abs(prob_up - 0.50) >= 0.10
-                    favored_side = (prob_up >= 0.50 and side_up) or (prob_up < 0.50 and not side_up)
+                    favored_side = (prob_up >= 0.50 and side_up) or (
+                        prob_up < 0.50 and not side_up
+                    )
                     favored_hold_value = self._v2_side_hold_value(prob_up, side_up)
-                    bad_state_now = (
-                        current_payout_floor >= 5
-                        and (
-                            current_combined_avg > max_combined_avg + 1e-9
-                            or current_cost_above_floor > max_cost_above_floor + 1e-9
-                            or current_position_ev < -0.01
-                        )
+                    bad_state_now = current_payout_floor >= 5 and (
+                        current_combined_avg > max_combined_avg + 1e-9
+                        or current_cost_above_floor > max_cost_above_floor + 1e-9
+                        or current_position_ev < -0.01
                     )
                     projected_within_limits = (
                         projected_combined <= max_combined_avg + 1e-9
@@ -2675,7 +3314,8 @@ class TradingLoop:
                         current_payout_floor >= 5
                         and lagging_side
                         and projected_combined <= current_combined_avg + 1e-9
-                        and projected_cost_above_floor <= current_cost_above_floor + 1e-9
+                        and projected_cost_above_floor
+                        <= current_cost_above_floor + 1e-9
                         and projected_position_ev >= current_position_ev - 1e-9
                     )
                     favored_directional_topup = (
@@ -2687,17 +3327,27 @@ class TradingLoop:
                         and projected_position_ev >= -0.01
                     )
                     if (bad_state_now and not improving_bad_state) or (
-                        not bad_state_now and not projected_within_limits and not favored_directional_topup
+                        not bad_state_now
+                        and not projected_within_limits
+                        and not favored_directional_topup
                     ):
                         pair_guard_skipped += 1
                         continue
 
-                if not self._reserve_v2_budget(state, notional, "exec_" + side.lower(), side):
+                if not self._reserve_v2_budget(
+                    state, notional, "exec_" + side.lower(), side
+                ):
                     continue
                 try:
                     await self._post_cheap_order(
-                        state, token_id, post_price, base_shares,
-                        notional, side_up, options, target_size=notional,
+                        state,
+                        token_id,
+                        post_price,
+                        base_shares,
+                        notional,
+                        side_up,
+                        options,
+                        target_size=notional,
                     )
                     if side_up:
                         posted_up += 1
@@ -2709,23 +3359,39 @@ class TradingLoop:
                     self._release_v2_budget(state, notional, "exec_post_error", side)
 
         # ── 5b. INCOMPLETE-PAIR RESCUE / SALVAGE ───────────────────────────
-        if has_orphan and missing_side_up is not None and seconds_since_open < buy_only_start:
+        if (
+            has_orphan
+            and missing_side_up is not None
+            and seconds_since_open < buy_only_start
+        ):
             missing_side = "UP" if missing_side_up else "DOWN"
             filled_side = "DOWN" if missing_side_up else "UP"
             salvage_side_up = not missing_side_up
-            missing_token = window.yes_token_id if missing_side_up else window.no_token_id
+            missing_token = (
+                window.yes_token_id if missing_side_up else window.no_token_id
+            )
             missing_bid = yes_bid if missing_side_up else no_bid
-            missing_ask = self._v2_float(state.orderbook.yes_best_ask if missing_side_up else state.orderbook.no_best_ask)
+            missing_ask = self._v2_float(
+                state.orderbook.yes_best_ask
+                if missing_side_up
+                else state.orderbook.no_best_ask
+            )
             filled_bid = no_bid if missing_side_up else yes_bid
-            total_orphan_shares = int(state.early_up_shares) + int(state.early_down_shares)
+            total_orphan_shares = int(state.early_up_shares) + int(
+                state.early_down_shares
+            )
             last_sell_ts = getattr(state, "v2_last_sell_ts", 0.0)
             salvage_cooldown_ok = (
                 (time.time() - last_sell_ts) >= self._v2_sell_cooldown_seconds()
                 if last_sell_ts > 0
                 else True
             )
-            rescue_price = self._v2_incomplete_pair_rescue_price(missing_bid, missing_ask, HARD_CAP_PRICE)
-            rescue_notional = round(base_shares * rescue_price, 2) if rescue_price > 0 else 0.0
+            rescue_price = self._v2_incomplete_pair_rescue_price(
+                missing_bid, missing_ask, HARD_CAP_PRICE
+            )
+            rescue_notional = (
+                round(base_shares * rescue_price, 2) if rescue_price > 0 else 0.0
+            )
             projected_rescue = (
                 self._v2_projected_pair_metrics(
                     state,
@@ -2736,11 +3402,16 @@ class TradingLoop:
                     notional=rescue_notional,
                 )
                 if rescue_notional > 0
-                else {"combined_avg": 9.99, "cost_above_floor": 9.99, "expected_ev": -9.99}
+                else {
+                    "combined_avg": 9.99,
+                    "cost_above_floor": 9.99,
+                    "expected_ev": -9.99,
+                }
             )
             rescue_due = (
                 seconds_since_open >= 15.0
-                and (time.time() - getattr(state, "v2_last_rescue_ts", 0.0)) >= self._v2_rescue_retry_seconds()
+                and (time.time() - getattr(state, "v2_last_rescue_ts", 0.0))
+                >= self._v2_rescue_retry_seconds()
             )
             rescue_allowed = (
                 rescue_due
@@ -2766,8 +3437,15 @@ class TradingLoop:
             )
 
             if rescue_allowed and missing_token:
-                self._v2_cancel_open_orders_for_side(state, missing_side, "incomplete_pair_rescue")
-                if self._reserve_v2_budget(state, rescue_notional, f"rescue_{missing_side.lower()}", missing_side):
+                self._v2_cancel_open_orders_for_side(
+                    state, missing_side, "incomplete_pair_rescue"
+                )
+                if self._reserve_v2_budget(
+                    state,
+                    rescue_notional,
+                    f"rescue_{missing_side.lower()}",
+                    missing_side,
+                ):
                     try:
                         await self._post_cheap_order(
                             state,
@@ -2780,7 +3458,9 @@ class TradingLoop:
                             target_size=rescue_notional,
                         )
                         state.v2_last_rescue_ts = time.time()
-                        kept_prices_by_side.setdefault(missing_side, set()).add(rescue_price)
+                        kept_prices_by_side.setdefault(missing_side, set()).add(
+                            rescue_price
+                        )
                         if missing_side_up:
                             posted_up += 1
                         else:
@@ -2792,12 +3472,20 @@ class TradingLoop:
                             missing_side=missing_side,
                             rescue_price=round(rescue_price, 2),
                             rescue_notional=round(rescue_notional, 2),
-                            projected_combined=round(float(projected_rescue["combined_avg"]), 3),
-                            projected_cost_above_floor=round(float(projected_rescue["cost_above_floor"]), 2),
-                            projected_ev=round(float(projected_rescue["expected_ev"]), 2),
+                            projected_combined=round(
+                                float(projected_rescue["combined_avg"]), 3
+                            ),
+                            projected_cost_above_floor=round(
+                                float(projected_rescue["cost_above_floor"]), 2
+                            ),
+                            projected_ev=round(
+                                float(projected_rescue["expected_ev"]), 2
+                            ),
                         )
                     except Exception:
-                        self._release_v2_budget(state, rescue_notional, "rescue_post_error", missing_side)
+                        self._release_v2_budget(
+                            state, rescue_notional, "rescue_post_error", missing_side
+                        )
             elif salvage_cooldown_ok and self._v2_should_salvage_orphan(
                 prob_up=prob_up,
                 seconds_since_open=seconds_since_open,
@@ -2823,7 +3511,13 @@ class TradingLoop:
                     salvage_order = order
                     salvage_shares = min(inventory_shares, 5)
                     inventory_notional = self._v2_order_inventory_notional(order)
-                    salvage_cost = round((inventory_notional / inventory_shares) * salvage_shares, 2) if inventory_shares > 0 else 0.0
+                    salvage_cost = (
+                        round(
+                            (inventory_notional / inventory_shares) * salvage_shares, 2
+                        )
+                        if inventory_shares > 0
+                        else 0.0
+                    )
                     break
                 if salvage_order and salvage_shares >= 5:
                     proceeds = await self._early_sell(
@@ -2833,7 +3527,9 @@ class TradingLoop:
                         "ORPHAN_SALVAGE",
                         sell_shares=salvage_shares,
                         sell_cost=salvage_cost,
-                        sell_token_id=window.yes_token_id if salvage_side_up else window.no_token_id,
+                        sell_token_id=window.yes_token_id
+                        if salvage_side_up
+                        else window.no_token_id,
                         sell_side_up=salvage_side_up,
                         sell_order=salvage_order,
                     )
@@ -2848,9 +3544,21 @@ class TradingLoop:
         # richer than the model-implied hold value for that side.
         sell_fired = locals().get("sell_fired", False)
         sell_reason = locals().get("sell_reason", "")
-        up_avg = (state.early_up_cost / state.early_up_shares) if state.early_up_shares > 0 else 0
-        dn_avg = (state.early_down_cost / state.early_down_shares) if state.early_down_shares > 0 else 0
-        combined_avg = (up_avg + dn_avg) if (state.early_up_shares > 0 and state.early_down_shares > 0) else 0
+        up_avg = (
+            (state.early_up_cost / state.early_up_shares)
+            if state.early_up_shares > 0
+            else 0
+        )
+        dn_avg = (
+            (state.early_down_cost / state.early_down_shares)
+            if state.early_down_shares > 0
+            else 0
+        )
+        combined_avg = (
+            (up_avg + dn_avg)
+            if (state.early_up_shares > 0 and state.early_down_shares > 0)
+            else 0
+        )
         payout_floor = min(int(state.early_up_shares), int(state.early_down_shares))
         cost_above_floor = max(round(current_filled - payout_floor, 2), 0.0)
 
@@ -2861,20 +3569,25 @@ class TradingLoop:
             else True
         )
 
-        bad_pair_now = (
-            payout_floor >= 5
-            and self._v2_bad_pair_recycle_active(
-                current_combined_avg=current_combined_avg,
-                current_cost_above_floor=current_cost_above_floor,
-                current_position_ev=current_position_ev,
-                max_combined_avg=max_combined_avg,
-                max_cost_above_floor=max_cost_above_floor,
-            )
+        bad_pair_now = payout_floor >= 5 and self._v2_bad_pair_recycle_active(
+            current_combined_avg=current_combined_avg,
+            current_cost_above_floor=current_cost_above_floor,
+            current_position_ev=current_position_ev,
+            max_combined_avg=max_combined_avg,
+            max_cost_above_floor=max_cost_above_floor,
         )
-        normal_sell_window = self._v2_sell_start_seconds() <= seconds_since_open < buy_only_start
-        bad_pair_sell_window = self._v2_bad_pair_sell_start_seconds() <= seconds_since_open < buy_only_start
+        normal_sell_window = (
+            self._v2_sell_start_seconds() <= seconds_since_open < buy_only_start
+        )
+        bad_pair_sell_window = (
+            self._v2_bad_pair_sell_start_seconds()
+            <= seconds_since_open
+            < buy_only_start
+        )
 
-        if sell_cooldown_ok and (normal_sell_window or (bad_pair_now and bad_pair_sell_window)):
+        if sell_cooldown_ok and (
+            normal_sell_window or (bad_pair_now and bad_pair_sell_window)
+        ):
             sell_candidates: list[dict] = []
             if normal_sell_window:
                 for side_up, shares, bid in [
@@ -2899,15 +3612,19 @@ class TradingLoop:
                         }
                     )
 
-            if not sell_candidates and bad_pair_now and current_position_ev < 0.05:
-                total_shares_now = int(state.early_up_shares) + int(state.early_down_shares)
+            if not sell_candidates and bad_pair_now and current_position_ev < 0.20:
+                total_shares_now = int(state.early_up_shares) + int(
+                    state.early_down_shares
+                )
                 for side_up, shares, bid in [
                     (True, int(state.early_up_shares), yes_bid),
                     (False, int(state.early_down_shares), no_bid),
                 ]:
                     if shares < 5 or bid < self._v2_orphan_salvage_min_bid():
                         continue
-                    if total_shares_now > 10 and shares - 5 < 5:
+                    # Allow breaking a small bad pair (e.g. 5/5) if EV is negative.
+                    # Only protect the hedge on larger positions.
+                    if total_shares_now > 20 and shares - 5 < 5:
                         continue
                     projected_after_sell = self._v2_projected_sell_metrics(
                         state,
@@ -2917,11 +3634,18 @@ class TradingLoop:
                         shares=5,
                         proceeds=round(bid * 5, 2),
                     )
-                    projected_cost_above_floor = float(projected_after_sell["cost_above_floor"])
+                    projected_cost_above_floor = float(
+                        projected_after_sell["cost_above_floor"]
+                    )
                     projected_position_ev = float(projected_after_sell["expected_ev"])
-                    cost_improvement = round(current_cost_above_floor - projected_cost_above_floor, 2)
-                    ev_improvement = round(projected_position_ev - current_position_ev, 2)
-                    if cost_improvement < 0.05 and ev_improvement < 0.05:
+                    cost_improvement = round(
+                        current_cost_above_floor - projected_cost_above_floor, 2
+                    )
+                    ev_improvement = round(
+                        projected_position_ev - current_position_ev, 2
+                    )
+                    # Loosen threshold: any positive improvement counts for bad pairs
+                    if cost_improvement < 0.01 and ev_improvement < 0.01:
                         continue
                     sell_candidates.append(
                         {
@@ -2929,7 +3653,9 @@ class TradingLoop:
                             "side": "UP" if side_up else "DOWN",
                             "bid": bid,
                             "excess_shares": shares,
-                            "edge_over_hold": round(bid - self._v2_side_hold_value(prob_up, side_up), 3),
+                            "edge_over_hold": round(
+                                bid - self._v2_side_hold_value(prob_up, side_up), 3
+                            ),
                             "cost_improvement": cost_improvement,
                             "ev_improvement": ev_improvement,
                             "reason": "BAD_PAIR",
@@ -2967,22 +3693,31 @@ class TradingLoop:
                         if inventory_shares > 0 and inventory_notional > 0
                         else self._v2_order_actual_price(order)
                     )
-                    sell_lots.append({
-                        "order": order,
-                        "shares": sell_shares,
-                        "price": self._v2_order_actual_price(order),
-                        "notional": round(sell_shares * unit_cost, 2),
-                    })
+                    sell_lots.append(
+                        {
+                            "order": order,
+                            "shares": sell_shares,
+                            "price": self._v2_order_actual_price(order),
+                            "notional": round(sell_shares * unit_cost, 2),
+                        }
+                    )
 
                 if sell_lots:
                     sell_lots.sort(key=lambda x: -x["price"])
                     lot = sell_lots[0]
-                    sell_token = window.yes_token_id if sell_side_up else window.no_token_id
+                    sell_token = (
+                        window.yes_token_id if sell_side_up else window.no_token_id
+                    )
                     sell_reason = str(sell_side.get("reason", "PAYOUT_FLOOR"))
                     proceeds = await self._early_sell(
-                        state, pos, sell_bid, sell_reason,
-                        sell_shares=lot["shares"], sell_cost=lot["notional"],
-                        sell_token_id=sell_token, sell_side_up=sell_side_up,
+                        state,
+                        pos,
+                        sell_bid,
+                        sell_reason,
+                        sell_shares=lot["shares"],
+                        sell_cost=lot["notional"],
+                        sell_token_id=sell_token,
+                        sell_side_up=sell_side_up,
                         sell_order=lot["order"],
                     )
                     if proceeds and proceeds > 0:
@@ -2993,27 +3728,34 @@ class TradingLoop:
         # ── 7. LOG ────────────────────────────────────────────────────────
         net_cost = self._v2_filled_position_cost_usd(state)
         total_shares = int(state.early_up_shares + state.early_down_shares)
-        logger.info("v2_execution_tick", asset=state.asset,
-                    seconds=int(seconds_since_open),
-                    prob_up=round(prob_up, 3),
-                    up_pct=up_pct, down_pct=down_pct,
-                    posted_up=posted_up, posted_down=posted_down,
-                    stale_orders_cancelled=stale_orders_cancelled,
-                    hard_cap_skipped=hard_cap_skipped,
-                    pair_guard_skipped=pair_guard_skipped,
-                    up_shares=int(state.early_up_shares),
-                    down_shares=int(state.early_down_shares),
-                    up_avg=round(up_avg, 3), down_avg=round(dn_avg, 3),
-                    combined_avg=round(combined_avg, 3),
-                    payout_floor=payout_floor,
-                    cost_above_floor=round(cost_above_floor, 2),
-                    net_cost=round(net_cost, 2),
-                    total_shares=total_shares,
-                    sell_fired=sell_fired, sell_reason=sell_reason,
-                    filled_usd=round(net_cost, 2),
-                    remaining_budget=round(self._v2_remaining_budget(state), 2),
-                    budget_curve_pct=round(max_deploy_pct, 3),
-                    budget_scale=round(budget_scale, 2))
+        logger.info(
+            "v2_execution_tick",
+            asset=state.asset,
+            seconds=int(seconds_since_open),
+            prob_up=round(prob_up, 3),
+            up_pct=up_pct,
+            down_pct=down_pct,
+            posted_up=posted_up,
+            posted_down=posted_down,
+            stale_orders_cancelled=stale_orders_cancelled,
+            hard_cap_skipped=hard_cap_skipped,
+            pair_guard_skipped=pair_guard_skipped,
+            up_shares=int(state.early_up_shares),
+            down_shares=int(state.early_down_shares),
+            up_avg=round(up_avg, 3),
+            down_avg=round(dn_avg, 3),
+            combined_avg=round(combined_avg, 3),
+            payout_floor=payout_floor,
+            cost_above_floor=round(cost_above_floor, 2),
+            net_cost=round(net_cost, 2),
+            total_shares=total_shares,
+            sell_fired=sell_fired,
+            sell_reason=sell_reason,
+            filled_usd=round(net_cost, 2),
+            remaining_budget=round(self._v2_remaining_budget(state), 2),
+            budget_curve_pct=round(max_deploy_pct, 3),
+            budget_scale=round(budget_scale, 2),
+        )
 
     # ── V2 SECRETS REFRESH ────────────────────────────────────────────────
 
@@ -3028,8 +3770,10 @@ class TradingLoop:
             return
         self._last_secrets_check = now
         try:
-            import boto3
             import json as _json
+
+            import boto3
+
             client = boto3.client("secretsmanager", region_name="eu-west-1")
             raw = client.get_secret_value(SecretId="polymarket-bot-env")
             secrets = _json.loads(raw["SecretString"])
@@ -3043,7 +3787,9 @@ class TradingLoop:
 
     # ── V2 REBALANCE ENGINE (legacy — no longer called from tick) ──────────
 
-    async def _v2_rebalance_cycle(self, state: AssetState, price: float, seconds_since_open: float):
+    async def _v2_rebalance_cycle(
+        self, state: AssetState, price: float, seconds_since_open: float
+    ):
         """Continuous rebalance: adjust UP/DOWN exposure toward model-driven target.
 
         Runs every 3s tick after accumulation. Three steps:
@@ -3081,22 +3827,38 @@ class TradingLoop:
 
         # ── 2. MODEL INPUT ─────────────────────────────────────────────────
         import math as _math
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
         _now = _dt.now(_tz.utc)
         vol = compute_realized_vol(list(state.price_history))
         window_open = window.open_price or price
         move_pct = ((price - window_open) / window_open * 100) if window_open > 0 else 0
 
         features = {
-            "move_pct_15s": move_pct, "realized_vol_5m": vol,
-            "vol_ratio": 1.0, "body_ratio": 0.5,
-            "prev_window_direction": (1 if state.prev_window and state.prev_window.close_price
+            "move_pct_15s": move_pct,
+            "realized_vol_5m": vol,
+            "vol_ratio": 1.0,
+            "body_ratio": 0.5,
+            "prev_window_direction": (
+                1
+                if state.prev_window
+                and state.prev_window.close_price
                 and state.prev_window.open_price
-                and state.prev_window.close_price >= state.prev_window.open_price else -1)
-                if state.prev_window else 0,
-            "prev_window_move_pct": ((state.prev_window.close_price - state.prev_window.open_price)
-                / state.prev_window.open_price * 100) if state.prev_window
-                and state.prev_window.open_price and state.prev_window.close_price else 0,
+                and state.prev_window.close_price >= state.prev_window.open_price
+                else -1
+            )
+            if state.prev_window
+            else 0,
+            "prev_window_move_pct": (
+                (state.prev_window.close_price - state.prev_window.open_price)
+                / state.prev_window.open_price
+                * 100
+            )
+            if state.prev_window
+            and state.prev_window.open_price
+            and state.prev_window.close_price
+            else 0,
             "hour_sin": _math.sin(2 * _math.pi * _now.hour / 24),
             "hour_cos": _math.cos(2 * _math.pi * _now.hour / 24),
             "dow_sin": _math.sin(2 * _math.pi * _now.weekday() / 7),
@@ -3123,27 +3885,40 @@ class TradingLoop:
         delta_up = current_up_ratio - target_up
         imbalance_threshold = 0.05
 
-        logger.info("v2_rebalance_state", asset=state.asset,
-                    seconds=int(seconds_since_open),
-                    prob_up=round(prob_up, 3),
-                    target_up=target_up, current_up_ratio=round(current_up_ratio, 3),
-                    delta_up=round(delta_up, 3),
-                    up_value=round(up_value, 2), down_value=round(down_value, 2),
-                    up_shares=int(up_shares), down_shares=int(down_shares),
-                    remaining_budget=self._v2_remaining_budget(state))
+        logger.info(
+            "v2_rebalance_state",
+            asset=state.asset,
+            seconds=int(seconds_since_open),
+            prob_up=round(prob_up, 3),
+            target_up=target_up,
+            current_up_ratio=round(current_up_ratio, 3),
+            delta_up=round(delta_up, 3),
+            up_value=round(up_value, 2),
+            down_value=round(down_value, 2),
+            up_shares=int(up_shares),
+            down_shares=int(down_shares),
+            remaining_budget=self._v2_remaining_budget(state),
+        )
 
         # ── 4. SELL OVERWEIGHT SIDE ────────────────────────────────────────
         sold_usd = 0.0
         if abs(delta_up) > imbalance_threshold:
             overweight_up = delta_up > 0
             sold_usd = await self._v2_rebalance_sell_overweight(
-                state, pos, overweight_up, delta_up, total_value, seconds_since_open,
+                state,
+                pos,
+                overweight_up,
+                delta_up,
+                total_value,
+                seconds_since_open,
             )
             if sold_usd > 0:
                 await self._v2_poll_fills(state)
 
         # ── 5. DUAL-SIDED LADDER QUOTE ────────────────────────────────────
-        await self._v2_quote_dual_ladder(state, prob_up, delta_up, yes_bid, no_bid, seconds_since_open)
+        await self._v2_quote_dual_ladder(
+            state, prob_up, delta_up, yes_bid, no_bid, seconds_since_open
+        )
 
     async def _v2_rebalance_sell_overweight(
         self,
@@ -3187,18 +3962,28 @@ class TradingLoop:
             if current_bid < actual_price:
                 skipped_loss += 1
                 continue
-            sellable.append({
-                "shares": filled_shares,
-                "price": actual_price,
-                "notional": round(filled_shares * actual_price, 2),
-            })
+            sellable.append(
+                {
+                    "shares": filled_shares,
+                    "price": actual_price,
+                    "notional": round(filled_shares * actual_price, 2),
+                }
+            )
         if skipped_loss > 0:
-            logger.info("v2_rebalance_skipped_loss_lots", asset=state.asset,
-                        side=overweight_side, skipped=skipped_loss, bid=round(current_bid, 2))
+            logger.info(
+                "v2_rebalance_skipped_loss_lots",
+                asset=state.asset,
+                side=overweight_side,
+                skipped=skipped_loss,
+                bid=round(current_bid, 2),
+            )
 
         if not sellable:
-            logger.info("v2_rebalance_no_sellable", asset=state.asset,
-                        overweight_side=overweight_side)
+            logger.info(
+                "v2_rebalance_no_sellable",
+                asset=state.asset,
+                overweight_side=overweight_side,
+            )
             return 0.0
 
         # Sort expensive-first (sell most expensive lots first)
@@ -3227,14 +4012,24 @@ class TradingLoop:
             sell_cost += take_cost
 
         if sell_shares < 5:
-            logger.info("v2_rebalance_sell_too_small", asset=state.asset,
-                        sell_shares=sell_shares, min_shares=5)
+            logger.info(
+                "v2_rebalance_sell_too_small",
+                asset=state.asset,
+                sell_shares=sell_shares,
+                min_shares=5,
+            )
             return 0.0
 
-        logger.info("v2_rebalance_sell", asset=state.asset,
-                    side=overweight_side, sell_shares=sell_shares,
-                    sell_cost=round(sell_cost, 2), excess_usd=round(excess_usd, 2),
-                    sell_target=round(sell_target, 2), bid=round(current_bid, 2))
+        logger.info(
+            "v2_rebalance_sell",
+            asset=state.asset,
+            side=overweight_side,
+            sell_shares=sell_shares,
+            sell_cost=round(sell_cost, 2),
+            excess_usd=round(excess_usd, 2),
+            sell_target=round(sell_target, 2),
+            bid=round(current_bid, 2),
+        )
 
         # Pass the correct token_id and side for the overweight side
         window = state.tracker.current
@@ -3246,9 +4041,14 @@ class TradingLoop:
             sell_token_id = None
 
         proceeds = await self._early_sell(
-            state, pos, current_bid, "REBALANCE",
-            sell_shares=sell_shares, sell_cost=sell_cost,
-            sell_token_id=sell_token_id, sell_side_up=overweight_up,
+            state,
+            pos,
+            current_bid,
+            "REBALANCE",
+            sell_shares=sell_shares,
+            sell_cost=sell_cost,
+            sell_token_id=sell_token_id,
+            sell_side_up=overweight_up,
         )
         return proceeds or 0.0
 
@@ -3286,24 +4086,36 @@ class TradingLoop:
                 release_notional = self._v2_order_reserved_remaining(order)
                 if release_notional > 0 and not order.get("budget_released"):
                     side = self._v2_normalized_order_side(state, order)
-                    self._release_v2_budget(state, release_notional, "quote_rebuild", side, oid)
+                    self._release_v2_budget(
+                        state, release_notional, "quote_rebuild", side, oid
+                    )
                 self._set_v2_order_reserved_remaining(order, 0.0)
                 order["budget_released"] = True
                 order["closed"] = True
             except Exception as e:
                 logger.warning("v2_quote_cancel_error", oid=oid[:16], error=str(e)[:80])
-        state.early_dca_orders = [o for o in state.early_dca_orders if not o.get("closed")]
+        state.early_dca_orders = [
+            o for o in state.early_dca_orders if not o.get("closed")
+        ]
 
         remaining = self._v2_remaining_budget(state)  # refresh after cancels
 
         # ── 2. DIRECTIONAL REGIME ──────────────────────────────────────────
         window_open = window.open_price or 0
-        current_price = state.tracker.current_price if hasattr(state.tracker, 'current_price') else 0
+        current_price = (
+            state.tracker.current_price
+            if hasattr(state.tracker, "current_price")
+            else 0
+        )
         # Use last known price from price_history if tracker doesn't expose it
         if not current_price and state.price_history:
             current_price = state.price_history[-1]
-        price_confirms_up = current_price > window_open if (window_open and current_price) else False
-        price_confirms_down = current_price < window_open if (window_open and current_price) else False
+        price_confirms_up = (
+            current_price > window_open if (window_open and current_price) else False
+        )
+        price_confirms_down = (
+            current_price < window_open if (window_open and current_price) else False
+        )
 
         # 5 regimes
         if prob_up > 0.55 and price_confirms_up:
@@ -3340,6 +4152,7 @@ class TradingLoop:
         base_shares = 5
         base_offsets = [0.00, 0.01, 0.02]
         from py_clob_client.clob_types import CreateOrderOptions
+
         options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
 
         posted_up = 0
@@ -3357,8 +4170,24 @@ class TradingLoop:
         hedge_side = "DOWN" if winner_up else "UP"
 
         for phase, token_id, bid, side_up, side, max_levels, is_hedge in [
-            ("winner", winner_token, winner_bid, winner_up, winner_side, winner_levels, False),
-            ("hedge", hedge_token, hedge_bid, not winner_up, hedge_side, hedge_levels, True),
+            (
+                "winner",
+                winner_token,
+                winner_bid,
+                winner_up,
+                winner_side,
+                winner_levels,
+                False,
+            ),
+            (
+                "hedge",
+                hedge_token,
+                hedge_bid,
+                not winner_up,
+                hedge_side,
+                hedge_levels,
+                True,
+            ),
         ]:
             if not token_id or bid <= 0:
                 continue
@@ -3372,17 +4201,27 @@ class TradingLoop:
                 actual_notional = round(base_shares * post_price, 2)
 
                 # Hedge budget cap
-                if is_hedge and hedge_budget_used + actual_notional > hedge_budget_limit:
+                if (
+                    is_hedge
+                    and hedge_budget_used + actual_notional > hedge_budget_limit
+                ):
                     loser_skipped = True
                     continue
 
-                if not self._reserve_v2_budget(state, actual_notional, "quote_" + phase, side):
+                if not self._reserve_v2_budget(
+                    state, actual_notional, "quote_" + phase, side
+                ):
                     continue
 
                 try:
                     await self._post_cheap_order(
-                        state, token_id, post_price, base_shares,
-                        actual_notional, side_up, options,
+                        state,
+                        token_id,
+                        post_price,
+                        base_shares,
+                        actual_notional,
+                        side_up,
+                        options,
                         target_size=actual_notional,
                     )
                     if side_up:
@@ -3392,19 +4231,28 @@ class TradingLoop:
                     if is_hedge:
                         hedge_budget_used += actual_notional
                 except Exception as e:
-                    self._release_v2_budget(state, actual_notional, "quote_post_error", side)
+                    self._release_v2_budget(
+                        state, actual_notional, "quote_post_error", side
+                    )
 
         # ── 4. LOG ────────────────────────────────────────────────────────
-        logger.info("v2_quote_dual_ladder", asset=state.asset,
-                    seconds=int(seconds_since_open),
-                    posted_up=posted_up, posted_down=posted_down,
-                    regime=regime, prob_up=round(prob_up, 3),
-                    delta_up=round(delta_up, 3),
-                    price_confirms="UP" if price_confirms_up else ("DOWN" if price_confirms_down else "NONE"),
-                    loser_skipped=loser_skipped,
-                    hedge_budget_used=round(hedge_budget_used, 2),
-                    hedge_budget_limit=round(hedge_budget_limit, 2),
-                    remaining_budget=self._v2_remaining_budget(state))
+        logger.info(
+            "v2_quote_dual_ladder",
+            asset=state.asset,
+            seconds=int(seconds_since_open),
+            posted_up=posted_up,
+            posted_down=posted_down,
+            regime=regime,
+            prob_up=round(prob_up, 3),
+            delta_up=round(delta_up, 3),
+            price_confirms="UP"
+            if price_confirms_up
+            else ("DOWN" if price_confirms_down else "NONE"),
+            loser_skipped=loser_skipped,
+            hedge_budget_used=round(hedge_budget_used, 2),
+            hedge_budget_limit=round(hedge_budget_limit, 2),
+            remaining_budget=self._v2_remaining_budget(state),
+        )
 
         # ── 5. NO-FILL KICKER (winner side only) ─────────────────────────
         now = time.time()
@@ -3414,27 +4262,44 @@ class TradingLoop:
             remaining_now = self._v2_remaining_budget(state)
             if remaining_now >= 0.05 and winner_token and winner_bid > 0:
                 ask = self._v2_float(
-                    state.orderbook.yes_best_ask if winner_up else state.orderbook.no_best_ask
+                    state.orderbook.yes_best_ask
+                    if winner_up
+                    else state.orderbook.no_best_ask
                 )
                 if 0 < ask < 1.0:
                     kicker_price = round(ask - 0.01, 2)
                     if 0.01 <= kicker_price <= 0.98:
                         kicker_notional = round(base_shares * kicker_price, 2)
-                        if self._reserve_v2_budget(state, kicker_notional, "no_fill_kicker", winner_side):
+                        if self._reserve_v2_budget(
+                            state, kicker_notional, "no_fill_kicker", winner_side
+                        ):
                             try:
                                 await self._post_cheap_order(
-                                    state, winner_token, kicker_price, base_shares,
-                                    kicker_notional, winner_up, options,
+                                    state,
+                                    winner_token,
+                                    kicker_price,
+                                    base_shares,
+                                    kicker_notional,
+                                    winner_up,
+                                    options,
                                     target_size=kicker_notional,
                                 )
-                                logger.info("v2_no_fill_kicker", asset=state.asset,
-                                            side=winner_side, price=kicker_price,
-                                            no_fill_seconds=round(no_fill_seconds, 1),
-                                            seconds=int(seconds_since_open))
+                                logger.info(
+                                    "v2_no_fill_kicker",
+                                    asset=state.asset,
+                                    side=winner_side,
+                                    price=kicker_price,
+                                    no_fill_seconds=round(no_fill_seconds, 1),
+                                    seconds=int(seconds_since_open),
+                                )
                             except Exception as e:
-                                self._release_v2_budget(state, kicker_notional, "kicker_error", winner_side)
+                                self._release_v2_budget(
+                                    state, kicker_notional, "kicker_error", winner_side
+                                )
 
-    async def _v2_rebalance_ensure_active(self, state: AssetState, seconds_since_open: float):
+    async def _v2_rebalance_ensure_active(
+        self, state: AssetState, seconds_since_open: float
+    ):
         """Ensure at least 1 active order per side if budget allows."""
         window = state.tracker.current
         if not window:
@@ -3444,18 +4309,28 @@ class TradingLoop:
             return
 
         from py_clob_client.clob_types import CreateOrderOptions
+
         options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
 
         open_orders = self._v2_open_orders(state)
-        for side_up, token_id in [(True, window.yes_token_id), (False, window.no_token_id)]:
+        for side_up, token_id in [
+            (True, window.yes_token_id),
+            (False, window.no_token_id),
+        ]:
             if not token_id:
                 continue
             side = "UP" if side_up else "DOWN"
-            side_open = [o for o in open_orders if self._v2_normalized_order_side(state, o) == side]
+            side_open = [
+                o
+                for o in open_orders
+                if self._v2_normalized_order_side(state, o) == side
+            ]
             if side_open:
                 continue  # already have active orders on this side
 
-            bid = self._v2_float(state.orderbook.yes_best_bid if side_up else state.orderbook.no_best_bid)
+            bid = self._v2_float(
+                state.orderbook.yes_best_bid if side_up else state.orderbook.no_best_bid
+            )
             if bid <= 0:
                 continue
 
@@ -3467,23 +4342,37 @@ class TradingLoop:
             if not specs:
                 continue
             spec = specs[0]  # first spec (at bid)
-            if not self._reserve_v2_budget(state, spec["actual_notional_usd"], "ensure_active", side):
+            if not self._reserve_v2_budget(
+                state, spec["actual_notional_usd"], "ensure_active", side
+            ):
                 # Try cheapest spec
                 for s in reversed(specs):
-                    if self._reserve_v2_budget(state, s["actual_notional_usd"], "ensure_active", side):
+                    if self._reserve_v2_budget(
+                        state, s["actual_notional_usd"], "ensure_active", side
+                    ):
                         spec = s
                         break
                 else:
                     continue
 
             await self._post_cheap_order(
-                state, token_id, spec["post_price"], spec["shares"],
-                spec["actual_notional_usd"], side_up, options,
+                state,
+                token_id,
+                spec["post_price"],
+                spec["shares"],
+                spec["actual_notional_usd"],
+                side_up,
+                options,
                 target_size=spec["target_size"],
             )
-            logger.info("v2_rebalance_ensure_posted", asset=state.asset,
-                        side=side, price=spec["post_price"],
-                        shares=spec["shares"], seconds=int(seconds_since_open))
+            logger.info(
+                "v2_rebalance_ensure_posted",
+                asset=state.asset,
+                side=side,
+                price=spec["post_price"],
+                shares=spec["shares"],
+                seconds=int(seconds_since_open),
+            )
 
     async def _v2_poll_fills(self, state: AssetState):
         """Check fill status of all tracked GTC orders, update state totals."""
@@ -3500,24 +4389,43 @@ class TradingLoop:
                 continue
             try:
                 resp = self._v2_get_order_status(state, order)
-                status = str(resp.get("status", "") if isinstance(resp, dict) else "").upper()
-                logger.info("v2_poll_order", asset=state.asset, oid=oid[:16],
-                            status=status, side=order.get("side", ""))
+                status = str(
+                    resp.get("status", "") if isinstance(resp, dict) else ""
+                ).upper()
+                logger.info(
+                    "v2_poll_order",
+                    asset=state.asset,
+                    oid=oid[:16],
+                    status=status,
+                    side=order.get("side", ""),
+                )
                 actual_shares = self._v2_order_actual_shares(order)
                 actual_price = self._v2_order_actual_price(order)
                 actual_notional_usd = self._v2_order_actual_notional(order)
-                total_filled_shares, total_filled_notional, is_complete = self._v2_fill_progress(order, resp if isinstance(resp, dict) else {})
+                total_filled_shares, total_filled_notional, is_complete = (
+                    self._v2_fill_progress(
+                        order, resp if isinstance(resp, dict) else {}
+                    )
+                )
                 prev_filled_shares = int(order.get("filled_shares", 0) or 0)
-                prev_filled_notional = round(self._v2_float(order.get("filled_notional_usd", 0)), 2)
+                prev_filled_notional = round(
+                    self._v2_float(order.get("filled_notional_usd", 0)), 2
+                )
                 delta_shares = max(total_filled_shares - prev_filled_shares, 0)
-                delta_notional = round(max(total_filled_notional - prev_filled_notional, 0.0), 2)
+                delta_notional = round(
+                    max(total_filled_notional - prev_filled_notional, 0.0), 2
+                )
                 if delta_notional > 0:
                     side = order.get("side", "")
                     reserved_remaining = self._v2_order_reserved_remaining(order)
                     move_notional = round(min(reserved_remaining, delta_notional), 2)
                     if move_notional > 0:
-                        self._move_v2_reserved_to_filled(state, move_notional, "fill", side, oid)
-                    self._set_v2_order_reserved_remaining(order, reserved_remaining - move_notional)
+                        self._move_v2_reserved_to_filled(
+                            state, move_notional, "fill", side, oid
+                        )
+                    self._set_v2_order_reserved_remaining(
+                        order, reserved_remaining - move_notional
+                    )
                     order["filled_notional_usd"] = round(total_filled_notional, 2)
                     order["filled_shares"] = total_filled_shares
                     if delta_shares <= 0 and actual_price > 0:
@@ -3527,7 +4435,11 @@ class TradingLoop:
                         self._v2_order_inventory_shares(order) + delta_shares,
                         self._v2_order_inventory_notional(order) + move_notional,
                     )
-                    is_up = (side == "UP") or (side == "main" and direction_up) or (side == "hedge" and not direction_up)
+                    is_up = (
+                        (side == "UP")
+                        or (side == "main" and direction_up)
+                        or (side == "hedge" and not direction_up)
+                    )
                     if is_up:
                         state.early_up_shares += delta_shares
                         state.early_up_cost += move_notional
@@ -3537,43 +4449,78 @@ class TradingLoop:
                     filled_any = True
                     state.early_last_fill_ts = time.time()
                     order["partially_filled"] = not is_complete
-                    logger.info("v2_fill_detected", asset=state.asset, side=side,
-                                is_up=is_up, actual_price=actual_price,
-                                actual_notional_usd=move_notional, actual_shares=delta_shares,
-                                total_filled_notional_usd=round(total_filled_notional, 2),
-                                total_filled_shares=total_filled_shares,
-                                remaining_reserved_notional_usd=self._v2_order_reserved_remaining(order),
-                                fill_status="full" if is_complete else "partial")
-                    self._log_activity(state, f"FILL {side} ${actual_price:.2f}", f"${move_notional:.2f} ({delta_shares} shares)")
+                    logger.info(
+                        "v2_fill_detected",
+                        asset=state.asset,
+                        side=side,
+                        is_up=is_up,
+                        actual_price=actual_price,
+                        actual_notional_usd=move_notional,
+                        actual_shares=delta_shares,
+                        total_filled_notional_usd=round(total_filled_notional, 2),
+                        total_filled_shares=total_filled_shares,
+                        remaining_reserved_notional_usd=self._v2_order_reserved_remaining(
+                            order
+                        ),
+                        fill_status="full" if is_complete else "partial",
+                    )
+                    self._log_activity(
+                        state,
+                        f"FILL {side} ${actual_price:.2f}",
+                        f"${move_notional:.2f} ({delta_shares} shares)",
+                    )
                 if is_complete:
                     order["filled"] = True
                     order["partially_filled"] = False
                     order["filled_shares"] = actual_shares
                     order["filled_notional_usd"] = actual_notional_usd
-                    if self._v2_order_inventory_shares(order) <= 0 and actual_shares > 0:
-                        self._set_v2_order_inventory(order, actual_shares, actual_notional_usd)
+                    if (
+                        self._v2_order_inventory_shares(order) <= 0
+                        and actual_shares > 0
+                    ):
+                        self._set_v2_order_inventory(
+                            order, actual_shares, actual_notional_usd
+                        )
                     self._set_v2_order_reserved_remaining(order, 0.0)
                 elif status in ("CANCELED", "CANCELLED", "REJECTED", "EXPIRED"):
                     if not order.get("budget_released"):
                         release_notional = self._v2_order_reserved_remaining(order)
                         if release_notional > 0:
-                            self._release_v2_budget(state, release_notional, "poll_terminal", order.get("side", ""), oid)
+                            self._release_v2_budget(
+                                state,
+                                release_notional,
+                                "poll_terminal",
+                                order.get("side", ""),
+                                oid,
+                            )
                         self._set_v2_order_reserved_remaining(order, 0.0)
                         order["budget_released"] = True
                     order["closed"] = True
-                    logger.info("v2_order_terminal", asset=state.asset, oid=oid[:16],
-                                status=status, side=order.get("side", ""))
+                    logger.info(
+                        "v2_order_terminal",
+                        asset=state.asset,
+                        oid=oid[:16],
+                        status=status,
+                        side=order.get("side", ""),
+                    )
             except Exception as e:
-                logger.info("v2_poll_error", asset=state.asset, oid=oid[:16], error=str(e)[:80])
-        state.early_dca_orders = [o for o in state.early_dca_orders if not o.get("closed")]
+                logger.info(
+                    "v2_poll_error", asset=state.asset, oid=oid[:16], error=str(e)[:80]
+                )
+        state.early_dca_orders = [
+            o for o in state.early_dca_orders if not o.get("closed")
+        ]
         if filled_any:
             self._sync_v2_position_from_fills(state)
 
-    async def _verify_early_polymarket(self, early_slug: str, market_slug: str, delay: int):
+    async def _verify_early_polymarket(
+        self, early_slug: str, market_slug: str, delay: int
+    ):
         """Verify early entry trades against Polymarket oracle after delay."""
         await asyncio.sleep(delay)
         try:
             from polybot.feeds.polymarket_rest import get_market_outcome
+
             for attempt in range(4):
                 winner, source = await get_market_outcome(market_slug)
                 if winner:
@@ -3582,7 +4529,9 @@ class TradingLoop:
                     return
                 await asyncio.sleep(60)
         except Exception as e:
-            logger.warning("early_verify_polymarket_failed", slug=early_slug, error=str(e)[:60])
+            logger.warning(
+                "early_verify_polymarket_failed", slug=early_slug, error=str(e)[:60]
+            )
 
     def _resolve_early_trades_polymarket(self, early_slug: str, went_up: bool):
         """Update early trades with Polymarket-verified outcome."""
@@ -3590,12 +4539,16 @@ class TradingLoop:
             if not self.dynamo or not self.dynamo._available:
                 return
             from decimal import Decimal
+
             from boto3.dynamodb.conditions import Attr
+
             resp = self.dynamo._trades.scan(
                 FilterExpression=Attr("window_slug").eq(early_slug),
             )
             all_items = resp.get("Items", [])
-            has_exit = any(i.get("source") in ("early_exit", "early_hedge_exit") for i in all_items)
+            has_exit = any(
+                i.get("source") in ("early_exit", "early_hedge_exit") for i in all_items
+            )
             for t in all_items:
                 if t.get("source") in ("early_exit", "early_hedge_exit"):
                     continue  # Sell trade — P&L already recorded
@@ -3606,15 +4559,27 @@ class TradingLoop:
                     pnl = 0  # Position was sold — real P&L in the exit trade
                 else:
                     won = (side == "YES" and went_up) or (side == "NO" and not went_up)
-                    pnl = round((size / fill) - size, 2) if won and fill > 0 else round(-size, 2)
+                    pnl = (
+                        round((size / fill) - size, 2)
+                        if won and fill > 0
+                        else round(-size, 2)
+                    )
                 self.dynamo._trades.update_item(
                     Key={"id": t["id"]},
                     UpdateExpression="SET resolved=:r, pnl=:p, outcome_source=:s",
                     ExpressionAttributeValues={
-                        ":r": 1, ":p": Decimal(str(pnl)), ":s": "polymarket_verified",
+                        ":r": 1,
+                        ":p": Decimal(str(pnl)),
+                        ":s": "polymarket_verified",
                     },
                 )
-                logger.info("early_trade_verified", slug=early_slug, side=side, pnl=pnl, had_exit=has_exit)
+                logger.info(
+                    "early_trade_verified",
+                    slug=early_slug,
+                    side=side,
+                    pnl=pnl,
+                    had_exit=has_exit,
+                )
         except Exception as e:
             logger.warning("early_verify_update_failed", error=str(e)[:60])
 
@@ -3624,7 +4589,9 @@ class TradingLoop:
             if not self.dynamo or not self.dynamo._available:
                 return
             from decimal import Decimal
+
             from boto3.dynamodb.conditions import Attr
+
             # Scan for unresolved early trades matching this window
             early_slug = f"early_{window_slug}"
             # Check if position was already sold (early_exit exists for this window)
@@ -3632,9 +4599,15 @@ class TradingLoop:
                 FilterExpression=Attr("window_slug").eq(early_slug),
             )
             all_items = all_resp.get("Items", [])
-            has_exit = any(i.get("source") in ("early_exit", "early_hedge_exit") for i in all_items)
+            has_exit = any(
+                i.get("source") in ("early_exit", "early_hedge_exit") for i in all_items
+            )
 
-            unresolved = [t for t in all_items if int(t.get("resolved", 0)) == 0 and t.get("source") == "early_entry"]
+            unresolved = [
+                t
+                for t in all_items
+                if int(t.get("resolved", 0)) == 0 and t.get("source") == "early_entry"
+            ]
             for t in unresolved:
                 side = t.get("side", "")
                 fill = float(t.get("fill_price", 0) or 0)
@@ -3643,8 +4616,13 @@ class TradingLoop:
                 if has_exit:
                     # Position was sold mid-window — P&L already recorded in the sell
                     pnl = 0
-                    logger.info("early_trade_resolved_with_exit", slug=early_slug, side=side,
-                                pnl=0, note="P&L in early_exit trade")
+                    logger.info(
+                        "early_trade_resolved_with_exit",
+                        slug=early_slug,
+                        side=side,
+                        pnl=0,
+                        note="P&L in early_exit trade",
+                    )
                 else:
                     # Position held to resolution
                     won = (side == "YES" and went_up) or (side == "NO" and not went_up)
@@ -3652,8 +4630,14 @@ class TradingLoop:
                         pnl = round((size / fill) - size, 2)
                     else:
                         pnl = round(-size, 2)
-                    logger.info("early_trade_resolved", slug=early_slug, side=side,
-                                won=won, pnl=pnl, source="coinbase")
+                    logger.info(
+                        "early_trade_resolved",
+                        slug=early_slug,
+                        side=side,
+                        won=won,
+                        pnl=pnl,
+                        source="coinbase",
+                    )
 
                 self.dynamo._trades.update_item(
                     Key={"id": t["id"]},
@@ -3667,7 +4651,9 @@ class TradingLoop:
         except Exception as e:
             logger.warning("early_resolve_failed", slug=window_slug, error=str(e)[:80])
 
-    async def _early_rotate_buy(self, state: AssetState, pos: dict, proceeds: float, ask: float, window):
+    async def _early_rotate_buy(
+        self, state: AssetState, pos: dict, proceeds: float, ask: float, window
+    ):
         """After selling, buy back cheap on SAME side with the proceeds."""
         if self.settings.mode != "live" or not window:
             return
@@ -3675,14 +4661,21 @@ class TradingLoop:
         if not token_id:
             return
         try:
-            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
+            from py_clob_client.clob_types import (
+                CreateOrderOptions,
+                OrderArgs,
+                OrderType,
+            )
             from py_clob_client.order_builder.constants import BUY
+
             options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
             buy_price = round(ask, 2)
             shares, actual_notional_usd = self._v2_order_size(proceeds, buy_price)
             if shares <= 0 or actual_notional_usd <= 0:
                 return
-            if not self._reserve_v2_budget(state, actual_notional_usd, "rotate_buy", "rotate"):
+            if not self._reserve_v2_budget(
+                state, actual_notional_usd, "rotate_buy", "rotate"
+            ):
                 return
             args = OrderArgs(price=buy_price, size=shares, side=BUY, token_id=token_id)
             signed = self.trader.client.create_order(args, options)
@@ -3699,15 +4692,26 @@ class TradingLoop:
                         side="rotate",
                     )
                 )
-                logger.info("early_rotate_buy", asset=state.asset, slug=pos["slug"],
-                            actual_price=buy_price, actual_notional_usd=round(actual_notional_usd, 2),
-                            target_size=round(proceeds, 2), actual_shares=shares,
-                            potential_payout=round(shares * 1.0, 2), order_id=oid[:16])
+                logger.info(
+                    "early_rotate_buy",
+                    asset=state.asset,
+                    slug=pos["slug"],
+                    actual_price=buy_price,
+                    actual_notional_usd=round(actual_notional_usd, 2),
+                    target_size=round(proceeds, 2),
+                    actual_shares=shares,
+                    potential_payout=round(shares * 1.0, 2),
+                    order_id=oid[:16],
+                )
             else:
-                self._release_v2_budget(state, actual_notional_usd, "rotate_no_order_id", "rotate")
+                self._release_v2_budget(
+                    state, actual_notional_usd, "rotate_no_order_id", "rotate"
+                )
                 logger.warning("early_rotate_buy_failed", resp=str(resp)[:80])
         except Exception as e:
-            self._release_v2_budget(state, actual_notional_usd, "rotate_post_error", "rotate")
+            self._release_v2_budget(
+                state, actual_notional_usd, "rotate_post_error", "rotate"
+            )
             logger.warning("early_rotate_buy_error", error=str(e)[:80])
 
     async def _early_cancel_unfilled(self, state: AssetState):
@@ -3723,30 +4727,52 @@ class TradingLoop:
                     if not order.get("budget_released"):
                         release_notional = self._v2_order_reserved_remaining(order)
                         if release_notional > 0:
-                            self._release_v2_budget(state, release_notional, "cancel", order.get("side", ""), oid)
+                            self._release_v2_budget(
+                                state,
+                                release_notional,
+                                "cancel",
+                                order.get("side", ""),
+                                oid,
+                            )
                         self._set_v2_order_reserved_remaining(order, 0.0)
                         order["budget_released"] = True
                 except Exception as e:
-                    logger.warning("early_cancel_error", asset=state.asset,
-                                   oid=oid[:16], error=str(e)[:80])
+                    logger.warning(
+                        "early_cancel_error",
+                        asset=state.asset,
+                        oid=oid[:16],
+                        error=str(e)[:80],
+                    )
         if state.early_hedge_order_id:
             try:
                 self.trader.client.cancel(state.early_hedge_order_id)
                 cancelled += 1
             except Exception as e:
-                logger.warning("early_cancel_hedge_error", asset=state.asset, error=str(e)[:80])
+                logger.warning(
+                    "early_cancel_hedge_error", asset=state.asset, error=str(e)[:80]
+                )
             state.early_hedge_order_id = None
 
         state.early_dca_orders = [o for o in state.early_dca_orders if o.get("filled")]
-        logger.info("early_cancel_unfilled", asset=state.asset,
-                    slug=state.early_position["slug"] if state.early_position else "",
-                    cancelled=cancelled, up_shares=int(state.early_up_shares),
-                    down_shares=int(state.early_down_shares),
-                    filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
-                    reserved_open_order_usd=self._v2_reserved_open_order_usd(state))
+        logger.info(
+            "early_cancel_unfilled",
+            asset=state.asset,
+            slug=state.early_position["slug"] if state.early_position else "",
+            cancelled=cancelled,
+            up_shares=int(state.early_up_shares),
+            down_shares=int(state.early_down_shares),
+            filled_position_cost_usd=self._v2_filled_position_cost_usd(state),
+            reserved_open_order_usd=self._v2_reserved_open_order_usd(state),
+        )
 
     # ── EARLY ENTRY CHECKPOINTS ──────────────────────────────────────────
-    async def _early_checkpoint(self, state: AssetState, price: float, seconds_since_open: float, checkpoint: int):
+    async def _early_checkpoint(
+        self,
+        state: AssetState,
+        price: float,
+        seconds_since_open: float,
+        checkpoint: int,
+    ):
         """Phase 4: Hard stop for expensive entries. Conditions (ALL required):
         1. Entry price >= 40¢ (never touch cheap accumulation fills)
         2. Position down > 25% from entry price
@@ -3772,51 +4798,90 @@ class TradingLoop:
                 continue
             # Check if this order is on the main side
             side = self._v2_normalized_order_side(state, order)
-            is_main = (side == "UP" and direction_up) or (side == "DOWN" and not direction_up)
+            is_main = (side == "UP" and direction_up) or (
+                side == "DOWN" and not direction_up
+            )
             if not is_main:
                 continue
             filled_shares = int(order.get("filled_shares", 0) or 0)
             if filled_shares <= 0:
                 continue
-            expensive_lots.append({"shares": filled_shares, "price": actual_price,
-                                   "notional": round(filled_shares * actual_price, 2)})
+            expensive_lots.append(
+                {
+                    "shares": filled_shares,
+                    "price": actual_price,
+                    "notional": round(filled_shares * actual_price, 2),
+                }
+            )
 
         if not expensive_lots:
             return  # no expensive lots to sell — protect cheap fills
 
         expensive_shares = sum(lot["shares"] for lot in expensive_lots)
         expensive_cost = sum(lot["notional"] for lot in expensive_lots)
-        expensive_avg = round(expensive_cost / expensive_shares, 4) if expensive_shares > 0 else 0
+        expensive_avg = (
+            round(expensive_cost / expensive_shares, 4) if expensive_shares > 0 else 0
+        )
 
         await self._refresh_orderbook(state)
-        main_bid = state.orderbook.yes_best_bid if direction_up else state.orderbook.no_best_bid
+        main_bid = (
+            state.orderbook.yes_best_bid
+            if direction_up
+            else state.orderbook.no_best_bid
+        )
         if not main_bid or main_bid <= 0:
             return
 
         # Gate: only sell if expensive lots are down more than 25%
-        position_value_pct = ((main_bid - expensive_avg) / expensive_avg * 100) if expensive_avg > 0 else 0
+        position_value_pct = (
+            ((main_bid - expensive_avg) / expensive_avg * 100)
+            if expensive_avg > 0
+            else 0
+        )
 
-        logger.info("early_checkpoint", asset=state.asset, slug=pos["slug"], checkpoint=checkpoint,
-                    direction="UP" if direction_up else "DOWN",
-                    entry_price=round(expensive_avg, 3), main_bid=round(main_bid, 3),
-                    position_value_pct=round(position_value_pct, 1),
-                    expensive_lots=len(expensive_lots), expensive_shares=expensive_shares,
-                    total_shares=pos.get("shares", 0))
-        self._log_activity(state, f"CHECK val={position_value_pct:+.0f}%",
-                           "HOLD" if position_value_pct >= -25 else "SELL_STOP_25")
+        logger.info(
+            "early_checkpoint",
+            asset=state.asset,
+            slug=pos["slug"],
+            checkpoint=checkpoint,
+            direction="UP" if direction_up else "DOWN",
+            entry_price=round(expensive_avg, 3),
+            main_bid=round(main_bid, 3),
+            position_value_pct=round(position_value_pct, 1),
+            expensive_lots=len(expensive_lots),
+            expensive_shares=expensive_shares,
+            total_shares=pos.get("shares", 0),
+        )
+        self._log_activity(
+            state,
+            f"CHECK val={position_value_pct:+.0f}%",
+            "HOLD" if position_value_pct >= -25 else "SELL_STOP_25",
+        )
 
         if position_value_pct < -25:
             window = state.tracker.current
             sell_proceeds = await self._early_sell(
-                state, pos, main_bid, "HARD_STOP_25",
-                sell_shares=expensive_shares, sell_cost=expensive_cost,
+                state,
+                pos,
+                main_bid,
+                "HARD_STOP_25",
+                sell_shares=expensive_shares,
+                sell_cost=expensive_cost,
             )
             if sell_proceeds and sell_proceeds > 0.50 and window:
-                main_ask = state.orderbook.yes_best_ask if direction_up else state.orderbook.no_best_ask
+                main_ask = (
+                    state.orderbook.yes_best_ask
+                    if direction_up
+                    else state.orderbook.no_best_ask
+                )
                 if main_ask and 0 < main_ask <= 0.40:
-                    await self._early_rotate_buy(state, pos, sell_proceeds, main_ask, window)
+                    await self._early_rotate_buy(
+                        state, pos, sell_proceeds, main_ask, window
+                    )
                 else:
-                    logger.info("early_rotate_skip_expensive", slug=pos["slug"], ask=main_ask)
+                    logger.info(
+                        "early_rotate_skip_expensive", slug=pos["slug"], ask=main_ask
+                    )
 
     def _v2_apply_sell_fill(
         self,
@@ -3834,9 +4899,15 @@ class TradingLoop:
             state.early_down_cost = max(state.early_down_cost - cost_basis, 0)
 
         if sell_order is not None:
-            remaining_shares = max(self._v2_order_inventory_shares(sell_order) - shares, 0)
-            remaining_notional = max(self._v2_order_inventory_notional(sell_order) - cost_basis, 0.0)
-            self._set_v2_order_inventory(sell_order, remaining_shares, remaining_notional)
+            remaining_shares = max(
+                self._v2_order_inventory_shares(sell_order) - shares, 0
+            )
+            remaining_notional = max(
+                self._v2_order_inventory_notional(sell_order) - cost_basis, 0.0
+            )
+            self._set_v2_order_inventory(
+                sell_order, remaining_shares, remaining_notional
+            )
             if remaining_shares == 0:
                 sell_order["inventory_depleted"] = True
 
@@ -3855,65 +4926,111 @@ class TradingLoop:
             filled_usd=self._v2_filled_position_cost_usd(state),
         )
 
-    async def _early_sell(self, state: AssetState, pos: dict, current_bid: float, reason: str,
-                         sell_shares: int | None = None, sell_cost: float | None = None,
-                         sell_token_id: str | None = None, sell_side_up: bool | None = None,
-                         sell_order: dict | None = None) -> float:
+    async def _early_sell(
+        self,
+        state: AssetState,
+        pos: dict,
+        current_bid: float,
+        reason: str,
+        sell_shares: int | None = None,
+        sell_cost: float | None = None,
+        sell_token_id: str | None = None,
+        sell_side_up: bool | None = None,
+        sell_order: dict | None = None,
+    ) -> float:
         """Sell early entry position. Returns sell proceeds or 0.
 
         If sell_shares is provided, sell only that many shares (lot-aware).
         Otherwise falls back to pos["shares"] (legacy aggregate).
         """
-        inventory_aware = sell_shares is not None or sell_side_up is not None or sell_order is not None
-        is_partial = inventory_aware or (sell_shares is not None and sell_shares < (pos.get("shares", 0) or 0))
+        inventory_aware = (
+            sell_shares is not None
+            or sell_side_up is not None
+            or sell_order is not None
+        )
+        is_partial = inventory_aware or (
+            sell_shares is not None and sell_shares < (pos.get("shares", 0) or 0)
+        )
         if self.settings.mode != "live":
-            logger.info("early_sell_paper", asset=state.asset, reason=reason, partial=is_partial)
+            logger.info(
+                "early_sell_paper", asset=state.asset, reason=reason, partial=is_partial
+            )
             if inventory_aware:
-                sold_up = sell_side_up if sell_side_up is not None else pos.get("direction_up", True)
-                shares = sell_shares if sell_shares is not None else pos.get("shares", 0)
+                sold_up = (
+                    sell_side_up
+                    if sell_side_up is not None
+                    else pos.get("direction_up", True)
+                )
+                shares = (
+                    sell_shares if sell_shares is not None else pos.get("shares", 0)
+                )
                 cost_basis = sell_cost if sell_cost is not None else pos.get("size", 0)
                 self._v2_apply_sell_fill(state, sold_up, shares, cost_basis, sell_order)
-                if int(state.early_up_shares) <= 0 and int(state.early_down_shares) <= 0:
+                if (
+                    int(state.early_up_shares) <= 0
+                    and int(state.early_down_shares) <= 0
+                ):
                     state.early_position = None
             elif not is_partial:
                 state.early_position = None
             return 0
 
         try:
-            from py_clob_client.clob_types import OrderArgs, OrderType, CreateOrderOptions
+            from py_clob_client.clob_types import (
+                CreateOrderOptions,
+                OrderArgs,
+                OrderType,
+            )
             from py_clob_client.order_builder.constants import SELL
+
             options = CreateOrderOptions(tick_size="0.01", neg_risk=False)
 
             token_id = sell_token_id if sell_token_id is not None else pos["token_id"]
             shares = sell_shares if sell_shares is not None else pos["shares"]
 
             # Try FOK at current bid
-            order_args = OrderArgs(price=current_bid, size=shares, side=SELL, token_id=token_id)
+            order_args = OrderArgs(
+                price=current_bid, size=shares, side=SELL, token_id=token_id
+            )
             signed = self.trader.client.create_order(order_args, options)
             try:
                 resp = self.trader.client.post_order(signed, OrderType.FOK)
                 order_id = resp.get("orderID", "")
             except Exception as sell_err:
                 order_id = ""
-                logger.warning("early_sell_fok_exception", slug=pos["slug"], error=str(sell_err))
+                logger.warning(
+                    "early_sell_fok_exception", slug=pos["slug"], error=str(sell_err)
+                )
 
             if not order_id:
                 # FOK failed — try GTC at bid-1¢ then bid-2¢
                 import asyncio as _aio2
+
                 for offset in (0.01, 0.02):
                     gtc_price = max(round(current_bid - offset, 2), 0.01)
                     try:
-                        gtc_args = OrderArgs(price=gtc_price, size=shares, side=SELL, token_id=token_id)
+                        gtc_args = OrderArgs(
+                            price=gtc_price, size=shares, side=SELL, token_id=token_id
+                        )
                         gtc_signed = self.trader.client.create_order(gtc_args, options)
-                        gtc_resp = self.trader.client.post_order(gtc_signed, OrderType.GTC)
+                        gtc_resp = self.trader.client.post_order(
+                            gtc_signed, OrderType.GTC
+                        )
                         gtc_id = gtc_resp.get("orderID", "")
-                        logger.info("early_sell_gtc_attempt", slug=pos["slug"],
-                                    price=gtc_price, offset=offset, order_id=gtc_id or "failed")
+                        logger.info(
+                            "early_sell_gtc_attempt",
+                            slug=pos["slug"],
+                            price=gtc_price,
+                            offset=offset,
+                            order_id=gtc_id or "failed",
+                        )
                         if gtc_id:
                             for _ in range(5):  # 5s wait
                                 await _aio2.sleep(1.0)
                                 try:
-                                    st = self.trader.client.get_order(gtc_id).get("status", "")
+                                    st = self.trader.client.get_order(gtc_id).get(
+                                        "status", ""
+                                    )
                                     if st in ("MATCHED", "FILLED"):
                                         order_id = gtc_id
                                         current_bid = gtc_price
@@ -3927,43 +5044,76 @@ class TradingLoop:
                             except Exception:
                                 pass
                     except Exception as gtc_err:
-                        logger.warning("early_sell_gtc_error", offset=offset, error=str(gtc_err))
+                        logger.warning(
+                            "early_sell_gtc_error", offset=offset, error=str(gtc_err)
+                        )
                 if not order_id:
-                    logger.warning("early_sell_all_failed", slug=pos["slug"], bid=current_bid,
-                                   reason=reason, shares=shares)
+                    logger.warning(
+                        "early_sell_all_failed",
+                        slug=pos["slug"],
+                        bid=current_bid,
+                        reason=reason,
+                        shares=shares,
+                    )
 
             if order_id:
                 sell_proceeds = shares * current_bid
                 cost_basis = sell_cost if sell_cost is not None else pos["size"]
                 pnl = sell_proceeds - cost_basis
-                sold_up = sell_side_up if sell_side_up is not None else pos.get("direction_up", True)
+                sold_up = (
+                    sell_side_up
+                    if sell_side_up is not None
+                    else pos.get("direction_up", True)
+                )
                 sold_label = "YES" if sold_up else "NO"
-                logger.info("early_sell_filled", slug=pos["slug"], reason=reason,
-                            bid=current_bid, pnl=round(pnl, 2), order_id=order_id[:16],
-                            shares_sold=shares, cost_basis=round(cost_basis, 2))
-                self._log_activity(state, f"SELL {sold_label} ${current_bid:.2f}", f"P&L ${pnl:+.2f} ({reason})")
+                logger.info(
+                    "early_sell_filled",
+                    slug=pos["slug"],
+                    reason=reason,
+                    bid=current_bid,
+                    pnl=round(pnl, 2),
+                    order_id=order_id[:16],
+                    shares_sold=shares,
+                    cost_basis=round(cost_basis, 2),
+                )
+                self._log_activity(
+                    state,
+                    f"SELL {sold_label} ${current_bid:.2f}",
+                    f"P&L ${pnl:+.2f} ({reason})",
+                )
                 # Log to DynamoDB
                 try:
-                    from decimal import Decimal
                     import uuid
-                    self.dynamo._trades.put_item(Item={
-                        "id": str(uuid.uuid4()),
-                        "window_slug": pos["slug"],
-                        "asset": state.asset, "timeframe": "5m",
-                        "side": "SELL", "source": "early_exit",
-                        "fill_price": Decimal(str(round(current_bid, 4))),
-                        "size_usd": Decimal(str(round(sell_proceeds, 2))),
-                        "shares": Decimal(str(shares)),
-                        "pnl": Decimal(str(round(pnl, 2))),
-                        "timestamp": Decimal(str(round(time.time(), 3))),
-                        "entry_type": reason, "resolved": 1,
-                    })
+                    from decimal import Decimal
+
+                    self.dynamo._trades.put_item(
+                        Item={
+                            "id": str(uuid.uuid4()),
+                            "window_slug": pos["slug"],
+                            "asset": state.asset,
+                            "timeframe": "5m",
+                            "side": "SELL",
+                            "source": "early_exit",
+                            "fill_price": Decimal(str(round(current_bid, 4))),
+                            "size_usd": Decimal(str(round(sell_proceeds, 2))),
+                            "shares": Decimal(str(shares)),
+                            "pnl": Decimal(str(round(pnl, 2))),
+                            "timestamp": Decimal(str(round(time.time(), 3))),
+                            "entry_type": reason,
+                            "resolved": 1,
+                        }
+                    )
                 except Exception:
                     pass
                 # Update internal inventory to match executed reality
                 if inventory_aware:
-                    self._v2_apply_sell_fill(state, sold_up, shares, cost_basis, sell_order)
-                    if int(state.early_up_shares) <= 0 and int(state.early_down_shares) <= 0:
+                    self._v2_apply_sell_fill(
+                        state, sold_up, shares, cost_basis, sell_order
+                    )
+                    if (
+                        int(state.early_up_shares) <= 0
+                        and int(state.early_down_shares) <= 0
+                    ):
                         state.early_position = None
                 else:
                     state.early_position = None
@@ -3972,13 +5122,16 @@ class TradingLoop:
             # FOK failed — try GTC at bid+1¢
             logger.info("early_sell_fok_failed", slug=pos["slug"], trying_gtc=True)
             gtc_price = round(current_bid + 0.01, 2)
-            gtc_args = OrderArgs(price=gtc_price, size=shares, side=SELL, token_id=token_id)
+            gtc_args = OrderArgs(
+                price=gtc_price, size=shares, side=SELL, token_id=token_id
+            )
             gtc_signed = self.trader.client.create_order(gtc_args, options)
             gtc_resp = self.trader.client.post_order(gtc_signed, OrderType.GTC)
             gtc_id = gtc_resp.get("orderID", "")
 
             if gtc_id:
                 import asyncio as _aio
+
                 filled = False
                 for _ in range(3):
                     await _aio.sleep(1.0)
@@ -4001,15 +5154,34 @@ class TradingLoop:
                 sell_proceeds = shares * gtc_price
                 cost_basis_gtc = sell_cost if sell_cost is not None else pos["size"]
                 pnl = sell_proceeds - cost_basis_gtc
-                sold_up = sell_side_up if sell_side_up is not None else pos.get("direction_up", True)
+                sold_up = (
+                    sell_side_up
+                    if sell_side_up is not None
+                    else pos.get("direction_up", True)
+                )
                 sold_label = "YES" if sold_up else "NO"
-                logger.info("early_sell_gtc_filled", slug=pos["slug"], reason=reason, pnl=round(pnl, 2),
-                            shares_sold=shares, cost_basis=round(cost_basis_gtc, 2))
-                self._log_activity(state, f"SELL {sold_label} ${gtc_price:.2f}", f"P&L ${pnl:+.2f} ({reason})")
+                logger.info(
+                    "early_sell_gtc_filled",
+                    slug=pos["slug"],
+                    reason=reason,
+                    pnl=round(pnl, 2),
+                    shares_sold=shares,
+                    cost_basis=round(cost_basis_gtc, 2),
+                )
+                self._log_activity(
+                    state,
+                    f"SELL {sold_label} ${gtc_price:.2f}",
+                    f"P&L ${pnl:+.2f} ({reason})",
+                )
                 # Update internal inventory
                 if inventory_aware:
-                    self._v2_apply_sell_fill(state, sold_up, shares, cost_basis_gtc, sell_order)
-                    if int(state.early_up_shares) <= 0 and int(state.early_down_shares) <= 0:
+                    self._v2_apply_sell_fill(
+                        state, sold_up, shares, cost_basis_gtc, sell_order
+                    )
+                    if (
+                        int(state.early_up_shares) <= 0
+                        and int(state.early_down_shares) <= 0
+                    ):
                         state.early_position = None
                 else:
                     state.early_position = None
@@ -4019,38 +5191,57 @@ class TradingLoop:
             logger.error("early_sell_error", error=str(e))
         return 0
 
-    def _log_early_trade(self, state, window, side, fill_price, size, lgbm_prob, ev,
-                         entry_type, limit_price, limit_filled, limit_wait_ms, order_id):
+    def _log_early_trade(
+        self,
+        state,
+        window,
+        side,
+        fill_price,
+        size,
+        lgbm_prob,
+        ev,
+        entry_type,
+        limit_price,
+        limit_filled,
+        limit_wait_ms,
+        order_id,
+    ):
         """Log early entry trade to DynamoDB."""
         try:
             from decimal import Decimal
+
             dynamo = self.dynamo
             if not dynamo or not dynamo._available:
                 return
             table = dynamo._trades
             early_slug = f"early_{window.slug}"
             import uuid
-            table.put_item(Item={
-                "id": str(uuid.uuid4()),
-                "window_slug": early_slug,
-                "asset": state.asset,
-                "timeframe": "5m",
-                "side": side,
-                "fill_price": Decimal(str(round(fill_price, 4))),
-                "size_usd": Decimal(str(round(size, 2))),
-                "shares": Decimal(str(round(size / fill_price, 1))),
-                "timestamp": Decimal(str(round(time.time(), 3))),
-                "source": "early_entry",
-                "strategy": "early_entry",
-                "entry_type": entry_type,
-                "limit_price": Decimal(str(round(limit_price, 4))) if limit_price else None,
-                "limit_filled": limit_filled,
-                "limit_wait_ms": Decimal(str(int(limit_wait_ms))),
-                "model_prob": Decimal(str(round(lgbm_prob, 4))),
-                "ev": Decimal(str(round(ev, 4))),
-                "order_id": order_id or "",
-                "resolved": 0,
-            })
+
+            table.put_item(
+                Item={
+                    "id": str(uuid.uuid4()),
+                    "window_slug": early_slug,
+                    "asset": state.asset,
+                    "timeframe": "5m",
+                    "side": side,
+                    "fill_price": Decimal(str(round(fill_price, 4))),
+                    "size_usd": Decimal(str(round(size, 2))),
+                    "shares": Decimal(str(round(size / fill_price, 1))),
+                    "timestamp": Decimal(str(round(time.time(), 3))),
+                    "source": "early_entry",
+                    "strategy": "early_entry",
+                    "entry_type": entry_type,
+                    "limit_price": Decimal(str(round(limit_price, 4)))
+                    if limit_price
+                    else None,
+                    "limit_filled": limit_filled,
+                    "limit_wait_ms": Decimal(str(int(limit_wait_ms))),
+                    "model_prob": Decimal(str(round(lgbm_prob, 4))),
+                    "ev": Decimal(str(round(ev, 4))),
+                    "order_id": order_id or "",
+                    "resolved": 0,
+                }
+            )
         except Exception as e:
             logger.warning("early_trade_log_failed", error=str(e)[:60])
 
@@ -4102,12 +5293,22 @@ class TradingLoop:
         state.early_last_fill_ts = 0.0
         state.v2_last_sell_ts = 0.0
         state.v2_last_rescue_ts = 0.0
-        logger.info("window_opened", asset=state.asset, slug=window.slug, open_price=round(price, 2))
+        logger.info(
+            "window_opened",
+            asset=state.asset,
+            slug=window.slug,
+            open_price=round(price, 2),
+        )
         state.bayesian.reset(price, 0.5)
         try:
             await resolve_window(window)
         except Exception as e:
-            logger.error("market_resolve_failed", asset=state.asset, slug=window.slug, error=str(e))
+            logger.error(
+                "market_resolve_failed",
+                asset=state.asset,
+                slug=window.slug,
+                error=str(e),
+            )
         await self._refresh_orderbook(state)
 
     async def _on_window_close(self, state: AssetState, price: float):
@@ -4136,12 +5337,29 @@ class TradingLoop:
 
         # Schedule authoritative Polymarket verification 90s after close
         slug = window.slug
-        task = asyncio.create_task(self._verify_outcome_after_delay(slug, 90), name=f"verify_{slug}")
+        task = asyncio.create_task(
+            self._verify_outcome_after_delay(slug, 90), name=f"verify_{slug}"
+        )
         # Verify early entry trades via Polymarket after delay (overwrites provisional)
         _early_slug = f"early_{slug}"
-        early_task = asyncio.create_task(self._verify_early_polymarket(_early_slug, slug, 90), name=f"verify_early_{slug}")
-        early_task.add_done_callback(lambda t: logger.error("verify_task_exception", error=str(t.exception())) if t.exception() else None)
-        task.add_done_callback(lambda t: logger.error("verify_task_exception", error=str(t.exception())) if t.exception() else None)
+        early_task = asyncio.create_task(
+            self._verify_early_polymarket(_early_slug, slug, 90),
+            name=f"verify_early_{slug}",
+        )
+        early_task.add_done_callback(
+            lambda t: (
+                logger.error("verify_task_exception", error=str(t.exception()))
+                if t.exception()
+                else None
+            )
+        )
+        task.add_done_callback(
+            lambda t: (
+                logger.error("verify_task_exception", error=str(t.exception()))
+                if t.exception()
+                else None
+            )
+        )
 
         window_record = {
             "slug": window.slug,
@@ -4149,7 +5367,9 @@ class TradingLoop:
             "close_ts": window.close_ts,
             "open_price": window.open_price,
             "close_price": window.close_price,
-            "direction": window.resolved_direction.value if window.resolved_direction else None,
+            "direction": window.resolved_direction.value
+            if window.resolved_direction
+            else None,
             "condition_id": window.condition_id,
             "asset": state.asset,
         }
@@ -4165,44 +5385,79 @@ class TradingLoop:
                 tf = self._timeframe_key(state.tracker.window_seconds)
                 pct_move = 0.0
                 if window.open_price and window.close_price and window.open_price > 0:
-                    pct_move = (window.close_price - window.open_price) / window.open_price * 100
+                    pct_move = (
+                        (window.close_price - window.open_price)
+                        / window.open_price
+                        * 100
+                    )
                 outcome = 1 if went_up else 0
                 realized_vol = compute_realized_vol(list(state.price_history))
-                self.dynamo.put_training_data({
-                    "window_id": f"{state.asset}_{tf}_{window.slug}",
-                    "timestamp": time.time(),
-                    "asset": state.asset,
-                    "timeframe": tf,
-                    "open_price": round(window.open_price, 2) if window.open_price else 0,
-                    "close_price": round(window.close_price, 2) if window.close_price else 0,
-                    "pct_move": round(pct_move, 6),
-                    "outcome": outcome,
-                    "direction": "up" if went_up else "down",
-                    "yes_ask_at_open": round(state.orderbook.yes_best_ask, 4),
-                    "no_ask_at_open": round(state.orderbook.no_best_ask, 4),
-                    "yes_bid_at_open": round(state.orderbook.yes_best_bid, 4),
-                    "no_bid_at_open": round(state.orderbook.no_best_bid, 4),
-                    "p_bayesian": round(state.bayesian.probability, 4),
-                    "realized_vol": round(realized_vol, 6),
-                    "oracle_lag_pct": round(self.rtds.get_state(state.asset).oracle_lag_pct, 6),
-                    # Signal-context features for LightGBM
-                    "signal_move_pct": round(abs(pct_move), 6),
-                    "signal_ask_price": round(state.orderbook.yes_best_ask, 4),
-                    "signal_seconds": 0,  # filled by live collection
-                    "signal_ev": 0,  # filled by live collection
-                    # Orderbook microstructure features
-                    "ofi_30s": round(self.coinbase.get_ofi_30s(state.asset), 6) if hasattr(self.coinbase, "get_ofi_30s") else 0,
-                    "bid_ask_spread": round(self.coinbase.get_bid_ask_spread(state.asset), 6) if hasattr(self.coinbase, "get_bid_ask_spread") else 0,
-                    "depth_imbalance": round(self.coinbase.get_depth_imbalance(state.asset), 6) if hasattr(self.coinbase, "get_depth_imbalance") else 0,
-                    "trade_arrival_rate": round(self.coinbase.get_trade_arrival_rate(state.asset), 6) if hasattr(self.coinbase, "get_trade_arrival_rate") else 0,
-                    "data_source": "live_with_orderbook" if hasattr(self.coinbase, "get_ofi_30s") else "live",
-                    # New signal features
-                    "liq_cluster_bias": round(_liq_cache.get("BTC", (0.0, 0))[0], 6),
-                    "btc_confirms_direction": 0,  # late-entry strategy doesn't use BTC confirmation
-                    # Macro features (collected for future model retrains)
-                    **self._get_macro_features(),
-                })
-                logger.debug("training_data_logged", asset=state.asset, slug=window.slug, outcome=outcome)
+                self.dynamo.put_training_data(
+                    {
+                        "window_id": f"{state.asset}_{tf}_{window.slug}",
+                        "timestamp": time.time(),
+                        "asset": state.asset,
+                        "timeframe": tf,
+                        "open_price": round(window.open_price, 2)
+                        if window.open_price
+                        else 0,
+                        "close_price": round(window.close_price, 2)
+                        if window.close_price
+                        else 0,
+                        "pct_move": round(pct_move, 6),
+                        "outcome": outcome,
+                        "direction": "up" if went_up else "down",
+                        "yes_ask_at_open": round(state.orderbook.yes_best_ask, 4),
+                        "no_ask_at_open": round(state.orderbook.no_best_ask, 4),
+                        "yes_bid_at_open": round(state.orderbook.yes_best_bid, 4),
+                        "no_bid_at_open": round(state.orderbook.no_best_bid, 4),
+                        "p_bayesian": round(state.bayesian.probability, 4),
+                        "realized_vol": round(realized_vol, 6),
+                        "oracle_lag_pct": round(
+                            self.rtds.get_state(state.asset).oracle_lag_pct, 6
+                        ),
+                        # Signal-context features for LightGBM
+                        "signal_move_pct": round(abs(pct_move), 6),
+                        "signal_ask_price": round(state.orderbook.yes_best_ask, 4),
+                        "signal_seconds": 0,  # filled by live collection
+                        "signal_ev": 0,  # filled by live collection
+                        # Orderbook microstructure features
+                        "ofi_30s": round(self.coinbase.get_ofi_30s(state.asset), 6)
+                        if hasattr(self.coinbase, "get_ofi_30s")
+                        else 0,
+                        "bid_ask_spread": round(
+                            self.coinbase.get_bid_ask_spread(state.asset), 6
+                        )
+                        if hasattr(self.coinbase, "get_bid_ask_spread")
+                        else 0,
+                        "depth_imbalance": round(
+                            self.coinbase.get_depth_imbalance(state.asset), 6
+                        )
+                        if hasattr(self.coinbase, "get_depth_imbalance")
+                        else 0,
+                        "trade_arrival_rate": round(
+                            self.coinbase.get_trade_arrival_rate(state.asset), 6
+                        )
+                        if hasattr(self.coinbase, "get_trade_arrival_rate")
+                        else 0,
+                        "data_source": "live_with_orderbook"
+                        if hasattr(self.coinbase, "get_ofi_30s")
+                        else "live",
+                        # New signal features
+                        "liq_cluster_bias": round(
+                            _liq_cache.get("BTC", (0.0, 0))[0], 6
+                        ),
+                        "btc_confirms_direction": 0,  # late-entry strategy doesn't use BTC confirmation
+                        # Macro features (collected for future model retrains)
+                        **self._get_macro_features(),
+                    }
+                )
+                logger.debug(
+                    "training_data_logged",
+                    asset=state.asset,
+                    slug=window.slug,
+                    outcome=outcome,
+                )
             except Exception as e:
                 logger.debug("training_data_failed", error=str(e))
 
@@ -4211,53 +5466,89 @@ class TradingLoop:
             outcome = 1 if went_up else 0
             early_window_id = f"early_{state.asset}_5m_{window.slug}"
             from decimal import Decimal as _Dec
+
             self.dynamo._training.update_item(
                 Key={"window_id": early_window_id},
                 UpdateExpression="SET outcome = :o, close_price = :cp, pct_move_final = :pm",
                 ExpressionAttributeValues={
                     ":o": outcome,
-                    ":cp": _Dec(str(round(window.close_price, 4))) if window.close_price else _Dec("0"),
-                    ":pm": _Dec(str(round(
-                        (window.close_price - window.open_price) / window.open_price * 100, 6
-                    ))) if window.open_price and window.close_price else _Dec("0"),
+                    ":cp": _Dec(str(round(window.close_price, 4)))
+                    if window.close_price
+                    else _Dec("0"),
+                    ":pm": _Dec(
+                        str(
+                            round(
+                                (window.close_price - window.open_price)
+                                / window.open_price
+                                * 100,
+                                6,
+                            )
+                        )
+                    )
+                    if window.open_price and window.close_price
+                    else _Dec("0"),
                 },
                 ConditionExpression="attribute_exists(window_id)",
             )
-            logger.debug("early_training_outcome_set", slug=window.slug, outcome=outcome)
-        except self.dynamo._training.meta.client.exceptions.ConditionalCheckFailedException:
+            logger.debug(
+                "early_training_outcome_set", slug=window.slug, outcome=outcome
+            )
+        except (
+            self.dynamo._training.meta.client.exceptions.ConditionalCheckFailedException
+        ):
             pass  # No early entry training data for this window — normal
         except Exception as e:
             logger.debug("early_training_outcome_failed", error=str(e)[:60])
 
-    async def _verify_outcome_after_delay(self, window_slug: str, delay_seconds: int = 90):
+    async def _verify_outcome_after_delay(
+        self, window_slug: str, delay_seconds: int = 90
+    ):
         """Wait 90s, then query Gamma API. Retry up to 5 times every 60s."""
-        logger.info("resolution_scheduled", slug=window_slug, wait_seconds=delay_seconds)
+        logger.info(
+            "resolution_scheduled", slug=window_slug, wait_seconds=delay_seconds
+        )
         await asyncio.sleep(delay_seconds)
 
         for attempt in range(6):  # initial + 5 retries
             try:
-                logger.info("resolution_checking", slug=window_slug, attempt=attempt + 1)
+                logger.info(
+                    "resolution_checking", slug=window_slug, attempt=attempt + 1
+                )
                 from polybot.feeds.polymarket_rest import get_market_outcome
+
                 # Strip early_ prefix for Polymarket API (market indexed by original slug)
                 lookup_slug = window_slug.removeprefix("early_")
                 winner, source = await get_market_outcome(lookup_slug)
 
                 if winner is None:
                     if attempt < 5:
-                        logger.info("resolution_pending", slug=window_slug, attempt=attempt + 1, next_retry_sec=60)
+                        logger.info(
+                            "resolution_pending",
+                            slug=window_slug,
+                            attempt=attempt + 1,
+                            next_retry_sec=60,
+                        )
                         await asyncio.sleep(60)
                         continue
                     else:
-                        logger.warning("resolution_exhausted", slug=window_slug, total_attempts=6)
+                        logger.warning(
+                            "resolution_exhausted", slug=window_slug, total_attempts=6
+                        )
                         return
 
-                logger.info("resolution_winner_found", slug=window_slug, winner=winner, attempt=attempt + 1)
+                logger.info(
+                    "resolution_winner_found",
+                    slug=window_slug,
+                    winner=winner,
+                    attempt=attempt + 1,
+                )
 
                 # Check for manual sells via activity API — look for SELL trades
                 # on the same condition_id AFTER our buy timestamp
                 manual_sell_pnl: dict[str, float] = {}
                 try:
                     import httpx as _hx
+
                     async with _hx.AsyncClient(timeout=10) as _ac:
                         _act_resp = await _ac.get(
                             "https://data-api.polymarket.com/activity",
@@ -4271,10 +5562,14 @@ class TradingLoop:
                                 _usdc = float(_a.get("usdcSize", 0) or 0)
                                 # A manual sell shows as type=TRADE side=SELL
                                 if _type == "TRADE" and _side == "SELL" and _cid:
-                                    manual_sell_pnl[_cid] = manual_sell_pnl.get(_cid, 0) + _usdc
+                                    manual_sell_pnl[_cid] = (
+                                        manual_sell_pnl.get(_cid, 0) + _usdc
+                                    )
                                 # A redeem also counts
                                 elif _type == "REDEEM" and _cid:
-                                    manual_sell_pnl[_cid] = manual_sell_pnl.get(_cid, 0) + _usdc
+                                    manual_sell_pnl[_cid] = (
+                                        manual_sell_pnl.get(_cid, 0) + _usdc
+                                    )
                 except Exception:
                     pass
 
@@ -4284,7 +5579,7 @@ class TradingLoop:
                     if t.get("resolved"):
                         continue  # already finalized
                     side = t.get("side", "")
-                    correct = (side == winner)
+                    correct = side == winner
                     fill_price = float(t.get("fill_price", 0) or 0)
                     size_usd = float(t.get("size_usd", 0) or 0)
 
@@ -4297,7 +5592,13 @@ class TradingLoop:
                         # User sold manually — P&L = sell proceeds - cost
                         pnl = sell_proceeds - size_usd
                         source = "manual_sell"
-                        logger.info("manual_sell_detected", slug=window_slug, proceeds=round(sell_proceeds, 2), cost=round(size_usd, 2), pnl=round(pnl, 2))
+                        logger.info(
+                            "manual_sell_detected",
+                            slug=window_slug,
+                            proceeds=round(sell_proceeds, 2),
+                            cost=round(size_usd, 2),
+                            pnl=round(pnl, 2),
+                        )
                     elif correct and fill_price > 0:
                         shares = size_usd / fill_price
                         pnl = shares * (1.0 - fill_price)
@@ -4307,14 +5608,22 @@ class TradingLoop:
                     self.risk.record_trade(pnl)
                     # Update DynamoDB directly (NOT SQLite)
                     try:
-                        self.dynamo.update_trade_resolved(t["id"], pnl, winner, correct, source)
+                        self.dynamo.update_trade_resolved(
+                            t["id"], pnl, winner, correct, source
+                        )
                     except Exception as e:
-                        logger.warning("resolution_dynamo_update_failed", id=t["id"], error=str(e)[:60])
+                        logger.warning(
+                            "resolution_dynamo_update_failed",
+                            id=t["id"],
+                            error=str(e)[:60],
+                        )
                     # Also try SQLite as backup
                     try:
                         await self.db.update_trade_verified(
-                            trade_id=t["id"], pnl=pnl,
-                            polymarket_winner=winner, correct_prediction=correct,
+                            trade_id=t["id"],
+                            pnl=pnl,
+                            polymarket_winner=winner,
+                            correct_prediction=correct,
                             outcome_source=source,
                         )
                     except Exception:
@@ -4351,7 +5660,9 @@ class TradingLoop:
                 return  # done
 
             except Exception as e:
-                logger.warning("verify_failed", slug=window_slug, attempt=attempt, error=str(e))
+                logger.warning(
+                    "verify_failed", slug=window_slug, attempt=attempt, error=str(e)
+                )
                 if attempt < 3:
                     await asyncio.sleep(60)
 
@@ -4374,20 +5685,27 @@ class TradingLoop:
                 resp = _table.scan(ExclusiveStartKey=resp["LastEvaluatedKey"])
                 all_trades.extend(resp.get("Items", []))
 
-            to_verify = [t for t in all_trades if (
-                # Coinbase-inferred but not Polymarket-verified
-                (int(t.get("resolved", 0)) == 1
-                 and t.get("outcome_source") != "polymarket_verified"
-                 and t.get("outcome_source") != "manual_sell")
-                # OR still unresolved (OPEN)
-                or not int(t.get("resolved", 0))
-            )]
+            to_verify = [
+                t
+                for t in all_trades
+                if (
+                    # Coinbase-inferred but not Polymarket-verified
+                    (
+                        int(t.get("resolved", 0)) == 1
+                        and t.get("outcome_source") != "polymarket_verified"
+                        and t.get("outcome_source") != "manual_sell"
+                    )
+                    # OR still unresolved (OPEN)
+                    or not int(t.get("resolved", 0))
+                )
+            ]
 
             if not to_verify:
                 return
 
             logger.info("verify_sweep_start", count=len(to_verify))
             from polybot.feeds.polymarket_rest import get_market_outcome
+
             fixed = 0
             for t in to_verify:
                 slug = t.get("window_slug", "")
@@ -4399,10 +5717,14 @@ class TradingLoop:
                 if not winner:
                     continue
                 side = t.get("side", "")
-                correct = (side == winner)
+                correct = side == winner
                 fill = float(t.get("fill_price", 0) or 0)
                 size = float(t.get("size_usd", 0) or 0)
-                pnl = round((size / fill) * (1 - fill), 2) if correct and fill > 0 else round(-size, 2)
+                pnl = (
+                    round((size / fill) * (1 - fill), 2)
+                    if correct and fill > 0
+                    else round(-size, 2)
+                )
                 self.dynamo.update_trade_resolved(t["id"], pnl, winner, correct, source)
                 fixed += 1
 
@@ -4416,7 +5738,11 @@ class TradingLoop:
         try:
             # Query DynamoDB (not SQLite — SQLite is empty in new containers)
             trades = self.dynamo.get_recent_trades(limit=100)
-            orphans = [t for t in trades if not t.get("resolved") or str(t.get("resolved")) == "0"]
+            orphans = [
+                t
+                for t in trades
+                if not t.get("resolved") or str(t.get("resolved")) == "0"
+            ]
             if not orphans:
                 logger.info("orphan_check_clean", count=0)
                 return
@@ -4432,22 +5758,30 @@ class TradingLoop:
                 if winner is None:
                     continue
                 side = t.get("side", "")
-                correct = (side == winner)
+                correct = side == winner
                 fill = float(t.get("fill_price", 0) or 0)
                 size = float(t.get("size_usd", 0) or 0)
-                pnl = round((size / fill) * (1 - fill), 2) if correct and fill > 0 else round(-size, 2)
+                pnl = (
+                    round((size / fill) * (1 - fill), 2)
+                    if correct and fill > 0
+                    else round(-size, 2)
+                )
 
                 self.risk.record_trade(pnl)
                 # Update in DynamoDB directly (SQLite may be empty in new container)
                 try:
-                    self.dynamo.update_trade_resolved(t["id"], pnl, winner, correct, source)
+                    self.dynamo.update_trade_resolved(
+                        t["id"], pnl, winner, correct, source
+                    )
                 except Exception:
                     pass
                 # Also try SQLite
                 try:
                     await self.db.update_trade_verified(
-                        trade_id=t["id"], pnl=pnl,
-                        polymarket_winner=winner, correct_prediction=correct,
+                        trade_id=t["id"],
+                        pnl=pnl,
+                        polymarket_winner=winner,
+                        correct_prediction=correct,
                         outcome_source=source,
                     )
                 except Exception:
@@ -4464,34 +5798,55 @@ class TradingLoop:
                 except Exception:
                     pass
 
-                logger.info("orphan_resolved", id=t["id"], slug=slug, winner=winner, pnl=round(pnl, 2))
+                logger.info(
+                    "orphan_resolved",
+                    id=t["id"],
+                    slug=slug,
+                    winner=winner,
+                    pnl=round(pnl, 2),
+                )
         except Exception as e:
             logger.warning("orphan_check_failed", error=str(e))
 
-    async def _execute(self, signal, state: AssetState, signal_ms: float = 0, bedrock_ms: float = 0):
+    async def _execute(
+        self, signal, state: AssetState, signal_ms: float = 0, bedrock_ms: float = 0
+    ):
         if isinstance(self.trader, LiveTrader):
             window = state.tracker.current
             yes_id = window.yes_token_id if window else ""
             no_id = window.no_token_id if window else ""
-            return await self.trader.execute(signal, yes_id, no_id, signal_ms=signal_ms, bedrock_ms=bedrock_ms)
-        return await self.trader.execute(signal, signal_ms=signal_ms, bedrock_ms=bedrock_ms)
+            return await self.trader.execute(
+                signal, yes_id, no_id, signal_ms=signal_ms, bedrock_ms=bedrock_ms
+            )
+        return await self.trader.execute(
+            signal, signal_ms=signal_ms, bedrock_ms=bedrock_ms
+        )
 
     async def _run_claim(self):
         """Run redeem.py in a subprocess so it never blocks the event loop."""
         try:
             import subprocess
+
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
                 None,
                 lambda: subprocess.run(
                     [".venv/bin/python", "scripts/redeem.py"],
-                    capture_output=True, text=True, timeout=120,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
                 ),
             )
             if result.returncode == 0:
-                logger.info("auto_claim_completed", output=result.stdout[-200:] if result.stdout else "")
+                logger.info(
+                    "auto_claim_completed",
+                    output=result.stdout[-200:] if result.stdout else "",
+                )
             else:
-                logger.warning("auto_claim_failed", stderr=result.stderr[-200:] if result.stderr else "")
+                logger.warning(
+                    "auto_claim_failed",
+                    stderr=result.stderr[-200:] if result.stderr else "",
+                )
         except Exception as e:
             logger.warning("auto_claim_failed", error=str(e)[:100])
 
@@ -4499,8 +5854,16 @@ class TradingLoop:
 
     def _log_v2_status(self, state: AssetState, seconds_since_open: float):
         """Log summary every 15s: shares, costs, combined avg, margin, order counts."""
-        up_avg = (state.early_up_cost / state.early_up_shares) if state.early_up_shares > 0 else 0
-        down_avg = (state.early_down_cost / state.early_down_shares) if state.early_down_shares > 0 else 0
+        up_avg = (
+            (state.early_up_cost / state.early_up_shares)
+            if state.early_up_shares > 0
+            else 0
+        )
+        down_avg = (
+            (state.early_down_cost / state.early_down_shares)
+            if state.early_down_shares > 0
+            else 0
+        )
         combined = up_avg + down_avg if up_avg > 0 and down_avg > 0 else 0
         margin = round((1 - combined) * 100, 1) if 0 < combined < 1 else 0
         open_orders = len([o for o in state.early_dca_orders if not o.get("filled")])
@@ -4544,6 +5907,7 @@ class TradingLoop:
             try:
                 await asyncio.sleep(30)
                 import httpx as _hx
+
                 async with _hx.AsyncClient(timeout=5) as c:
                     r = await c.get(
                         "https://data-api.polymarket.com/activity",
@@ -4562,13 +5926,22 @@ class TradingLoop:
                     if not window:
                         continue
                     slug = window.slug
-                    his_up = [a for a in activity if slug in a.get("title", "") and "YES" in a.get("side", "")]
-                    his_down = [a for a in activity if slug in a.get("title", "") and "NO" in a.get("side", "")]
+                    his_up = [
+                        a
+                        for a in activity
+                        if slug in a.get("title", "") and "YES" in a.get("side", "")
+                    ]
+                    his_down = [
+                        a
+                        for a in activity
+                        if slug in a.get("title", "") and "NO" in a.get("side", "")
+                    ]
                     if not his_up and not his_down:
                         continue
                     try:
                         import uuid
                         from decimal import Decimal as _D
+
                         pos = state.early_position
                         self.dynamo._trades.meta.client.put_item(
                             TableName="competitor-shadow",
@@ -4579,13 +5952,32 @@ class TradingLoop:
                                 "timestamp": {"N": str(round(time.time(), 1))},
                                 "his_up_count": {"N": str(len(his_up))},
                                 "his_down_count": {"N": str(len(his_down))},
-                                "our_direction": {"S": ("UP" if pos["direction_up"] else "DOWN") if pos else ""},
-                                "divergence": {"BOOL": (bool(his_up) and bool(pos) and not pos["direction_up"]) or
-                                               (bool(his_down) and bool(pos) and pos["direction_up"])},
-                            }
+                                "our_direction": {
+                                    "S": ("UP" if pos["direction_up"] else "DOWN")
+                                    if pos
+                                    else ""
+                                },
+                                "divergence": {
+                                    "BOOL": (
+                                        bool(his_up)
+                                        and bool(pos)
+                                        and not pos["direction_up"]
+                                    )
+                                    or (
+                                        bool(his_down)
+                                        and bool(pos)
+                                        and pos["direction_up"]
+                                    )
+                                },
+                            },
                         )
-                        logger.info("shadow_tracked", asset=state.asset, slug=slug[-20:],
-                                    his_up=len(his_up), his_down=len(his_down))
+                        logger.info(
+                            "shadow_tracked",
+                            asset=state.asset,
+                            slug=slug[-20:],
+                            his_up=len(his_up),
+                            his_down=len(his_down),
+                        )
                     except Exception:
                         pass  # DynamoDB table may not exist yet — silent fail
             except Exception:
@@ -4602,13 +5994,17 @@ class TradingLoop:
         if len(state.early_activity_log) > 20:
             state.early_activity_log = state.early_activity_log[-20:]
 
-    def _write_live_state_async(self, state: AssetState, price: float, seconds_since_open: float):
+    def _write_live_state_async(
+        self, state: AssetState, price: float, seconds_since_open: float
+    ):
         """Write current state to DynamoDB for dashboard. Fire-and-forget."""
         try:
             if not self.dynamo or not self.dynamo._available:
                 return
             from decimal import Decimal
+
             import boto3
+
             pos = state.early_position
             window = state.tracker.current
 
@@ -4625,8 +6021,16 @@ class TradingLoop:
                 phase = "HOLD"
 
             # Compute combined avg
-            up_avg = (state.early_up_cost / state.early_up_shares) if state.early_up_shares > 0 else 0
-            down_avg = (state.early_down_cost / state.early_down_shares) if state.early_down_shares > 0 else 0
+            up_avg = (
+                (state.early_up_cost / state.early_up_shares)
+                if state.early_up_shares > 0
+                else 0
+            )
+            down_avg = (
+                (state.early_down_cost / state.early_down_shares)
+                if state.early_down_shares > 0
+                else 0
+            )
             combined = up_avg + down_avg if up_avg > 0 and down_avg > 0 else 0
             margin = round((1 - combined) * 100, 1) if 0 < combined < 1 else 0
 
@@ -4638,7 +6042,16 @@ class TradingLoop:
                 "phase": phase,
                 "slug": (window.slug if window else "") or "",
                 "direction": ("UP" if pos["direction_up"] else "DOWN") if pos else "",
-                "lgbm_prob": Decimal(str(round(self.model_server.predict(f"{state.asset}_5m", {}) if False else 0, 3))),
+                "lgbm_prob": Decimal(
+                    str(
+                        round(
+                            self.model_server.predict(f"{state.asset}_5m", {})
+                            if False
+                            else 0,
+                            3,
+                        )
+                    )
+                ),
                 "up_shares": Decimal(str(int(state.early_up_shares))),
                 "up_cost": Decimal(str(round(state.early_up_cost, 2))),
                 "up_avg": Decimal(str(round(up_avg, 4))),
@@ -4651,24 +6064,38 @@ class TradingLoop:
                 "yes_bid": Decimal(str(round(state.orderbook.yes_best_bid, 4))),
                 "no_ask": Decimal(str(round(state.orderbook.no_best_ask, 4))),
                 "no_bid": Decimal(str(round(state.orderbook.no_best_bid, 4))),
-                "open_orders": Decimal(str(len([o for o in state.early_dca_orders if not o.get("filled")]))),
-                "filled_orders": Decimal(str(len([o for o in state.early_dca_orders if o.get("filled")]))),
+                "open_orders": Decimal(
+                    str(len([o for o in state.early_dca_orders if not o.get("filled")]))
+                ),
+                "filled_orders": Decimal(
+                    str(len([o for o in state.early_dca_orders if o.get("filled")]))
+                ),
                 "main_filled": Decimal(str(round(state.early_main_filled, 2))),
                 "hedge_filled": Decimal(str(round(state.early_hedge_filled, 2))),
                 "cheap_filled": Decimal(str(self._v2_filled_notional(state))),
                 "cheap_reserved": Decimal(str(self._v2_reserved_open_order_usd(state))),
                 "cheap_committed": Decimal(str(self._v2_current_total_notional(state))),
-                "reserved_open_order_usd": Decimal(str(self._v2_reserved_open_order_usd(state))),
-                "filled_position_cost_usd": Decimal(str(self._v2_filled_position_cost_usd(state))),
+                "reserved_open_order_usd": Decimal(
+                    str(self._v2_reserved_open_order_usd(state))
+                ),
+                "filled_position_cost_usd": Decimal(
+                    str(self._v2_filled_position_cost_usd(state))
+                ),
                 "remaining_budget": Decimal(str(self._v2_remaining_budget(state))),
                 "max_bet_per_asset": Decimal(str(self._v2_max_bet_per_asset())),
                 "has_position": 1 if pos else 0,
-                "activity": state.early_activity_log[-20:] if state.early_activity_log else [],
+                "activity": state.early_activity_log[-20:]
+                if state.early_activity_log
+                else [],
             }
 
             # Fire and forget
             profile = "playground" if not os.getenv("AWS_EXECUTION_ENV") else None
-            _live_table = boto3.Session(profile_name=profile, region_name="eu-west-1").resource("dynamodb").Table("polymarket-bot-live-state")
+            _live_table = (
+                boto3.Session(profile_name=profile, region_name="eu-west-1")
+                .resource("dynamodb")
+                .Table("polymarket-bot-live-state")
+            )
             _live_table.put_item(Item=item)
         except Exception:
             pass  # Never slow down trading
@@ -4676,7 +6103,10 @@ class TradingLoop:
     def _get_macro_features(self) -> dict:
         """Get macro features for training data. Never fails — returns defaults if API down."""
         try:
-            return {k: round(v, 6) if isinstance(v, float) else v for k, v in self._macro.get_all().items()}
+            return {
+                k: round(v, 6) if isinstance(v, float) else v
+                for k, v in self._macro.get_all().items()
+            }
         except Exception:
             return {}
 
@@ -4684,7 +6114,9 @@ class TradingLoop:
         window = state.tracker.current
         if not window or not window.yes_token_id:
             if window:
-                logger.debug("orderbook_skip_no_token", asset=state.asset, slug=window.slug)
+                logger.debug(
+                    "orderbook_skip_no_token", asset=state.asset, slug=window.slug
+                )
             return
         now = time.time()
         if now - state.orderbook_age < 1.0:  # Max 1 refresh/second
@@ -4692,7 +6124,9 @@ class TradingLoop:
         state.orderbook_age = now
         try:
             yes_book = await get_orderbook(window.yes_token_id)
-            no_book = await get_orderbook(window.no_token_id) if window.no_token_id else {}
+            no_book = (
+                await get_orderbook(window.no_token_id) if window.no_token_id else {}
+            )
 
             snap = OrderbookSnapshot(timestamp=now)
             yes_asks = yes_book.get("asks", [])
@@ -4713,13 +6147,17 @@ class TradingLoop:
             if yes_bids:
                 snap.yes_best_bid = max(float(b["price"]) for b in yes_bids)
                 # Sum of top-3 bid sizes (sorted desc by price, take first 3)
-                top3_yes = sorted(yes_bids, key=lambda b: float(b["price"]), reverse=True)[:3]
+                top3_yes = sorted(
+                    yes_bids, key=lambda b: float(b["price"]), reverse=True
+                )[:3]
                 snap.yes_bid_depth = sum(float(b.get("size", 0)) for b in top3_yes)
             if no_asks:
                 snap.no_best_ask = min(float(a["price"]) for a in no_asks)
             if no_bids:
                 snap.no_best_bid = max(float(b["price"]) for b in no_bids)
-                top3_no = sorted(no_bids, key=lambda b: float(b["price"]), reverse=True)[:3]
+                top3_no = sorted(
+                    no_bids, key=lambda b: float(b["price"]), reverse=True
+                )[:3]
                 snap.no_bid_depth = sum(float(b.get("size", 0)) for b in top3_no)
             state.orderbook = snap
         except Exception as e:
