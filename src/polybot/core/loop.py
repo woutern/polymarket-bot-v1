@@ -3041,6 +3041,34 @@ class TradingLoop:
         buy_only_start = self._v2_buy_only_start_seconds()
         commit_start = self._v2_commit_start_seconds()
 
+        # Direction commitment at T+60: lock the allocation split so the bot
+        # stops chasing model flips mid-window.  Before T+60 the model can
+        # update the split freely.  At T+60 the current split is frozen and
+        # reused for the rest of the main phase + buy-only phase.
+        DIRECTION_LOCK_SECONDS = 60.0
+        if seconds_since_open >= DIRECTION_LOCK_SECONDS:
+            if "locked_up_pct" not in pos:
+                # First tick after lock point — freeze current allocation
+                pos["locked_prob_up"] = prob_up
+                pos["locked_up_pct"] = up_pct
+                pos["locked_down_pct"] = down_pct
+                pos["locked_budget_scale"] = budget_scale
+                logger.info(
+                    "v2_direction_locked",
+                    asset=state.asset,
+                    seconds=int(seconds_since_open),
+                    prob_up=round(prob_up, 3),
+                    up_pct=up_pct,
+                    down_pct=down_pct,
+                    budget_scale=round(budget_scale, 2),
+                )
+            else:
+                # After lock: use frozen values, ignore model flips
+                prob_up = pos.get("locked_prob_up", prob_up)
+                up_pct = pos.get("locked_up_pct", up_pct)
+                down_pct = pos.get("locked_down_pct", down_pct)
+                budget_scale = pos.get("locked_budget_scale", budget_scale)
+
         if seconds_since_open >= buy_only_start:
             if "late_phase_up_pct" not in pos:
                 pos["late_phase_prob_up"] = prob_up
@@ -3296,44 +3324,28 @@ class TradingLoop:
                 # pair-quality guardrails. This blocks "catch-up" fills like buying the
                 # missing side at 0.65 against an existing 0.52 fill in a weak-signal window.
                 if projected_pair_exists:
-                    strong_directional_edge = abs(prob_up - 0.50) >= 0.10
+                    edge = abs(prob_up - 0.50)
                     favored_side = (prob_up >= 0.50 and side_up) or (
                         prob_up < 0.50 and not side_up
                     )
-                    favored_hold_value = self._v2_side_hold_value(prob_up, side_up)
-                    bad_state_now = current_payout_floor >= 5 and (
-                        current_combined_avg > max_combined_avg + 1e-9
-                        or current_cost_above_floor > max_cost_above_floor + 1e-9
-                        or current_position_ev < -0.01
-                    )
-                    projected_within_limits = (
-                        projected_combined <= max_combined_avg + 1e-9
-                        and projected_cost_above_floor <= max_cost_above_floor + 1e-9
-                        and projected_position_ev >= -0.01
-                    )
-                    improving_bad_state = (
-                        current_payout_floor >= 5
-                        and lagging_side
-                        and projected_combined <= current_combined_avg + 1e-9
-                        and projected_cost_above_floor
-                        <= current_cost_above_floor + 1e-9
-                        and projected_position_ev >= current_position_ev - 1e-9
-                    )
-                    favored_directional_topup = (
-                        current_payout_floor >= 5
-                        and not bad_state_now
-                        and strong_directional_edge
-                        and favored_side
-                        and post_price <= favored_hold_value + 1e-9
-                        and projected_position_ev >= -0.01
-                    )
-                    if (bad_state_now and not improving_bad_state) or (
-                        not bad_state_now
-                        and not projected_within_limits
-                        and not favored_directional_topup
-                    ):
-                        pair_guard_skipped += 1
-                        continue
+
+                    # K9 rule: favored side buys are NEVER blocked by pair
+                    # guard when model has edge >= 0.08.  The cheap favored
+                    # side is where the profit comes from — blocking it is
+                    # what caused us to sit on $93 unused budget.
+                    if favored_side and edge >= 0.08:
+                        pass  # no pair guard — just buy it
+                    else:
+                        # Unfavored / weak-signal side still gets guarded
+                        projected_within_limits = (
+                            projected_combined <= max_combined_avg + 0.02
+                            and projected_cost_above_floor
+                            <= max_cost_above_floor + 0.50
+                            and projected_position_ev >= -0.10
+                        )
+                        if not projected_within_limits:
+                            pair_guard_skipped += 1
+                            continue
 
                 if not self._reserve_v2_budget(
                     state, notional, "exec_" + side.lower(), side
