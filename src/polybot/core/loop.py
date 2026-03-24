@@ -5074,7 +5074,28 @@ class TradingLoop:
         shares: int,
         cost_basis: float,
         sell_order: dict | None = None,
+        confirmed_sell: bool = False,
     ) -> None:
+        """Update inventory after a sell. Only call with confirmed_sell=True
+        when a real sell order was placed AND filled on the CLOB.
+
+        This guard prevents phantom inventory wipes from code paths that
+        call _early_sell speculatively or from paper-mode fallbacks.
+        """
+        if not confirmed_sell:
+            logger.warning(
+                "v2_apply_sell_fill_BLOCKED",
+                asset=state.asset,
+                sold_up=sold_up,
+                shares=shares,
+                cost_basis=round(cost_basis, 2),
+                up_before=int(state.early_up_shares),
+                down_before=int(state.early_down_shares),
+                reason="confirmed_sell=False — refusing to decrement inventory",
+            )
+            return
+        if shares <= 0:
+            return
         if sold_up:
             state.early_up_shares = max(state.early_up_shares - shares, 0)
             state.early_up_cost = max(state.early_up_cost - cost_basis, 0)
@@ -5149,7 +5170,14 @@ class TradingLoop:
                     sell_shares if sell_shares is not None else pos.get("shares", 0)
                 )
                 cost_basis = sell_cost if sell_cost is not None else pos.get("size", 0)
-                self._v2_apply_sell_fill(state, sold_up, shares, cost_basis, sell_order)
+                self._v2_apply_sell_fill(
+                    state,
+                    sold_up,
+                    shares,
+                    cost_basis,
+                    sell_order,
+                    confirmed_sell=True,
+                )
                 if (
                     int(state.early_up_shares) <= 0
                     and int(state.early_down_shares) <= 0
@@ -5292,7 +5320,12 @@ class TradingLoop:
                 # Update internal inventory to match executed reality
                 if inventory_aware:
                     self._v2_apply_sell_fill(
-                        state, sold_up, shares, cost_basis, sell_order
+                        state,
+                        sold_up,
+                        shares,
+                        cost_basis,
+                        sell_order,
+                        confirmed_sell=True,
                     )
                     if (
                         int(state.early_up_shares) <= 0
@@ -5360,7 +5393,12 @@ class TradingLoop:
                 # Update internal inventory
                 if inventory_aware:
                     self._v2_apply_sell_fill(
-                        state, sold_up, shares, cost_basis_gtc, sell_order
+                        state,
+                        sold_up,
+                        shares,
+                        cost_basis_gtc,
+                        sell_order,
+                        confirmed_sell=True,
                     )
                     if (
                         int(state.early_up_shares) <= 0
