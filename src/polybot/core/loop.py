@@ -3231,7 +3231,11 @@ class TradingLoop:
         desired_prices_by_side: dict[str, list[float]] = {"UP": [], "DOWN": []}
 
         late_buy_only = seconds_since_open >= buy_only_start
-        base_offsets = [0.01, 0.03] if late_buy_only else [0.00, 0.01, 0.02]
+        base_offsets = (
+            [0.01, 0.03, 0.05]
+            if late_buy_only
+            else [0.00, 0.01, 0.02, 0.04, 0.06, 0.08]
+        )
         hard_cap_skipped = 0
         for side_up, token_id, bid, side_budget, pct in [
             (True, window.yes_token_id, yes_bid, 0.0, up_pct),
@@ -3243,7 +3247,7 @@ class TradingLoop:
                 hard_cap_skipped += 1
                 continue
             side = "UP" if side_up else "DOWN"
-            levels = 3 if pct >= 0.70 else (2 if pct >= 0.50 else 1)
+            levels = 6 if pct >= 0.60 else (4 if pct >= 0.40 else 2)
             if late_buy_only:
                 levels = min(levels, len(base_offsets))
             desired_prices: list[float] = []
@@ -3337,7 +3341,7 @@ class TradingLoop:
             if bid > HARD_CAP_PRICE:
                 continue
             side = "UP" if side_up else "DOWN"
-            levels = 3 if pct >= 0.70 else (2 if pct >= 0.50 else 1)
+            levels = 6 if pct >= 0.60 else (4 if pct >= 0.40 else 2)
             if late_buy_only:
                 levels = min(levels, len(base_offsets))
 
