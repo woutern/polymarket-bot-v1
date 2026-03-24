@@ -1040,9 +1040,9 @@ class TradingLoop:
     ) -> bool:
         """Detect complete pairs that are bad enough to justify trimming a rich side."""
         return (
-            current_combined_avg > max_combined_avg + 0.01
-            or current_cost_above_floor > max_cost_above_floor + 0.10
-            or current_position_ev < -0.02
+            current_combined_avg > max_combined_avg + 0.02
+            or current_cost_above_floor > max_cost_above_floor + 0.15
+            or current_position_ev < -0.05
         )
 
     def _v2_budget_curve_pct(self, seconds_since_open: float) -> float:
@@ -3613,7 +3613,12 @@ class TradingLoop:
                         }
                     )
 
-            if not sell_candidates and bad_pair_now and current_position_ev < 0.20:
+            if (
+                not sell_candidates
+                and bad_pair_now
+                and current_position_ev < 0.20
+                and current_combined_avg > 1.01
+            ):
                 total_shares_now = int(state.early_up_shares) + int(
                     state.early_down_shares
                 )
@@ -3664,15 +3669,28 @@ class TradingLoop:
                     )
 
             if sell_candidates:
-                sell_candidates.sort(
-                    key=lambda item: (
+                # For BAD_PAIR: prefer selling the side with higher avg price
+                # (the expensive side pushing combined above 1.00).
+                # For PAYOUT_FLOOR: prefer selling excess with best edge_over_hold.
+                def _sell_sort_key(item):
+                    if item.get("reason") == "BAD_PAIR":
+                        # Prefer the side with higher avg — that's the one hurting the pair
+                        side_avg = (
+                            current_up_avg if item["side_up"] else current_down_avg
+                        )
+                        return (
+                            side_avg,  # higher avg = sell this one first
+                            item.get("ev_improvement", 0.0),
+                            item.get("cost_improvement", 0.0),
+                        )
+                    return (
                         item.get("ev_improvement", item["edge_over_hold"]),
                         item.get("cost_improvement", 0.0),
                         item["excess_shares"],
                         item["edge_over_hold"],
-                    ),
-                    reverse=True,
-                )
+                    )
+
+                sell_candidates.sort(key=_sell_sort_key, reverse=True)
                 sell_side = sell_candidates[0]
                 sell_side_up = sell_side["side_up"]
                 sell_bid = sell_side["bid"]
