@@ -11,7 +11,6 @@ import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from functools import partial
 
 import structlog
 
@@ -22,18 +21,16 @@ from polybot.feeds.coinbase_ws import CoinbaseWS
 from polybot.feeds.polymarket_rest import get_orderbook
 from polybot.feeds.rtds_ws import (
     RTDSClient,
-    compute_oracle_probability,
     compute_realized_vol,
 )
 from polybot.market.market_resolver import resolve_window
-from polybot.market.window_tracker import WindowState, WindowTracker
+from polybot.market.window_tracker import WindowTracker
 from polybot.models import Direction, OrderbookSnapshot, Window
 from polybot.risk.manager import RiskManager
 from polybot.storage.db import Database
 from polybot.storage.dynamo import DynamoStore
 from polybot.strategy.base_rate import BaseRateTable
 from polybot.strategy.bayesian import BayesianUpdater
-from polybot.strategy.directional import generate_directional_signal
 
 logger = structlog.get_logger()
 
@@ -2092,6 +2089,10 @@ class TradingLoop:
                 btc_open = btc_state.tracker.current.open_price
                 if btc_open > 0:
                     btc_move = (btc_price - btc_open) / btc_open * 100
+
+        btc_confirms = (pct_move >= 0 and btc_move > 0.01) or (
+            pct_move < 0 and btc_move < -0.01
+        )
 
         await self._refresh_orderbook(state)
         current_ask = (
@@ -4660,6 +4661,7 @@ class TradingLoop:
         token_id = pos["token_id"]
         if not token_id:
             return
+        actual_notional_usd = 0.0
         try:
             from py_clob_client.clob_types import (
                 CreateOrderOptions,
