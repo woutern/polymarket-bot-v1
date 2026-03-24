@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import structlog
 
+from polybot.config import Settings
 from polybot.core.mm_loop import MMLoop
 
 
@@ -131,6 +132,8 @@ async def _main() -> None:
     print("  Ctrl+C to stop after current window")
     print()
 
+    settings = Settings()
+
     loop_obj = MMLoop(
         pair=args.pair,
         mode=mode,
@@ -138,6 +141,7 @@ async def _main() -> None:
         model_server=model_server,
         max_windows=args.windows,
         controls=controls,
+        settings=settings,
     )
 
     # Handle Ctrl+C gracefully — stop after current window
