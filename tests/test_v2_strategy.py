@@ -45,7 +45,7 @@ def _make_window(
     return w
 
 
-def _make_orderbook(yes_bid=0.32, no_bid=0.68, yes_ask=0.34, no_ask=0.70):
+def _make_orderbook(yes_bid=0.45, no_bid=0.45, yes_ask=0.47, no_ask=0.47):
     ob = OrderbookSnapshot()
     ob.yes_best_bid = yes_bid
     ob.no_best_bid = no_bid
@@ -297,7 +297,7 @@ class TestBothSidesAccumulation:
 
         bot.trader.client.create_order = track_create
 
-        # T+90s: after T+60s gate, winning side (no_bid=0.68) fires
+        # T+90s: after T+60s gate, both sides fire (mid-zone bids)
         with patch.object(bot, "_log_activity", MagicMock()):
             await bot._v2_accumulate_cheap(state, 50_000.0, seconds_since_open=90.0)
 
@@ -1782,10 +1782,10 @@ class TestLGBMConfidenceSplit:
         with patch.object(bot, "_log_activity"):
             await bot._v2_open_position(state, 50_000.0)
         # open_budget = 50 * 0.10 = $5.00; up_pct=0.70, down_pct=0.30
-        # UP: yes_bid=0.32, post at 0.33, target=$3.50 → shares=max(round(3.50/0.33),5)=11, cost=11*0.33=$3.63
-        _, up_cost = _actual_order_cost(3.50, 0.33)
-        # DOWN: no_bid=0.68, post at 0.69, target=$1.50 → shares=max(round(1.50/0.69),5)=5, cost=5*0.69=$3.45
-        _, down_cost = _actual_order_cost(1.50, 0.69)
+        # UP: yes_bid=0.45, post at 0.46, target=$3.50 → shares=max(round(3.50/0.46),5)=8, cost=8*0.46=$3.68
+        _, up_cost = _actual_order_cost(3.50, 0.46)
+        # DOWN: no_bid=0.45, post at 0.46, target=$1.50 → shares=max(round(1.50/0.46),5)=5, cost=5*0.46=$2.30
+        _, down_cost = _actual_order_cost(1.50, 0.46)
         expected_open_spend = round(up_cost + down_cost, 2)
         assert abs(state.early_reserved_notional - expected_open_spend) < 0.01, (
             f"early_reserved_notional={state.early_reserved_notional}, expected {expected_open_spend}"
@@ -2147,25 +2147,25 @@ class TestExecutionSafety:
         window = _make_window()
         state = _make_state(window=window)
         state.orderbook = _make_orderbook(
-            yes_bid=0.34, no_bid=0.64, yes_ask=0.35, no_ask=0.65
+            yes_bid=0.40, no_bid=0.52, yes_ask=0.41, no_ask=0.53
         )
         state.early_position = {
             "slug": "early_btc-updown-5m-1000000",
             "token_id": "yes123",
             "hedge_token": "no456",
-            "shares": 10,
-            "entry_price": 0.52,
-            "hedge_entry_price": 0.48,
+            "shares": 20,
+            "entry_price": 0.54,
+            "hedge_entry_price": 0.60,
             "direction_up": False,
             "side": "NO",
-            "size": 5.0,
+            "size": 11.40,
         }
-        state.early_up_shares = 5
-        state.early_up_cost = 2.6
-        state.early_down_shares = 5
-        state.early_down_cost = 2.4
-        state.filled_position_cost_usd = 5.0
-        state.early_filled_notional = 5.0
+        state.early_up_shares = 10
+        state.early_up_cost = 5.40
+        state.early_down_shares = 10
+        state.early_down_cost = 6.00
+        state.filled_position_cost_usd = 11.40
+        state.early_filled_notional = 11.40
 
         await bot._v2_execution_tick(state, 50_000.0, 120.0)
 
@@ -2466,25 +2466,25 @@ class TestExecutionSafety:
         window = _make_window()
         state = _make_state(window=window)
         state.orderbook = _make_orderbook(
-            yes_bid=0.47, no_bid=0.65, yes_ask=0.48, no_ask=0.66
+            yes_bid=0.40, no_bid=0.52, yes_ask=0.41, no_ask=0.53
         )
         state.early_position = {
             "slug": "early_btc-updown-5m-1000000",
             "token_id": "yes123",
             "hedge_token": "no456",
-            "shares": 10,
-            "entry_price": 0.47,
-            "hedge_entry_price": 0.58,
+            "shares": 20,
+            "entry_price": 0.54,
+            "hedge_entry_price": 0.60,
             "direction_up": False,
             "side": "NO",
-            "size": 5.25,
+            "size": 11.40,
         }
-        state.early_up_shares = 5
-        state.early_up_cost = 2.35
-        state.early_down_shares = 5
-        state.early_down_cost = 2.90
-        state.filled_position_cost_usd = 5.25
-        state.early_filled_notional = 5.25
+        state.early_up_shares = 10
+        state.early_up_cost = 5.40
+        state.early_down_shares = 10
+        state.early_down_cost = 6.00
+        state.filled_position_cost_usd = 11.40
+        state.early_filled_notional = 11.40
 
         await bot._v2_execution_tick(state, 50_000.0, 120.0)
 

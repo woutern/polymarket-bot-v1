@@ -150,6 +150,9 @@ class AssetState:
     early_confirm_done: bool = False  # Phase 2 T+15s confirm fired for this window
     early_last_fill_ts: float = 0.0  # epoch time of last fill (for no-fill kicker)
     v2_last_sell_ts: float = 0.0  # epoch time of last sell (60s cooldown)
+    v2_last_sell_side_up: bool | None = None  # which side was last sold
+    v2_last_sell_price_up: float = 0.0  # price we last sold UP at
+    v2_last_sell_price_down: float = 0.0  # price we last sold DOWN at
     v2_last_rescue_ts: float = 0.0  # epoch time of last incomplete-pair rescue repost
 
 
@@ -827,12 +830,19 @@ class TradingLoop:
         return 1.06, 2.00
 
     def _v2_expensive_side_price_cap(self, seconds_since_open: float) -> float:
-        """Tighten the maximum acceptable rich-side price later in the window."""
-        if seconds_since_open >= 180:
-            return 0.75
+        """Tighten the maximum acceptable rich-side price later in the window.
+
+        Core rule: never buy above 55c on either side.  In a binary market
+        where UP + DOWN ≈ $1.00, anything above 50c is the expensive side.
+        We allow up to 55c to handle the open phase where both sides are
+        near 50c, but after that we should be selling the expensive side,
+        not buying it.
+        """
         if seconds_since_open >= 120:
-            return 0.78
-        return 0.82
+            return 0.50
+        if seconds_since_open >= 60:
+            return 0.52
+        return 0.55
 
     def _v2_incomplete_pair_rescue_price(
         self, bid: float, ask: float, hard_cap: float
@@ -2452,7 +2462,7 @@ class TradingLoop:
 
         yes_bid = state.orderbook.yes_best_bid
         no_bid = state.orderbook.no_best_bid
-        HARD_CAP_PRICE = 0.90
+        HARD_CAP_PRICE = 0.55
 
         # Model-weighted allocation for open phase
         up_pct, down_pct = self._v2_allocation_split(lgbm_raw)
@@ -2984,7 +2994,7 @@ class TradingLoop:
             return
 
         max_bet = self._v2_max_bet_per_asset()
-        HARD_CAP_PRICE = 0.90
+        HARD_CAP_PRICE = 0.55
 
         # ── 1. MODEL → ALLOCATION SPLIT ───────────────────────────────────
         import math as _math
@@ -3090,7 +3100,70 @@ class TradingLoop:
                 down_pct = pos.get("late_phase_down_pct", down_pct)
                 budget_scale = pos.get("late_phase_budget_scale", budget_scale)
 
-        # ── 2. COMMITMENT CHECK (T >= 250) ────────────────────────────────
+        # ── 2a. LATE-WINDOW DUMP (T+210 to T+250) ────────────────────────
+        # Sell near-worthless losing shares before commit. Even 3c per share
+        # is better than $0 at resolution.
+        LATE_DUMP_START = 210.0
+        if LATE_DUMP_START <= seconds_since_open < commit_start:
+            last_sell_ts = getattr(state, "v2_last_sell_ts", 0.0)
+            dump_cooldown_ok = (
+                (time.time() - last_sell_ts) >= 15.0 if last_sell_ts > 0 else True
+            )
+            if dump_cooldown_ok:
+                for side_up, shares, bid in [
+                    (True, int(state.early_up_shares), yes_bid),
+                    (False, int(state.early_down_shares), no_bid),
+                ]:
+                    if shares < 5 or bid <= 0 or bid >= 0.10:
+                        continue  # not worthless, or no shares
+                    # Find a lot to sell
+                    for order in state.early_dca_orders:
+                        if not order.get("filled"):
+                            continue
+                        side = self._v2_normalized_order_side(state, order)
+                        if (side == "UP") != side_up:
+                            continue
+                        inv_shares = self._v2_order_inventory_shares(order)
+                        if inv_shares < 5:
+                            continue
+                        sell_shares = min(inv_shares, 5)
+                        inv_notional = self._v2_order_inventory_notional(order)
+                        unit_cost = inv_notional / inv_shares if inv_shares > 0 else 0.0
+                        sell_cost = round(sell_shares * unit_cost, 2)
+                        sell_token = (
+                            window.yes_token_id if side_up else window.no_token_id
+                        )
+                        proceeds = await self._early_sell(
+                            state,
+                            pos,
+                            bid,
+                            "LATE_DUMP",
+                            sell_shares=sell_shares,
+                            sell_cost=sell_cost,
+                            sell_token_id=sell_token,
+                            sell_side_up=side_up,
+                            sell_order=order,
+                        )
+                        if proceeds and proceeds > 0:
+                            state.v2_last_sell_ts = time.time()
+                            state.v2_last_sell_side_up = side_up
+                            if side_up:
+                                state.v2_last_sell_price_up = bid
+                            else:
+                                state.v2_last_sell_price_down = bid
+                            logger.info(
+                                "v2_late_dump",
+                                asset=state.asset,
+                                side="UP" if side_up else "DOWN",
+                                shares=sell_shares,
+                                bid=round(bid, 3),
+                                proceeds=round(proceeds, 2),
+                                seconds=int(seconds_since_open),
+                            )
+                            await self._v2_poll_fills(state)
+                        break  # one sell per tick max
+
+        # ── 2b. COMMITMENT CHECK (T >= 250) ───────────────────────────────
         if seconds_since_open >= commit_start:
             cancel_fn = self._v2_cancel_client()
             cancelled = 0
@@ -3277,6 +3350,19 @@ class TradingLoop:
 
                 notional = round(base_shares * post_price, 2)
                 if notional > side_budget:
+                    continue
+
+                # Anti-churn: don't buy a side above the price we last sold it at.
+                # This prevents the buy-sell-buy-sell loop where we buy DOWN at 58c,
+                # sell at 49c, then immediately buy again at 56c.
+                # Only buy back CHEAPER than what we sold for.
+                last_sell_price = (
+                    getattr(state, "v2_last_sell_price_up", 0.0)
+                    if side_up
+                    else getattr(state, "v2_last_sell_price_down", 0.0)
+                )
+                if last_sell_price > 0 and post_price >= last_sell_price:
+                    pair_guard_skipped += 1
                     continue
 
                 side_shares = (
@@ -3571,6 +3657,11 @@ class TradingLoop:
                         sell_fired = True
                         sell_reason = "ORPHAN_SALVAGE"
                         state.v2_last_sell_ts = time.time()
+                        state.v2_last_sell_side_up = salvage_side_up
+                        if salvage_side_up:
+                            state.v2_last_sell_price_up = filled_bid
+                        else:
+                            state.v2_last_sell_price_down = filled_bid
                         await self._v2_poll_fills(state)
 
         # ── 6. SELL-AND-RECOVER (T+60 to T+180 only) ────────────────────
@@ -3810,6 +3901,11 @@ class TradingLoop:
                     if proceeds and proceeds > 0:
                         sell_fired = True
                         state.v2_last_sell_ts = time.time()
+                        state.v2_last_sell_side_up = sell_side_up
+                        if sell_side_up:
+                            state.v2_last_sell_price_up = sell_bid
+                        else:
+                            state.v2_last_sell_price_down = sell_bid
                         await self._v2_poll_fills(state)
 
         # ── 7. LOG ────────────────────────────────────────────────────────
@@ -5380,6 +5476,9 @@ class TradingLoop:
         state.early_confirm_done = False
         state.early_last_fill_ts = 0.0
         state.v2_last_sell_ts = 0.0
+        state.v2_last_sell_side_up = None
+        state.v2_last_sell_price_up = 0.0
+        state.v2_last_sell_price_down = 0.0
         state.v2_last_rescue_ts = 0.0
         logger.info(
             "window_opened",
