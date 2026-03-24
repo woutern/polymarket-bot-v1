@@ -3613,6 +3613,41 @@ class TradingLoop:
                         }
                     )
 
+            # UNFAVORED_RICH: sell the expensive unfavored side when model is confident
+            # This is the K9 "sell losers to fund winners" mechanic
+            if not sell_candidates and normal_sell_window:
+                edge = abs(prob_up - 0.50)
+                if edge >= 0.10:  # model is at least 60/40 confident
+                    favored_up = prob_up >= 0.50
+                    for side_up, shares, bid, avg in [
+                        (True, int(state.early_up_shares), yes_bid, current_up_avg),
+                        (False, int(state.early_down_shares), no_bid, current_down_avg),
+                    ]:
+                        # Only sell the UNFAVORED side
+                        if side_up == favored_up:
+                            continue
+                        # Must have shares and decent bid
+                        if shares < 5 or bid < 0.10:
+                            continue
+                        # Only sell if this side's avg is expensive (>0.55)
+                        if avg < 0.55:
+                            continue
+                        # Keep at least 5 shares as hedge
+                        if shares - 5 < 5 and shares > 5:
+                            continue
+                        sell_candidates.append(
+                            {
+                                "side_up": side_up,
+                                "side": "UP" if side_up else "DOWN",
+                                "bid": bid,
+                                "excess_shares": shares,
+                                "edge_over_hold": round(
+                                    bid - self._v2_side_hold_value(prob_up, side_up), 3
+                                ),
+                                "reason": "UNFAVORED_RICH",
+                            }
+                        )
+
             if (
                 not sell_candidates
                 and bad_pair_now
