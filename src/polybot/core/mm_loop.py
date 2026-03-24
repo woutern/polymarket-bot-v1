@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import time
 from collections import deque
@@ -208,6 +209,13 @@ class MMLoop:
             if result:
                 self._results.append(result)
                 _log_result(result, window_id)
+
+            # Heartbeat for ECS health check
+            try:
+                with open("/tmp/heartbeat", "w") as _hb:
+                    _hb.write(str(time.time()))
+            except OSError:
+                pass
 
             # Wait until the next 5-min boundary (with a small buffer)
             now = time.time()

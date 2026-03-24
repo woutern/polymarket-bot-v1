@@ -1,12 +1,15 @@
 #!/bin/sh
-# Start bot + dashboard + opportunity scanner together in the same container.
+# Start MM bot + dashboard + opportunity scanner together in the same container.
+# MM bot runs V2 both-sides strategy in live mode (credentials from env/Secrets Manager).
 # Dashboard reads from DynamoDB on AWS (auto-detected when no local SQLite).
-# Bot writes to SQLite + DynamoDB mirror.
 
 set -e
 
-echo "Starting Polymarket Bot..."
-.venv/bin/python scripts/run.py &
+# Write initial heartbeat so ECS health check passes during startup
+python3 -c "import time; open('/tmp/heartbeat','w').write(str(time.time()))"
+
+echo "Starting MarketMaker Bot (V2 both-sides, live)..."
+PYTHONPATH=/app/src .venv/bin/python scripts/run_mm.py --live --yes --budget "${MM_BUDGET:-80}" &
 BOT_PID=$!
 
 echo "Starting Dashboard on port 8888..."

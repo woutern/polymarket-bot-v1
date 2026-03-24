@@ -68,6 +68,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--model", action="store_true", help="Load LightGBM model from S3 (needs AWS)")
     p.add_argument("--windows", type=int, default=None, help="Stop after N windows (default: forever)")
     p.add_argument("--verbose", action="store_true", help="Debug logging")
+    p.add_argument("--yes", action="store_true", help="Skip live trading confirmation (for container/CI use)")
     return p.parse_args()
 
 
@@ -94,7 +95,7 @@ async def _main() -> None:
 
     mode = "live" if args.live else "paper"
 
-    if mode == "live":
+    if mode == "live" and not args.yes:
         print()
         print("=" * 55)
         print("  WARNING: LIVE MODE — REAL MONEY AT RISK")
