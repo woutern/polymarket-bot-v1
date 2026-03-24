@@ -734,7 +734,7 @@ class TradingLoop:
         return 250.0
 
     def _v2_sell_cooldown_seconds(self) -> float:
-        return 30.0
+        return 10.0
 
     def _v2_rescue_retry_seconds(self) -> float:
         return 15.0
@@ -838,11 +838,13 @@ class TradingLoop:
         near 50c, but after that we should be selling the expensive side,
         not buying it.
         """
+        if seconds_since_open >= 180:
+            return 0.65
         if seconds_since_open >= 120:
-            return 0.50
+            return 0.70
         if seconds_since_open >= 60:
-            return 0.52
-        return 0.55
+            return 0.75
+        return 0.82
 
     def _v2_incomplete_pair_rescue_price(
         self, bid: float, ask: float, hard_cap: float
@@ -2462,7 +2464,7 @@ class TradingLoop:
 
         yes_bid = state.orderbook.yes_best_bid
         no_bid = state.orderbook.no_best_bid
-        HARD_CAP_PRICE = 0.55
+        HARD_CAP_PRICE = 0.82
 
         # Model-weighted allocation for open phase
         up_pct, down_pct = self._v2_allocation_split(lgbm_raw)
@@ -2994,7 +2996,7 @@ class TradingLoop:
             return
 
         max_bet = self._v2_max_bet_per_asset()
-        HARD_CAP_PRICE = 0.55
+        HARD_CAP_PRICE = 0.82
 
         # ── 1. MODEL → ALLOCATION SPLIT ───────────────────────────────────
         import math as _math
@@ -3352,18 +3354,21 @@ class TradingLoop:
                 if notional > side_budget:
                     continue
 
-                # Anti-churn: don't buy a side above the price we last sold it at.
-                # This prevents the buy-sell-buy-sell loop where we buy DOWN at 58c,
-                # sell at 49c, then immediately buy again at 56c.
-                # Only buy back CHEAPER than what we sold for.
-                last_sell_price = (
-                    getattr(state, "v2_last_sell_price_up", 0.0)
-                    if side_up
-                    else getattr(state, "v2_last_sell_price_down", 0.0)
+                # Anti-churn: only block UNFAVORED side from rebuying above
+                # last sell price. The favored side (model direction) can buy
+                # at any price up to HARD_CAP — K9 buys winning side at 60-80c.
+                favored_side = (prob_up >= 0.50 and side_up) or (
+                    prob_up < 0.50 and not side_up
                 )
-                if last_sell_price > 0 and post_price >= last_sell_price:
-                    pair_guard_skipped += 1
-                    continue
+                if not favored_side:
+                    last_sell_price = (
+                        getattr(state, "v2_last_sell_price_up", 0.0)
+                        if side_up
+                        else getattr(state, "v2_last_sell_price_down", 0.0)
+                    )
+                    if last_sell_price > 0 and post_price >= last_sell_price:
+                        pair_guard_skipped += 1
+                        continue
 
                 side_shares = (
                     int(state.early_up_shares)
