@@ -451,7 +451,9 @@ class TestSyncLiveFills:
         o.filled_shares = filled_shares
         o.price = price
         o.filled_price = filled_price
-        o._synced = synced
+        # _synced_shares tracks how many shares have already been applied to position.
+        # synced=True means all filled_shares were already applied (no double-counting).
+        o._synced_shares = filled_shares if synced else 0
         return o
 
     def _live_runner_with_orders(self, orders: dict):
@@ -480,12 +482,21 @@ class TestSyncLiveFills:
         runner._sync_live_fills()
         runner.engine.position.sell.assert_called_once_with(True, 5, 0.70)
 
-    def test_non_terminal_order_skipped(self):
-        order = self._make_order("OPEN", "YES", "BUY", filled_shares=10)
+    def test_non_terminal_order_with_no_fills_skipped(self):
+        # LIVE order with 0 filled shares — nothing to sync yet
+        order = self._make_order("OPEN", "YES", "BUY", filled_shares=0)
         runner = self._live_runner_with_orders({"o1": order})
         runner.engine.position.buy = MagicMock()
         runner._sync_live_fills()
         runner.engine.position.buy.assert_not_called()
+
+    def test_partial_fill_on_live_order_applied(self):
+        # LIVE order with 3 of 5 shares filled — partial fill must be applied immediately
+        order = self._make_order("OPEN", "YES", "BUY", filled_shares=3, price=0.55)
+        runner = self._live_runner_with_orders({"o1": order})
+        runner.engine.position.buy = MagicMock()
+        runner._sync_live_fills()
+        runner.engine.position.buy.assert_called_once_with(True, 3, 0.55)
 
     def test_zero_filled_shares_skipped(self):
         from polybot.execution.mm_live_client import _TERMINAL

@@ -34,9 +34,9 @@ logger = logging.getLogger(__name__)
 _TICK_TTL_SECONDS = 7 * 24 * 3600   # 7 days
 _REGION = "eu-west-1"
 
-_TABLE_TICKS = "polymarket-mm-ticks"
-_TABLE_WINDOWS = "polymarket-mm-windows"
-_TABLE_POSITIONS = "polymarket-mm-positions"
+_TABLE_TICKS = "polymarket-bot-v2-ticks"
+_TABLE_WINDOWS = "polymarket-bot-v2-windows"
+_TABLE_POSITIONS = "polymarket-bot-v2-positions"
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────

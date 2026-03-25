@@ -257,19 +257,13 @@ async def run_smoke_tests(settings) -> SmokeTestResult:
                     _started = _t.get("startedAt", "?")
                     _task_info.append(f"{_td.split('/')[-1]} started={_started}")
 
-                if len(_task_defs) > 1:
-                    # CRITICAL: multiple task definitions = old + new code running together
+                if len(_task_arns) > 1:
+                    # CRITICAL: any duplicate task = hard stop, same version or not.
+                    # Two tasks = two bots trading the same wallet = double deploys.
                     result.fail(
                         "duplicate_tasks",
-                        f"HALT: {len(_task_arns)} tasks on {len(_task_defs)} different task-defs! "
-                        f"Rogue task will cause wrong sizing. Tasks: {_task_info}"
-                    )
-                elif len(_task_arns) > 1:
-                    # Same task-def but multiple tasks — likely rolling deploy, warn only
-                    result.warn(
-                        "multiple_tasks",
-                        f"{len(_task_arns)} tasks running (same task-def — likely rolling deploy). "
-                        f"Dedup should protect, but monitor closely."
+                        f"HALT: {len(_task_arns)} tasks running ({len(_task_defs)} task-def(s)). "
+                        f"Two bots = double capital deployed. Tasks: {_task_info}"
                     )
                 else:
                     result.ok("single_task")

@@ -36,6 +36,61 @@ TASK_DEF_ARN=$(aws ecs register-task-definition \
   --output text)
 echo "==> Registered ${TASK_DEF_ARN}"
 
+echo "==> Killing any orphaned tasks (not owned by the service)..."
+# List ALL running tasks in the cluster
+ALL_TASKS=$(aws ecs list-tasks \
+  --cluster "${ECS_CLUSTER}" \
+  --region "${REGION}" \
+  --profile "${PROFILE}" \
+  --query 'taskArns' \
+  --output json 2>/dev/null || echo "[]")
+
+# List tasks owned by the service
+SERVICE_TASKS=$(aws ecs list-tasks \
+  --cluster "${ECS_CLUSTER}" \
+  --service-name "${ECS_SERVICE}" \
+  --region "${REGION}" \
+  --profile "${PROFILE}" \
+  --query 'taskArns' \
+  --output json 2>/dev/null || echo "[]")
+
+# Find orphans = all tasks minus service tasks
+ORPHANS=$(python3 -c "
+import json, sys
+all_tasks = json.loads('${ALL_TASKS}')
+svc_tasks = json.loads('${SERVICE_TASKS}')
+orphans = [t for t in all_tasks if t not in svc_tasks]
+print('\n'.join(orphans))
+" 2>/dev/null || true)
+
+if [ -n "${ORPHANS}" ]; then
+  echo "    ⚠ Found orphaned tasks — stopping them now:"
+  while IFS= read -r ORPHAN_ARN; do
+    [ -z "${ORPHAN_ARN}" ] && continue
+    ORPHAN_ID="${ORPHAN_ARN##*/}"
+    # Get task def for logging
+    ORPHAN_DEF=$(aws ecs describe-tasks \
+      --cluster "${ECS_CLUSTER}" \
+      --tasks "${ORPHAN_ARN}" \
+      --region "${REGION}" \
+      --profile "${PROFILE}" \
+      --query 'tasks[0].taskDefinitionArn' \
+      --output text 2>/dev/null || echo "unknown")
+    echo "    Stopping ${ORPHAN_ID:0:12} (task-def ${ORPHAN_DEF##*:})"
+    aws ecs stop-task \
+      --cluster "${ECS_CLUSTER}" \
+      --task "${ORPHAN_ARN}" \
+      --reason "Orphaned task killed by deploy_aws.sh" \
+      --region "${REGION}" \
+      --profile "${PROFILE}" \
+      --query 'task.lastStatus' \
+      --output text 2>/dev/null || true
+  done <<< "${ORPHANS}"
+  echo "    ✅ All orphans stopped."
+else
+  echo "    ✅ No orphaned tasks found."
+fi
+
 echo "==> Forcing new ECS deployment with desired-count=1..."
 aws ecs update-service \
   --cluster "${ECS_CLUSTER}" \
@@ -163,6 +218,21 @@ except:
   else
     echo "==> ⏳ No startup log yet — bot may still be initializing"
   fi
+fi
+
+echo ""
+echo "==> Final orphan check (cluster-wide)..."
+FINAL_ALL=$(aws ecs list-tasks \
+  --cluster "${ECS_CLUSTER}" \
+  --region "${REGION}" \
+  --profile "${PROFILE}" \
+  --query 'taskArns' \
+  --output json 2>/dev/null || echo "[]")
+FINAL_COUNT=$(python3 -c "import json; print(len(json.loads('${FINAL_ALL}')))" 2>/dev/null || echo "?")
+if [ "${FINAL_COUNT}" -eq 1 ] 2>/dev/null; then
+  echo "    ✅ Exactly 1 task running in cluster — clean."
+else
+  echo "    ⚠ ${FINAL_COUNT} tasks in cluster — check for orphans manually!"
 fi
 
 echo ""

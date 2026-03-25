@@ -1,0 +1,1171 @@
+[20:37:04.296] ======================================================================
+[20:37:04.296] BTC 5m ARB SCANNER v3
+[20:37:04.296] Threshold: YES_buy + NO_buy < $0.990
+[20:37:04.296] Poll interval: 100ms
+[20:37:04.296] Duration: 5 minutes
+[20:37:04.296] ======================================================================
+[20:37:04.450] CLOB API latency: 51.3ms (avg of 3)
+[20:37:04.450] ⚠️  High latency — you're not co-located. Run from AWS eu-west-1 for <10ms.
+[20:37:04.450] 
+[20:37:04.450] Scanning... (Ctrl+C to stop)
+[20:37:04.450] 
+[20:37:04.472] 📊 Bitcoin Up or Down - March 24, 4:35PM-4:40PM ET
+[20:37:04.472]    YES: 50479080100328806697...
+[20:37:04.472]    NO:  13678910416501368810...
+[20:37:04.472] 
+[20:37:04.591] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:04.711] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:04.834] 🎯 ARB #1 | T+124s | YES=$0.780 + NO=$0.200 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=123ms
+[20:37:04.834] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:05.122]    └─ closed after 288ms
+[20:37:05.122] 🔄 SELL ARB | YES_sell=$0.830 + NO_sell=$0.180 = $1.0100 | spread=$0.0100
+[20:37:05.246] 🔄 SELL ARB | YES_sell=$0.830 + NO_sell=$0.180 = $1.0100 | spread=$0.0100
+[20:37:05.360] 🔄 SELL ARB | YES_sell=$0.830 + NO_sell=$0.180 = $1.0100 | spread=$0.0100
+[20:37:05.477] 🔄 SELL ARB | YES_sell=$0.830 + NO_sell=$0.180 = $1.0100 | spread=$0.0100
+[20:37:05.591] 🎯 ARB #2 | T+125s | YES=$0.820 + NO=$0.160 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=113ms
+[20:37:05.591] 🔄 SELL ARB | YES_sell=$0.840 + NO_sell=$0.170 = $1.0100 | spread=$0.0100
+[20:37:05.705]    └─ closed after 114ms
+[20:37:05.705] 🔄 SELL ARB | YES_sell=$0.840 + NO_sell=$0.170 = $1.0100 | spread=$0.0100
+[20:37:05.822] 🔄 SELL ARB | YES_sell=$0.840 + NO_sell=$0.170 = $1.0100 | spread=$0.0100
+[20:37:06.045] 🔄 SELL ARB | YES_sell=$0.850 + NO_sell=$0.160 = $1.0100 | spread=$0.0100
+[20:37:06.153] 🔄 SELL ARB | YES_sell=$0.850 + NO_sell=$0.160 = $1.0100 | spread=$0.0100
+[20:37:06.261] 🔄 SELL ARB | YES_sell=$0.850 + NO_sell=$0.160 = $1.0100 | spread=$0.0100
+[20:37:06.374] 🔄 SELL ARB | YES_sell=$0.850 + NO_sell=$0.160 = $1.0100 | spread=$0.0100
+[20:37:06.483] 🔄 SELL ARB | YES_sell=$0.850 + NO_sell=$0.160 = $1.0100 | spread=$0.0100
+[20:37:06.591] 🔄 SELL ARB | YES_sell=$0.850 + NO_sell=$0.160 = $1.0100 | spread=$0.0100
+[20:37:06.708] 🔄 SELL ARB | YES_sell=$0.850 + NO_sell=$0.160 = $1.0100 | spread=$0.0100
+[20:37:06.845] 🔄 SELL ARB | YES_sell=$0.850 + NO_sell=$0.190 = $1.0400 | spread=$0.0400
+[20:37:06.951] 🔄 SELL ARB | YES_sell=$0.820 + NO_sell=$0.190 = $1.0100 | spread=$0.0100
+[20:37:07.081] 🔄 SELL ARB | YES_sell=$0.820 + NO_sell=$0.190 = $1.0100 | spread=$0.0100
+[20:37:07.196] 🔄 SELL ARB | YES_sell=$0.820 + NO_sell=$0.190 = $1.0100 | spread=$0.0100
+[20:37:07.306] 🔄 SELL ARB | YES_sell=$0.820 + NO_sell=$0.190 = $1.0100 | spread=$0.0100
+[20:37:07.416] 🔄 SELL ARB | YES_sell=$0.820 + NO_sell=$0.190 = $1.0100 | spread=$0.0100
+[20:37:07.531] 🔄 SELL ARB | YES_sell=$0.820 + NO_sell=$0.200 = $1.0200 | spread=$0.0200
+[20:37:07.666] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:37:07.786] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:37:07.900] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:37:08.022] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:37:08.132] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:37:08.266] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:37:08.379] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:37:08.487] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:37:08.613] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.220 = $1.0200 | spread=$0.0200
+[20:37:08.722] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:08.829] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:08.950] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:09.065] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:09.176] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:09.290] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:09.428] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:09.557] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:09.669] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:09.788] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:09.906] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:10.022] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:10.161] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:10.281] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:10.396] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:10.546] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:10.652] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:10.764] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:10.875] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:10.987] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:11.112] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:11.228] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:11.329] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:11.460] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:11.626] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:11.748] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:11.868] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:12.000] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:12.111] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:12.222] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:12.344] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:12.454] 🎯 ARB #3 | T+132s | YES=$0.780 + NO=$0.190 = $0.9700 | spread=$0.0300 | profit@5shares=$0.15 | poll=110ms
+[20:37:12.454] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:37:12.573]    └─ closed after 119ms
+[20:37:12.574] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:37:12.725] 🔄 SELL ARB | YES_sell=$0.820 + NO_sell=$0.190 = $1.0100 | spread=$0.0100
+[20:37:12.841] 🔄 SELL ARB | YES_sell=$0.820 + NO_sell=$0.190 = $1.0100 | spread=$0.0100
+[20:37:12.955] 🔄 SELL ARB | YES_sell=$0.820 + NO_sell=$0.190 = $1.0100 | spread=$0.0100
+[20:37:13.076] 🔄 SELL ARB | YES_sell=$0.820 + NO_sell=$0.190 = $1.0100 | spread=$0.0100
+[20:37:13.184] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:37:13.302] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:37:13.414] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:37:13.520] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:37:13.637] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:37:13.751] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:37:13.865] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:37:13.970] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:37:14.087] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:37:14.206] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:37:14.322] 🎯 ARB #4 | T+134s | YES=$0.780 + NO=$0.200 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=115ms
+[20:37:14.322] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.220 = $1.0200 | spread=$0.0200
+[20:37:14.451] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:37:14.572]    └─ closed after 250ms
+[20:37:14.572] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.220 = $1.0200 | spread=$0.0200
+[20:37:14.692] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:14.809] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:37:14.918] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:37:15.022] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:37:15.135] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:37:15.254] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:37:15.373] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:37:15.497] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:37:15.605] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:37:15.717] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:37:15.828] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.240 = $1.0200 | spread=$0.0200
+[20:37:15.939] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.240 = $1.0100 | spread=$0.0100
+[20:37:16.049] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.240 = $1.0100 | spread=$0.0100
+[20:37:16.203] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.240 = $1.0100 | spread=$0.0100
+[20:37:16.312] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:16.417] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:16.527] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:16.638] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:16.752] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:16.861] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:17.001] 🎯 ARB #5 | T+136s | YES=$0.750 + NO=$0.210 = $0.9600 | spread=$0.0400 | profit@5shares=$0.20 | poll=140ms
+[20:37:17.001] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:37:17.110]    └─ closed after 108ms
+[20:37:17.110] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.250 = $1.0400 | spread=$0.0400
+[20:37:17.218] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:37:17.332] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:37:17.462] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:37:17.576] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:37:17.692] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.240 = $1.0200 | spread=$0.0200
+[20:37:17.814] 🎯 ARB #6 | T+137s | YES=$0.760 + NO=$0.220 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=122ms
+[20:37:17.814] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.240 = $1.0200 | spread=$0.0200
+[20:37:17.928] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.240 = $1.0200 | spread=$0.0200
+[20:37:18.067] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.250 = $1.0300 | spread=$0.0300
+[20:37:18.185]    └─ closed after 371ms
+[20:37:18.185] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:18.313] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:18.436] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:18.574] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:18.686] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:18.793] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:18.916] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:19.038] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:19.142] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:37:21.681] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.280 = $1.0400 | spread=$0.0400
+[20:37:21.808] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:37:21.918] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:37:22.029] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:37:22.186] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:37:22.306] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:37:22.424] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:37:22.587] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:37:22.698] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:37:22.849] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:37:22.992] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:37:23.165] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.290 = $1.0200 | spread=$0.0200
+[20:37:23.300] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:37:23.414] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:37:23.548] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:37:23.675] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:37:23.788] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:37:23.903] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:37:24.025] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:37:24.154] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:37:24.261] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:37:24.376] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:37:24.509] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:37:24.640] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:37:24.758] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.300 = $1.0200 | spread=$0.0200
+[20:37:24.881] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:37:24.994] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:37:25.113] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:37:25.238] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:37:25.386] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:37:25.494] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:37:25.621] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:37:25.759] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:37:25.878] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.320 = $1.0300 | spread=$0.0300
+[20:37:25.995] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.320 = $1.0100 | spread=$0.0100
+[20:37:26.108] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.320 = $1.0100 | spread=$0.0100
+[20:37:26.224] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.320 = $1.0100 | spread=$0.0100
+[20:37:26.366] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.320 = $1.0100 | spread=$0.0100
+[20:37:26.477] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.320 = $1.0100 | spread=$0.0100
+[20:37:26.602] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.320 = $1.0100 | spread=$0.0100
+[20:37:26.713] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.320 = $1.0100 | spread=$0.0100
+[20:37:26.827] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.330 = $1.0200 | spread=$0.0200
+[20:37:26.937] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.330 = $1.0100 | spread=$0.0100
+[20:37:27.065] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.330 = $1.0100 | spread=$0.0100
+[20:37:27.181] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.330 = $1.0100 | spread=$0.0100
+[20:37:27.308] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.330 = $1.0100 | spread=$0.0100
+[20:37:27.429] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.340 = $1.0200 | spread=$0.0200
+[20:37:27.541] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.340 = $1.0100 | spread=$0.0100
+[20:37:27.659] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.340 = $1.0100 | spread=$0.0100
+[20:37:27.764] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.340 = $1.0100 | spread=$0.0100
+[20:37:27.877] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.340 = $1.0100 | spread=$0.0100
+[20:37:27.996] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.340 = $1.0100 | spread=$0.0100
+[20:37:28.108] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.350 = $1.0200 | spread=$0.0200
+[20:37:28.222] 🎯 ARB #7 | T+148s | YES=$0.650 + NO=$0.330 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=114ms
+[20:37:28.222] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.360 = $1.0300 | spread=$0.0300
+[20:37:28.337] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.360 = $1.0300 | spread=$0.0300
+[20:37:28.449] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.360 = $1.0300 | spread=$0.0300
+[20:37:28.560] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.360 = $1.0200 | spread=$0.0200
+[20:37:28.670] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.360 = $1.0200 | spread=$0.0200
+[20:37:28.799] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.360 = $1.0200 | spread=$0.0200
+[20:37:28.919] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.360 = $1.0200 | spread=$0.0200
+[20:37:29.034]    └─ closed after 812ms
+[20:37:29.034] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.350 = $1.0100 | spread=$0.0100
+[20:37:29.141] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.380 = $1.0400 | spread=$0.0400
+[20:37:29.280] 🎯 ARB #8 | T+149s | YES=$0.620 + NO=$0.360 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=139ms
+[20:37:29.280] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.380 = $1.0400 | spread=$0.0400
+[20:37:29.395] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.390 = $1.0300 | spread=$0.0300
+[20:37:29.512] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.400 = $1.0400 | spread=$0.0400
+[20:37:29.626] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.400 = $1.0600 | spread=$0.0600
+[20:37:29.737] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.400 = $1.0600 | spread=$0.0600
+[20:37:29.857]    └─ closed after 577ms
+[20:37:29.857] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.430 = $1.0100 | spread=$0.0100
+[20:37:29.971] 🎯 ARB #9 | T+149s | YES=$0.560 + NO=$0.400 = $0.9600 | spread=$0.0400 | profit@5shares=$0.20 | poll=114ms
+[20:37:29.971] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.440 = $1.0200 | spread=$0.0200
+[20:37:30.089] 🔄 SELL ARB | YES_sell=$0.600 + NO_sell=$0.440 = $1.0400 | spread=$0.0400
+[20:37:30.223] 🔄 SELL ARB | YES_sell=$0.600 + NO_sell=$0.440 = $1.0400 | spread=$0.0400
+[20:37:30.330] 🔄 SELL ARB | YES_sell=$0.600 + NO_sell=$0.440 = $1.0400 | spread=$0.0400
+[20:37:30.443] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.440 = $1.0300 | spread=$0.0300
+[20:37:30.553] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.470 = $1.0600 | spread=$0.0600
+[20:37:30.662] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.470 = $1.0600 | spread=$0.0600
+[20:37:30.783] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.470 = $1.0600 | spread=$0.0600
+[20:37:30.889]    └─ closed after 918ms
+[20:37:30.889] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:30.999] 🎯 ARB #10 | T+150s | YES=$0.530 + NO=$0.450 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=109ms
+[20:37:30.999] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:31.260]    └─ closed after 261ms
+[20:37:31.260] 🔄 SELL ARB | YES_sell=$0.570 + NO_sell=$0.440 = $1.0100 | spread=$0.0100
+[20:37:31.479] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.430 = $1.0100 | spread=$0.0100
+[20:37:31.591] 🎯 ARB #11 | T+151s | YES=$0.570 + NO=$0.410 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=112ms
+[20:37:31.591] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.430 = $1.0200 | spread=$0.0200
+[20:37:31.699] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:31.813]    └─ closed after 223ms
+[20:37:31.814] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:31.949] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:32.064] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:32.182] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.440 = $1.0300 | spread=$0.0300
+[20:37:32.327] 🔄 SELL ARB | YES_sell=$0.560 + NO_sell=$0.450 = $1.0100 | spread=$0.0100
+[20:37:32.446] 🔄 SELL ARB | YES_sell=$0.560 + NO_sell=$0.450 = $1.0100 | spread=$0.0100
+[20:37:32.561] 🔄 SELL ARB | YES_sell=$0.560 + NO_sell=$0.450 = $1.0100 | spread=$0.0100
+[20:37:32.670] 🎯 ARB #12 | T+152s | YES=$0.540 + NO=$0.440 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=109ms
+[20:37:32.670] 🔄 SELL ARB | YES_sell=$0.560 + NO_sell=$0.450 = $1.0100 | spread=$0.0100
+[20:37:32.785]    └─ closed after 115ms
+[20:37:32.785] 🔄 SELL ARB | YES_sell=$0.560 + NO_sell=$0.460 = $1.0200 | spread=$0.0200
+[20:37:32.903] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:33.011] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:33.138] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:33.249] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:33.365] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:33.530] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:33.658] 🎯 ARB #13 | T+153s | YES=$0.530 + NO=$0.450 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=128ms
+[20:37:33.658] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:33.769]    └─ closed after 111ms
+[20:37:34.006] 🔄 SELL ARB | YES_sell=$0.610 + NO_sell=$0.400 = $1.0100 | spread=$0.0100
+[20:37:34.123] 🔄 SELL ARB | YES_sell=$0.610 + NO_sell=$0.400 = $1.0100 | spread=$0.0100
+[20:37:34.237] 🔄 SELL ARB | YES_sell=$0.610 + NO_sell=$0.400 = $1.0100 | spread=$0.0100
+[20:37:34.403] 🔄 SELL ARB | YES_sell=$0.610 + NO_sell=$0.400 = $1.0100 | spread=$0.0100
+[20:37:34.531] 🔄 SELL ARB | YES_sell=$0.610 + NO_sell=$0.400 = $1.0100 | spread=$0.0100
+[20:37:34.636] 🔄 SELL ARB | YES_sell=$0.610 + NO_sell=$0.400 = $1.0100 | spread=$0.0100
+[20:37:34.747] 🔄 SELL ARB | YES_sell=$0.610 + NO_sell=$0.400 = $1.0100 | spread=$0.0100
+[20:37:34.876] 🔄 SELL ARB | YES_sell=$0.610 + NO_sell=$0.400 = $1.0100 | spread=$0.0100
+[20:37:34.995] 🔄 SELL ARB | YES_sell=$0.610 + NO_sell=$0.400 = $1.0100 | spread=$0.0100
+[20:37:35.115] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:35.225] 🎯 ARB #14 | T+155s | YES=$0.620 + NO=$0.360 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=110ms
+[20:37:35.225] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:37:35.373]    └─ closed after 148ms
+[20:37:35.373] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.380 = $1.0300 | spread=$0.0300
+[20:37:35.491] 🎯 ARB #15 | T+155s | YES=$0.630 + NO=$0.350 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=118ms
+[20:37:35.491] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:37:35.613]    └─ closed after 122ms
+[20:37:35.614] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:37:35.719] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:37:35.842] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:37:35.959] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:37:36.079] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.370 = $1.0200 | spread=$0.0200
+[20:37:36.190] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:37:36.304] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:37:36.415] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:36.527] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:36.632] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:36.744] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:36.854] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:36.977] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:37.090] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:37.205] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:37.334] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:37.465] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:37.585] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:37.732] 🎯 ARB #16 | T+157s | YES=$0.630 + NO=$0.340 = $0.9700 | spread=$0.0300 | profit@5shares=$0.15 | poll=147ms
+[20:37:37.845]    └─ closed after 113ms
+[20:37:37.845] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.350 = $1.0100 | spread=$0.0100
+[20:37:37.973] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.350 = $1.0100 | spread=$0.0100
+[20:37:38.087] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.350 = $1.0100 | spread=$0.0100
+[20:37:38.198] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.370 = $1.0300 | spread=$0.0300
+[20:37:38.321] 🎯 ARB #17 | T+158s | YES=$0.620 + NO=$0.340 = $0.9600 | spread=$0.0400 | profit@5shares=$0.20 | poll=123ms
+[20:37:38.322] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.380 = $1.0400 | spread=$0.0400
+[20:37:38.444]    └─ closed after 122ms
+[20:37:38.444] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.380 = $1.0400 | spread=$0.0400
+[20:37:38.565] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:38.676] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:37:38.792] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.390 = $1.0200 | spread=$0.0200
+[20:37:38.918] 🎯 ARB #18 | T+158s | YES=$0.610 + NO=$0.370 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=126ms
+[20:37:38.918] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.460 = $1.0900 | spread=$0.0900
+[20:37:39.085] 🔄 SELL ARB | YES_sell=$0.610 + NO_sell=$0.460 = $1.0700 | spread=$0.0700
+[20:37:39.203] 🔄 SELL ARB | YES_sell=$0.560 + NO_sell=$0.470 = $1.0300 | spread=$0.0300
+[20:37:39.331] 🔄 SELL ARB | YES_sell=$0.560 + NO_sell=$0.470 = $1.0300 | spread=$0.0300
+[20:37:39.447]    └─ closed after 529ms
+[20:37:39.447] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.470 = $1.0200 | spread=$0.0200
+[20:37:39.570] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:39.807] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:39.927] 🔄 SELL ARB | YES_sell=$0.560 + NO_sell=$0.470 = $1.0300 | spread=$0.0300
+[20:37:40.058] 🔄 SELL ARB | YES_sell=$0.560 + NO_sell=$0.450 = $1.0100 | spread=$0.0100
+[20:37:40.163] 🎯 ARB #19 | T+160s | YES=$0.550 + NO=$0.420 = $0.9700 | spread=$0.0300 | profit@5shares=$0.15 | poll=105ms
+[20:37:40.163] 🔄 SELL ARB | YES_sell=$0.570 + NO_sell=$0.440 = $1.0100 | spread=$0.0100
+[20:37:40.288] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.440 = $1.0200 | spread=$0.0200
+[20:37:40.527]    └─ closed after 364ms
+[20:37:40.527] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:40.655] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:40.760] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:40.873] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:40.998] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.430 = $1.0200 | spread=$0.0200
+[20:37:41.113] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.430 = $1.0100 | spread=$0.0100
+[20:37:41.256] 🎯 ARB #20 | T+161s | YES=$0.570 + NO=$0.410 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=142ms
+[20:37:41.256] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:41.370]    └─ closed after 114ms
+[20:37:41.370] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:41.476] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:41.595] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:41.711] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.430 = $1.0200 | spread=$0.0200
+[20:37:41.822] 🎯 ARB #21 | T+161s | YES=$0.550 + NO=$0.420 = $0.9700 | spread=$0.0300 | profit@5shares=$0.15 | poll=112ms
+[20:37:41.822] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.430 = $1.0100 | spread=$0.0100
+[20:37:41.943]    └─ closed after 121ms
+[20:37:41.943] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.440 = $1.0200 | spread=$0.0200
+[20:37:42.051] 🎯 ARB #22 | T+161s | YES=$0.530 + NO=$0.430 = $0.9600 | spread=$0.0400 | profit@5shares=$0.20 | poll=107ms
+[20:37:42.051] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.450 = $1.0300 | spread=$0.0300
+[20:37:42.170]    └─ closed after 120ms
+[20:37:42.170] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:42.284] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:42.425] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:42.551] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.510 = $1.0500 | spread=$0.0500
+[20:37:42.669] 🎯 ARB #23 | T+162s | YES=$0.490 + NO=$0.460 = $0.9500 | spread=$0.0500 | profit@5shares=$0.25 | poll=118ms
+[20:37:42.669] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.520 = $1.0600 | spread=$0.0600
+[20:37:42.778] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.540 = $1.0800 | spread=$0.0800
+[20:37:42.778]   ... polls=300 rate=7.8/s | YES=$0.470/0.540 NO=$0.460/0.540 | combined=$0.9300 | T+162s | arbs=23 errs=0
+[20:37:42.899] 🔄 SELL ARB | YES_sell=$0.520 + NO_sell=$0.540 = $1.0600 | spread=$0.0600
+[20:37:43.013] 🔄 SELL ARB | YES_sell=$0.480 + NO_sell=$0.540 = $1.0200 | spread=$0.0200
+[20:37:43.117] 🔄 SELL ARB | YES_sell=$0.480 + NO_sell=$0.550 = $1.0300 | spread=$0.0300
+[20:37:43.231] 🔄 SELL ARB | YES_sell=$0.480 + NO_sell=$0.550 = $1.0300 | spread=$0.0300
+[20:37:43.340] 🔄 SELL ARB | YES_sell=$0.480 + NO_sell=$0.530 = $1.0100 | spread=$0.0100
+[20:37:43.447]    └─ closed after 778ms
+[20:37:43.447] 🔄 SELL ARB | YES_sell=$0.480 + NO_sell=$0.550 = $1.0300 | spread=$0.0300
+[20:37:43.577] 🔄 SELL ARB | YES_sell=$0.480 + NO_sell=$0.550 = $1.0300 | spread=$0.0300
+[20:37:43.704] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.560 = $1.0200 | spread=$0.0200
+[20:37:43.818] 🎯 ARB #24 | T+163s | YES=$0.440 + NO=$0.540 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=114ms
+[20:37:43.818] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.560 = $1.0200 | spread=$0.0200
+[20:37:43.932]    └─ closed after 114ms
+[20:37:43.932] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:44.046] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.560 = $1.0200 | spread=$0.0200
+[20:37:44.164] 🎯 ARB #25 | T+164s | YES=$0.440 + NO=$0.540 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=118ms
+[20:37:44.164] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:44.278] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:44.391] 🔄 SELL ARB | YES_sell=$0.470 + NO_sell=$0.540 = $1.0100 | spread=$0.0100
+[20:37:44.506]    └─ closed after 341ms
+[20:37:44.506] 🔄 SELL ARB | YES_sell=$0.470 + NO_sell=$0.540 = $1.0100 | spread=$0.0100
+[20:37:44.642] 🔄 SELL ARB | YES_sell=$0.470 + NO_sell=$0.540 = $1.0100 | spread=$0.0100
+[20:37:44.759] 🔄 SELL ARB | YES_sell=$0.470 + NO_sell=$0.540 = $1.0100 | spread=$0.0100
+[20:37:44.888] 🔄 SELL ARB | YES_sell=$0.470 + NO_sell=$0.540 = $1.0100 | spread=$0.0100
+[20:37:44.996] 🔄 SELL ARB | YES_sell=$0.470 + NO_sell=$0.540 = $1.0100 | spread=$0.0100
+[20:37:45.108] 🔄 SELL ARB | YES_sell=$0.470 + NO_sell=$0.540 = $1.0100 | spread=$0.0100
+[20:37:45.222] 🔄 SELL ARB | YES_sell=$0.470 + NO_sell=$0.540 = $1.0100 | spread=$0.0100
+[20:37:45.332] 🔄 SELL ARB | YES_sell=$0.470 + NO_sell=$0.540 = $1.0100 | spread=$0.0100
+[20:37:45.441] 🔄 SELL ARB | YES_sell=$0.470 + NO_sell=$0.540 = $1.0100 | spread=$0.0100
+[20:37:45.549] 🔄 SELL ARB | YES_sell=$0.470 + NO_sell=$0.540 = $1.0100 | spread=$0.0100
+[20:37:45.672] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:45.778] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:45.894] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:46.004] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:46.118] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:46.238] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:46.351] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:46.464] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:46.578] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:46.688] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:46.798] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:46.911] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:47.026] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:47.154] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.560 = $1.0200 | spread=$0.0200
+[20:37:47.279] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:47.397] 🎯 ARB #26 | T+167s | YES=$0.440 + NO=$0.540 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=117ms
+[20:37:47.397] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:47.510]    └─ closed after 113ms
+[20:37:47.510] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:47.617] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:47.726] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.560 = $1.0200 | spread=$0.0200
+[20:37:47.846] 🎯 ARB #27 | T+167s | YES=$0.440 + NO=$0.540 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=120ms
+[20:37:47.846] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.560 = $1.0200 | spread=$0.0200
+[20:37:47.958]    └─ closed after 112ms
+[20:37:47.958] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:48.083] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:48.192] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:48.311] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:48.424] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:48.537] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:48.653] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:48.773] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:48.883] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:48.988] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:49.104] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:49.221] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:49.336] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:49.460] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:49.569] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:49.675] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:49.785] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:49.915] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:50.027] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:50.132] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:50.247] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:50.360] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:50.474] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:50.594] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:50.711] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:50.822] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:50.958] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.570 = $1.0200 | spread=$0.0200
+[20:37:51.073] 🔄 SELL ARB | YES_sell=$0.440 + NO_sell=$0.570 = $1.0100 | spread=$0.0100
+[20:37:51.194] 🔄 SELL ARB | YES_sell=$0.440 + NO_sell=$0.570 = $1.0100 | spread=$0.0100
+[20:37:51.301] 🔄 SELL ARB | YES_sell=$0.440 + NO_sell=$0.570 = $1.0100 | spread=$0.0100
+[20:37:51.411] 🔄 SELL ARB | YES_sell=$0.440 + NO_sell=$0.570 = $1.0100 | spread=$0.0100
+[20:37:51.564] 🔄 SELL ARB | YES_sell=$0.440 + NO_sell=$0.570 = $1.0100 | spread=$0.0100
+[20:37:51.677] 🔄 SELL ARB | YES_sell=$0.440 + NO_sell=$0.570 = $1.0100 | spread=$0.0100
+[20:37:51.788] 🔄 SELL ARB | YES_sell=$0.440 + NO_sell=$0.570 = $1.0100 | spread=$0.0100
+[20:37:51.896] 🔄 SELL ARB | YES_sell=$0.440 + NO_sell=$0.570 = $1.0100 | spread=$0.0100
+[20:37:52.001] 🔄 SELL ARB | YES_sell=$0.440 + NO_sell=$0.570 = $1.0100 | spread=$0.0100
+[20:37:52.116] 🔄 SELL ARB | YES_sell=$0.440 + NO_sell=$0.570 = $1.0100 | spread=$0.0100
+[20:37:52.230] 🎯 ARB #28 | T+172s | YES=$0.430 + NO=$0.550 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=114ms
+[20:37:52.230] 🔄 SELL ARB | YES_sell=$0.440 + NO_sell=$0.570 = $1.0100 | spread=$0.0100
+[20:37:52.339]    └─ closed after 108ms
+[20:37:52.339] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.570 = $1.0200 | spread=$0.0200
+[20:37:52.452] 🔄 SELL ARB | YES_sell=$0.440 + NO_sell=$0.570 = $1.0100 | spread=$0.0100
+[20:37:52.562] 🎯 ARB #29 | T+172s | YES=$0.430 + NO=$0.550 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=110ms
+[20:37:52.563] 🔄 SELL ARB | YES_sell=$0.440 + NO_sell=$0.570 = $1.0100 | spread=$0.0100
+[20:37:52.677] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:52.837]    └─ closed after 275ms
+[20:37:52.837] 🔄 SELL ARB | YES_sell=$0.450 + NO_sell=$0.560 = $1.0100 | spread=$0.0100
+[20:37:52.993] 🎯 ARB #30 | T+172s | YES=$0.440 + NO=$0.540 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=156ms
+[20:37:52.993] 🔄 SELL ARB | YES_sell=$0.460 + NO_sell=$0.550 = $1.0100 | spread=$0.0100
+[20:37:53.103] 🔄 SELL ARB | YES_sell=$0.480 + NO_sell=$0.530 = $1.0100 | spread=$0.0100
+[20:37:53.210] 🔄 SELL ARB | YES_sell=$0.490 + NO_sell=$0.530 = $1.0200 | spread=$0.0200
+[20:37:53.320] 🔄 SELL ARB | YES_sell=$0.490 + NO_sell=$0.520 = $1.0100 | spread=$0.0100
+[20:37:53.541] 🔄 SELL ARB | YES_sell=$0.500 + NO_sell=$0.510 = $1.0100 | spread=$0.0100
+[20:37:53.653] 🔄 SELL ARB | YES_sell=$0.520 + NO_sell=$0.490 = $1.0100 | spread=$0.0100
+[20:37:53.759]    └─ closed after 766ms
+[20:37:53.867] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:53.982] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:54.098] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:54.216] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:54.322] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:37:54.436] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:54.550] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:54.663] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:54.776] 🎯 ARB #31 | T+174s | YES=$0.540 + NO=$0.440 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=113ms
+[20:37:54.776] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:54.883]    └─ closed after 107ms
+[20:37:54.883] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:55.006] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:55.138] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:55.246] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:55.358] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:55.578] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:55.726] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:55.839] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:55.965] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:56.068] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:56.175] 🎯 ARB #32 | T+176s | YES=$0.540 + NO=$0.440 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=107ms
+[20:37:56.175] 🔄 SELL ARB | YES_sell=$0.560 + NO_sell=$0.450 = $1.0100 | spread=$0.0100
+[20:37:56.287]    └─ closed after 113ms
+[20:37:56.288] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.430 = $1.0100 | spread=$0.0100
+[20:37:56.424] 🎯 ARB #33 | T+176s | YES=$0.570 + NO=$0.410 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=136ms
+[20:37:56.424] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.430 = $1.0200 | spread=$0.0200
+[20:37:56.539] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.430 = $1.0200 | spread=$0.0200
+[20:37:56.657]    └─ closed after 233ms
+[20:37:56.657] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.430 = $1.0100 | spread=$0.0100
+[20:37:56.770] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.430 = $1.0100 | spread=$0.0100
+[20:37:56.881] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.430 = $1.0100 | spread=$0.0100
+[20:37:56.989] 🎯 ARB #34 | T+176s | YES=$0.570 + NO=$0.410 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=108ms
+[20:37:56.989] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:57.095]    └─ closed after 106ms
+[20:37:57.095] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:57.204] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:37:57.312] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.460 = $1.0500 | spread=$0.0500
+[20:37:57.423] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:57.534] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:57.639] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:57.755] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:57.867] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:57.991] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:58.109] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:58.225] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:58.333] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:58.489] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:58.605] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:58.728] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:58.847] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.460 = $1.0100 | spread=$0.0100
+[20:37:58.963] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.470 = $1.0200 | spread=$0.0200
+[20:37:59.072] 🔄 SELL ARB | YES_sell=$0.550 + NO_sell=$0.470 = $1.0200 | spread=$0.0200
+[20:37:59.213] 🔄 SELL ARB | YES_sell=$0.530 + NO_sell=$0.500 = $1.0300 | spread=$0.0300
+[20:37:59.330] 🔄 SELL ARB | YES_sell=$0.520 + NO_sell=$0.490 = $1.0100 | spread=$0.0100
+[20:37:59.457] 🔄 SELL ARB | YES_sell=$0.520 + NO_sell=$0.500 = $1.0200 | spread=$0.0200
+[20:37:59.563] 🔄 SELL ARB | YES_sell=$0.510 + NO_sell=$0.500 = $1.0100 | spread=$0.0100
+[20:37:59.685] 🔄 SELL ARB | YES_sell=$0.510 + NO_sell=$0.500 = $1.0100 | spread=$0.0100
+[20:37:59.798] 🔄 SELL ARB | YES_sell=$0.510 + NO_sell=$0.500 = $1.0100 | spread=$0.0100
+[20:37:59.918] 🔄 SELL ARB | YES_sell=$0.510 + NO_sell=$0.500 = $1.0100 | spread=$0.0100
+[20:38:00.047] 🎯 ARB #35 | T+179s | YES=$0.500 + NO=$0.480 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=128ms
+[20:38:00.047] 🔄 SELL ARB | YES_sell=$0.520 + NO_sell=$0.490 = $1.0100 | spread=$0.0100
+[20:38:00.187]    └─ closed after 141ms
+[20:38:00.187] 🔄 SELL ARB | YES_sell=$0.520 + NO_sell=$0.490 = $1.0100 | spread=$0.0100
+[20:38:00.323] 🎯 ARB #36 | T+180s | YES=$0.510 + NO=$0.450 = $0.9600 | spread=$0.0400 | profit@5shares=$0.20 | poll=135ms
+[20:38:00.323] 🔄 SELL ARB | YES_sell=$0.540 + NO_sell=$0.470 = $1.0100 | spread=$0.0100
+[20:38:00.444] 🔄 SELL ARB | YES_sell=$0.560 + NO_sell=$0.450 = $1.0100 | spread=$0.0100
+[20:38:00.581] 🔄 SELL ARB | YES_sell=$0.570 + NO_sell=$0.440 = $1.0100 | spread=$0.0100
+[20:38:00.698] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.440 = $1.0200 | spread=$0.0200
+[20:38:00.809]    └─ closed after 486ms
+[20:38:00.809] 🔄 SELL ARB | YES_sell=$0.580 + NO_sell=$0.430 = $1.0100 | spread=$0.0100
+[20:38:00.934] 🎯 ARB #37 | T+180s | YES=$0.570 + NO=$0.410 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=124ms
+[20:38:00.934] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:38:01.047]    └─ closed after 113ms
+[20:38:01.047] 🔄 SELL ARB | YES_sell=$0.590 + NO_sell=$0.420 = $1.0100 | spread=$0.0100
+[20:38:01.171] 🎯 ARB #38 | T+181s | YES=$0.580 + NO=$0.390 = $0.9700 | spread=$0.0300 | profit@5shares=$0.15 | poll=124ms
+[20:38:01.171] 🔄 SELL ARB | YES_sell=$0.610 + NO_sell=$0.400 = $1.0100 | spread=$0.0100
+[20:38:01.303]    └─ closed after 132ms
+[20:38:01.431] 🎯 ARB #39 | T+181s | YES=$0.610 + NO=$0.370 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=129ms
+[20:38:01.431] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.390 = $1.0200 | spread=$0.0200
+[20:38:01.581]    └─ closed after 150ms
+[20:38:01.581] 🔄 SELL ARB | YES_sell=$0.620 + NO_sell=$0.390 = $1.0100 | spread=$0.0100
+[20:38:01.726] 🎯 ARB #40 | T+181s | YES=$0.610 + NO=$0.370 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=144ms
+[20:38:01.727] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:01.899] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.380 = $1.0200 | spread=$0.0200
+[20:38:02.057] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.350 = $1.0100 | spread=$0.0100
+[20:38:02.200]    └─ closed after 475ms
+[20:38:02.200] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.350 = $1.0100 | spread=$0.0100
+[20:38:02.400] 🎯 ARB #41 | T+182s | YES=$0.650 + NO=$0.330 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=200ms
+[20:38:02.400] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.340 = $1.0100 | spread=$0.0100
+[20:38:02.521]    └─ closed after 121ms
+[20:38:02.521] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.340 = $1.0100 | spread=$0.0100
+[20:38:02.677] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.340 = $1.0100 | spread=$0.0100
+[20:38:02.813] 🎯 ARB #42 | T+182s | YES=$0.660 + NO=$0.320 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=136ms
+[20:38:02.813] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.340 = $1.0100 | spread=$0.0100
+[20:38:02.928] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.330 = $1.0100 | spread=$0.0100
+[20:38:03.084]    └─ closed after 272ms
+[20:38:03.084] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.330 = $1.0100 | spread=$0.0100
+[20:38:03.212] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.330 = $1.0100 | spread=$0.0100
+[20:38:03.395] 🎯 ARB #43 | T+183s | YES=$0.670 + NO=$0.310 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=182ms
+[20:38:03.395] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.320 = $1.0100 | spread=$0.0100
+[20:38:03.514]    └─ closed after 119ms
+[20:38:03.514] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.320 = $1.0100 | spread=$0.0100
+[20:38:03.763] 🔄 SELL ARB | YES_sell=$0.700 + NO_sell=$0.320 = $1.0200 | spread=$0.0200
+[20:38:03.879] 🔄 SELL ARB | YES_sell=$0.700 + NO_sell=$0.310 = $1.0100 | spread=$0.0100
+[20:38:04.028] 🎯 ARB #44 | T+183s | YES=$0.690 + NO=$0.290 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=149ms
+[20:38:04.028] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:38:04.139]    └─ closed after 111ms
+[20:38:04.139] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:38:04.264] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:38:04.392] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:38:04.508] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:38:04.617] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:38:04.727] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:38:04.839] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:38:04.979] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:38:05.100] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:38:05.229] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:38:05.349] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.300 = $1.0100 | spread=$0.0100
+[20:38:05.464] 🎯 ARB #45 | T+185s | YES=$0.700 + NO=$0.280 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=115ms
+[20:38:05.464] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:38:05.575]    └─ closed after 111ms
+[20:38:05.575] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:38:05.700] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:38:05.808] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:38:05.924] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:38:06.043] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:38:06.159] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:38:06.265] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:38:06.368] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:38:06.488] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:38:06.596] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:38:06.700] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.290 = $1.0100 | spread=$0.0100
+[20:38:06.821] 🎯 ARB #46 | T+186s | YES=$0.710 + NO=$0.270 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=121ms
+[20:38:06.821] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:06.933]    └─ closed after 112ms
+[20:38:06.933] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:07.046] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:07.161] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:07.270] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:07.412] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:07.528] 🎯 ARB #47 | T+187s | YES=$0.720 + NO=$0.250 = $0.9700 | spread=$0.0300 | profit@5shares=$0.15 | poll=116ms
+[20:38:07.638]    └─ closed after 110ms
+[20:38:07.638] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:07.756] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:07.864] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:07.975] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:08.086] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:08.195] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:08.299] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:08.414] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:08.523] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:08.632] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:08.750] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:08.883] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:09.002] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:09.122] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:09.231] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:09.350] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:09.464] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:09.578] 🎯 ARB #48 | T+189s | YES=$0.740 + NO=$0.240 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=115ms
+[20:38:09.579] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:09.716]    └─ closed after 137ms
+[20:38:09.716] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:09.827] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:09.934] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:10.043] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:10.162] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:10.282] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:10.431] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:10.545] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.240 = $1.0100 | spread=$0.0100
+[20:38:10.653] 🎯 ARB #49 | T+190s | YES=$0.760 + NO=$0.220 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=108ms
+[20:38:10.653] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.240 = $1.0200 | spread=$0.0200
+[20:38:10.764]    └─ closed after 112ms
+[20:38:10.765] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.240 = $1.0100 | spread=$0.0100
+[20:38:10.884] 🎯 ARB #50 | T+190s | YES=$0.760 + NO=$0.220 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=119ms
+[20:38:10.884] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:10.994]    └─ closed after 110ms
+[20:38:10.994] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:11.114] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:11.261] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:11.382] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:11.489] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:11.642] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:11.751] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:11.866] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:11.981] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:12.093] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:12.208] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:12.338] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:12.480] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:12.600] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:12.715] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:38:12.830] 🎯 ARB #51 | T+192s | YES=$0.770 + NO=$0.210 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=115ms
+[20:38:12.830] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:38:12.946]    └─ closed after 117ms
+[20:38:12.946] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:38:13.086] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:38:13.193] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:38:13.316] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:38:13.427] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:38:13.537] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:38:13.685] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:38:13.789] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:38:13.908] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.220 = $1.0100 | spread=$0.0100
+[20:38:14.027] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:38:14.141] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:38:14.253] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:38:14.365] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:38:14.494] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:38:14.608] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:38:14.717] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:38:14.825] 🔄 SELL ARB | YES_sell=$0.800 + NO_sell=$0.210 = $1.0100 | spread=$0.0100
+[20:38:14.936] 🎯 ARB #52 | T+194s | YES=$0.790 + NO=$0.190 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=111ms
+[20:38:14.936] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:38:15.087]    └─ closed after 151ms
+[20:38:15.087] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:38:15.201] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:38:15.308] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:38:15.432] 🔄 SELL ARB | YES_sell=$0.810 + NO_sell=$0.200 = $1.0100 | spread=$0.0100
+[20:38:15.544] 🔄 SELL ARB | YES_sell=$0.790 + NO_sell=$0.280 = $1.0700 | spread=$0.0700
+[20:38:15.671] 🎯 ARB #53 | T+195s | YES=$0.720 + NO=$0.230 = $0.9500 | spread=$0.0500 | profit@5shares=$0.25 | poll=127ms
+[20:38:15.671] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.300 = $1.0700 | spread=$0.0700
+[20:38:15.789] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.300 = $1.0600 | spread=$0.0600
+[20:38:15.895] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.310 = $1.0700 | spread=$0.0700
+[20:38:16.004]    └─ closed after 333ms
+[20:38:16.004] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.350 = $1.0600 | spread=$0.0600
+[20:38:16.125] 🎯 ARB #54 | T+196s | YES=$0.640 + NO=$0.340 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=121ms
+[20:38:16.125] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.370 = $1.0300 | spread=$0.0300
+[20:38:16.238]    └─ closed after 113ms
+[20:38:16.238] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:16.364] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:16.595] 🎯 ARB #55 | T+196s | YES=$0.640 + NO=$0.340 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=124ms
+[20:38:16.595] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:16.710] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.360 = $1.0200 | spread=$0.0200
+[20:38:16.822] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.360 = $1.0200 | spread=$0.0200
+[20:38:16.942]    └─ closed after 348ms
+[20:38:16.942] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:17.064] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:17.171] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:17.290] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:17.404] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:17.551] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:17.665] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:17.775] 🎯 ARB #56 | T+197s | YES=$0.640 + NO=$0.340 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=109ms
+[20:38:17.890]    └─ closed after 116ms
+[20:38:17.890] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.350 = $1.0100 | spread=$0.0100
+[20:38:18.007] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.350 = $1.0100 | spread=$0.0100
+[20:38:18.109] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.350 = $1.0100 | spread=$0.0100
+[20:38:18.220] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.350 = $1.0100 | spread=$0.0100
+[20:38:18.442] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.340 = $1.0100 | spread=$0.0100
+[20:38:18.443]   ... polls=600 rate=8.1/s | YES=$0.660/0.670 NO=$0.330/0.340 | combined=$0.9900 | T+198s | arbs=56 errs=0
+[20:38:18.554] 🎯 ARB #57 | T+198s | YES=$0.660 + NO=$0.320 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=112ms
+[20:38:18.555] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.330 = $1.0100 | spread=$0.0100
+[20:38:18.665]    └─ closed after 110ms
+[20:38:18.665] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.330 = $1.0100 | spread=$0.0100
+[20:38:18.775] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.330 = $1.0100 | spread=$0.0100
+[20:38:18.896] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.330 = $1.0100 | spread=$0.0100
+[20:38:19.003] 🎯 ARB #58 | T+198s | YES=$0.670 + NO=$0.310 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=106ms
+[20:38:19.003] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.330 = $1.0200 | spread=$0.0200
+[20:38:19.148]    └─ closed after 145ms
+[20:38:19.148] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.320 = $1.0100 | spread=$0.0100
+[20:38:19.309] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.320 = $1.0100 | spread=$0.0100
+[20:38:19.430] 🎯 ARB #59 | T+199s | YES=$0.680 + NO=$0.260 = $0.9400 | spread=$0.0600 | profit@5shares=$0.30 | poll=122ms
+[20:38:19.544] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:19.651]    └─ closed after 221ms
+[20:38:19.651] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:19.762] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:19.887] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:19.990] 🎯 ARB #60 | T+199s | YES=$0.730 + NO=$0.250 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=103ms
+[20:38:19.990] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:20.105] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:20.211]    └─ closed after 221ms
+[20:38:20.211] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:20.323] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:20.444] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:20.553] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:20.676] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:20.795] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:20.903] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:21.015] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:21.135] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:21.242] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:21.351] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:21.475] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:21.589] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:21.699] 🎯 ARB #61 | T+201s | YES=$0.720 + NO=$0.250 = $0.9700 | spread=$0.0300 | profit@5shares=$0.15 | poll=110ms
+[20:38:21.699] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.280 = $1.0300 | spread=$0.0300
+[20:38:21.809] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:38:21.928]    └─ closed after 229ms
+[20:38:21.928] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:22.044] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:22.148] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:22.266] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:22.391] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:22.502] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:22.637] 🎯 ARB #62 | T+202s | YES=$0.720 + NO=$0.260 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=134ms
+[20:38:22.637] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:22.742]    └─ closed after 105ms
+[20:38:22.742] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:22.857] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:22.975] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:23.093] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:23.203] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:23.333] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:23.445] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:23.569] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:23.682] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:23.794] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:23.903] 🎯 ARB #63 | T+203s | YES=$0.730 + NO=$0.250 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=109ms
+[20:38:23.903] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:24.017] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:24.132] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:24.242] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:24.355] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:24.464] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:24.583] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:24.702] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:24.815] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:24.960] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:25.068] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:25.175] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:25.302] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:25.409] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:25.524] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:25.628] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:25.747] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:25.849] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:25.956] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:26.063]    └─ closed after 2161ms
+[20:38:26.063] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:26.170] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:26.273] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:26.385] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:26.493] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:26.595] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:26.701] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:26.814] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:26.924] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.270 = $1.0100 | spread=$0.0100
+[20:38:27.034] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:27.145] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:27.254] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:27.409] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:27.525] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:27.640] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:27.753] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:27.865] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:27.974] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:28.082] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:28.186] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:28.300] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:28.420] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:28.527] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:28.640] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:28.753] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:28.873] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:28.988] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:29.101] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:29.212] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:29.325] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:29.436] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:29.541] 🎯 ARB #64 | T+209s | YES=$0.740 + NO=$0.240 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=105ms
+[20:38:29.541] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:29.653] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:29.764] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:29.877] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:29.982] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:30.092] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:30.201] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:30.318] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:30.451] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:30.561] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:30.672] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:30.785] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:30.906] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:31.014] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:31.125] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:31.230] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:31.339] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:31.464] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:38:31.575] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:38:31.684] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:38:31.828] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:38:31.934] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:38:32.049] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:38:32.161] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:32.271] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:32.376] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:38:32.498] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:38:32.623] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:38:32.739] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:32.853] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:32.975] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:33.090] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:33.205] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:33.412] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:33.522] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:33.632] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:33.744] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:33.864] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:33.970] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:34.081] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:34.196] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:34.315] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:34.428] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:34.547] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:34.658] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:34.764] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:34.877] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:35.006] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:35.132] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:35.247] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:35.363] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:35.483] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:35.596]    └─ closed after 6055ms
+[20:38:35.596] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.250 = $1.0200 | spread=$0.0200
+[20:38:35.708] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:35.818] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:35.926] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.250 = $1.0100 | spread=$0.0100
+[20:38:36.029] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:36.144] 🎯 ARB #65 | T+216s | YES=$0.740 + NO=$0.240 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=115ms
+[20:38:36.144] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:38:36.253]    └─ closed after 109ms
+[20:38:36.253] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:36.374] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:36.504] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:36.619] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:36.728] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:36.839] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:36.942] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:37.055] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:37.174] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:37.300] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:38:37.409] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:37.527] 🎯 ARB #66 | T+217s | YES=$0.730 + NO=$0.250 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=119ms
+[20:38:37.527] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.270 = $1.0200 | spread=$0.0200
+[20:38:37.650]    └─ closed after 123ms
+[20:38:37.650] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.280 = $1.0300 | spread=$0.0300
+[20:38:37.761] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:37.877] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:37.990] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.280 = $1.0100 | spread=$0.0100
+[20:38:38.157] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.320 = $1.0500 | spread=$0.0500
+[20:38:38.277] 🎯 ARB #67 | T+218s | YES=$0.670 + NO=$0.310 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=119ms
+[20:38:38.277] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.320 = $1.0100 | spread=$0.0100
+[20:38:38.391] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:38.559] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:38.682] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:38.798] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:38.909] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:39.011] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:39.127] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:39.237] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:39.353] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:39.469] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:39.586] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:39.700] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:39.827] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:39.931] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:40.048] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:40.156] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:40.266] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:40.382] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:40.499] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:38:40.612] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:40.728] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:40.855] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:40.967] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:41.081] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:41.247] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:41.359] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:41.482] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:41.602] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:41.706] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:41.817] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:41.921] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:42.030] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:42.140] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:42.244] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:42.362] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:42.478] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:42.594] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:42.699] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:42.805] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:42.912] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:43.034] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.330 = $1.0600 | spread=$0.0600
+[20:38:43.150] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.330 = $1.0400 | spread=$0.0400
+[20:38:43.254] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.330 = $1.0400 | spread=$0.0400
+[20:38:43.361] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.330 = $1.0400 | spread=$0.0400
+[20:38:43.469] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.360 = $1.0700 | spread=$0.0700
+[20:38:43.582] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.360 = $1.0200 | spread=$0.0200
+[20:38:43.703]    └─ closed after 5426ms
+[20:38:43.703] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.370 = $1.0300 | spread=$0.0300
+[20:38:43.806] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.380 = $1.0200 | spread=$0.0200
+[20:38:43.922] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:44.037] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:44.150] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:44.297] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:44.403] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:44.518] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:44.627] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:44.744] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:44.857] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:44.973] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:45.088] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:45.206] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:45.317] 🎯 ARB #68 | T+225s | YES=$0.620 + NO=$0.360 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=111ms
+[20:38:45.317] 🔄 SELL ARB | YES_sell=$0.630 + NO_sell=$0.380 = $1.0100 | spread=$0.0100
+[20:38:45.434] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.380 = $1.0200 | spread=$0.0200
+[20:38:45.546] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.380 = $1.0200 | spread=$0.0200
+[20:38:45.659] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.380 = $1.0200 | spread=$0.0200
+[20:38:45.791] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.380 = $1.0200 | spread=$0.0200
+[20:38:45.896] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.380 = $1.0200 | spread=$0.0200
+[20:38:46.036] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.380 = $1.0200 | spread=$0.0200
+[20:38:46.146] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:46.283]    └─ closed after 965ms
+[20:38:46.283] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:46.395] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:46.511] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:46.617] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:46.723] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:46.824] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:46.965] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:47.081] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:47.189] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:47.319] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:47.444] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:47.558] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:47.673] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:47.792] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:47.906] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:48.021] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:48.139] 🔄 SELL ARB | YES_sell=$0.640 + NO_sell=$0.370 = $1.0100 | spread=$0.0100
+[20:38:48.360] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.350 = $1.0100 | spread=$0.0100
+[20:38:48.487] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.350 = $1.0100 | spread=$0.0100
+[20:38:48.595] 🔄 SELL ARB | YES_sell=$0.660 + NO_sell=$0.350 = $1.0100 | spread=$0.0100
+[20:38:48.709] 🎯 ARB #69 | T+228s | YES=$0.650 + NO=$0.330 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=114ms
+[20:38:48.709] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.350 = $1.0200 | spread=$0.0200
+[20:38:48.827] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.350 = $1.0200 | spread=$0.0200
+[20:38:48.935] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.350 = $1.0200 | spread=$0.0200
+[20:38:49.050] 🔄 SELL ARB | YES_sell=$0.670 + NO_sell=$0.340 = $1.0100 | spread=$0.0100
+[20:38:49.163]    └─ closed after 454ms
+[20:38:49.163] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.340 = $1.0200 | spread=$0.0200
+[20:38:49.269] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.340 = $1.0200 | spread=$0.0200
+[20:38:49.370] 🎯 ARB #70 | T+229s | YES=$0.660 + NO=$0.320 = $0.9800 | spread=$0.0200 | profit@5shares=$0.10 | poll=101ms
+[20:38:49.370] 🔄 SELL ARB | YES_sell=$0.680 + NO_sell=$0.340 = $1.0200 | spread=$0.0200
+[20:38:49.486] 🔄 SELL ARB | YES_sell=$0.700 + NO_sell=$0.320 = $1.0200 | spread=$0.0200
+[20:38:49.596] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.320 = $1.0300 | spread=$0.0300
+[20:38:49.702]    └─ closed after 332ms
+[20:38:49.702] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.340 = $1.0500 | spread=$0.0500
+[20:38:49.820] 🎯 ARB #71 | T+229s | YES=$0.660 + NO=$0.310 = $0.9700 | spread=$0.0300 | profit@5shares=$0.15 | poll=118ms
+[20:38:49.820] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:49.935] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:50.068] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:50.173] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:50.280] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:50.391] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:51.621] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:51.735] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:51.847] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:51.963] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:52.078] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:52.186] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:52.303] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:52.409] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:52.517] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:52.619] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:52.721] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:52.830] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:52.935] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:53.041] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:53.158] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:38:53.271] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.340 = $1.0500 | spread=$0.0500
+[20:38:53.387] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.340 = $1.0500 | spread=$0.0500
+[20:38:53.496] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.340 = $1.0500 | spread=$0.0500
+[20:38:53.604] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.340 = $1.0500 | spread=$0.0500
+[20:38:53.717] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.340 = $1.0500 | spread=$0.0500
+[20:38:53.823] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.350 = $1.0600 | spread=$0.0600
+[20:38:53.940] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.350 = $1.0600 | spread=$0.0600
+[20:38:54.051] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.350 = $1.0600 | spread=$0.0600
+[20:38:54.051]   ... polls=900 rate=8.2/s | YES=$0.650/0.710 NO=$0.290/0.350 | combined=$0.9400 | T+233s | arbs=71 errs=0
+[20:38:54.157]    └─ closed after 4337ms
+[20:38:54.157] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.350 = $1.0600 | spread=$0.0600
+[20:38:54.290] 🎯 ARB #72 | T+234s | YES=$0.680 + NO=$0.290 = $0.9700 | spread=$0.0300 | profit@5shares=$0.15 | poll=133ms
+[20:38:54.290] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.310 = $1.0200 | spread=$0.0200
+[20:38:54.428] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.310 = $1.0200 | spread=$0.0200
+[20:38:54.642] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.310 = $1.0200 | spread=$0.0200
+[20:38:54.757] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.370 = $1.0800 | spread=$0.0800
+[20:38:54.898] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.370 = $1.0800 | spread=$0.0800
+[20:38:55.015] 🔄 SELL ARB | YES_sell=$0.710 + NO_sell=$0.370 = $1.0800 | spread=$0.0800
+[20:38:55.128] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.370 = $1.0900 | spread=$0.0900
+[20:38:55.243] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.370 = $1.0900 | spread=$0.0900
+[20:38:55.363] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.370 = $1.0200 | spread=$0.0200
+[20:38:55.474] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.370 = $1.0200 | spread=$0.0200
+[20:38:55.580] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.370 = $1.0200 | spread=$0.0200
+[20:38:55.692] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.370 = $1.0200 | spread=$0.0200
+[20:38:55.807] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.370 = $1.0200 | spread=$0.0200
+[20:38:55.917] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.370 = $1.0200 | spread=$0.0200
+[20:38:56.023] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:56.136]    └─ closed after 1847ms
+[20:38:56.136] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:56.250] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:56.360] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:56.467] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:56.588] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:56.702] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:56.819] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:56.929] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:57.051] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:57.158] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:57.273] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:57.387] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:57.495] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:57.608] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:57.718] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:57.827] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:57.935] 🔄 SELL ARB | YES_sell=$0.650 + NO_sell=$0.360 = $1.0100 | spread=$0.0100
+[20:38:58.054] 🎯 ARB #73 | T+237s | YES=$0.640 + NO=$0.300 = $0.9400 | spread=$0.0600 | profit@5shares=$0.30 | poll=119ms
+[20:38:58.054] 🔄 SELL ARB | YES_sell=$0.700 + NO_sell=$0.360 = $1.0600 | spread=$0.0600
+[20:38:58.164] 🔄 SELL ARB | YES_sell=$0.700 + NO_sell=$0.360 = $1.0600 | spread=$0.0600
+[20:38:58.279] 🔄 SELL ARB | YES_sell=$0.700 + NO_sell=$0.350 = $1.0500 | spread=$0.0500
+[20:38:58.383] 🔄 SELL ARB | YES_sell=$0.700 + NO_sell=$0.350 = $1.0500 | spread=$0.0500
+[20:38:58.494] 🔄 SELL ARB | YES_sell=$0.700 + NO_sell=$0.350 = $1.0500 | spread=$0.0500
+[20:38:58.603] 🔄 SELL ARB | YES_sell=$0.700 + NO_sell=$0.350 = $1.0500 | spread=$0.0500
+[20:38:58.731] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.340 = $1.0600 | spread=$0.0600
+[20:38:58.844] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.340 = $1.0600 | spread=$0.0600
+[20:38:58.961] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.340 = $1.0600 | spread=$0.0600
+[20:38:59.077] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.340 = $1.0600 | spread=$0.0600
+[20:38:59.194] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.340 = $1.0600 | spread=$0.0600
+[20:38:59.319] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.340 = $1.0600 | spread=$0.0600
+[20:38:59.426] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.340 = $1.0600 | spread=$0.0600
+[20:38:59.542] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.340 = $1.0600 | spread=$0.0600
+[20:38:59.663] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.340 = $1.0600 | spread=$0.0600
+[20:38:59.781] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.340 = $1.0600 | spread=$0.0600
+[20:38:59.894] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.340 = $1.0700 | spread=$0.0700
+[20:39:00.017] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.340 = $1.0700 | spread=$0.0700
+[20:39:00.194] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.340 = $1.0300 | spread=$0.0300
+[20:39:00.314] 🔄 SELL ARB | YES_sell=$0.690 + NO_sell=$0.320 = $1.0100 | spread=$0.0100
+[20:39:00.434] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.320 = $1.0500 | spread=$0.0500
+[20:39:00.557] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.320 = $1.0600 | spread=$0.0600
+[20:39:00.678] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.320 = $1.0600 | spread=$0.0600
+[20:39:00.782] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.320 = $1.0600 | spread=$0.0600
+[20:39:00.898] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.320 = $1.0600 | spread=$0.0600
+[20:39:01.007] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.320 = $1.0600 | spread=$0.0600
+[20:39:01.129] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.320 = $1.0600 | spread=$0.0600
+[20:39:01.260] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.320 = $1.0600 | spread=$0.0600
+[20:39:01.424] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.320 = $1.0600 | spread=$0.0600
+[20:39:01.666] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:01.797] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:01.909] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:02.020] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:02.136] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:02.255] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:02.413] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:02.739] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:02.874] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:02.998] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:03.195] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:03.323] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:03.490] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:03.602] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:03.861] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:03.997] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:04.117] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.330 = $1.0700 | spread=$0.0700
+[20:39:04.250] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:04.385] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:04.501] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:04.623] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:04.733] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:04.851] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:04.964] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:05.092] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:05.207] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:05.313] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:05.425] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:05.530] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:05.647] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:05.755] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:05.868] 🔄 SELL ARB | YES_sell=$0.740 + NO_sell=$0.280 = $1.0200 | spread=$0.0200
+[20:39:05.983] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.280 = $1.0300 | spread=$0.0300
+[20:39:06.089] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.280 = $1.0300 | spread=$0.0300
+[20:39:06.209] 🔄 SELL ARB | YES_sell=$0.720 + NO_sell=$0.320 = $1.0400 | spread=$0.0400
+[20:39:06.322] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.260 = $1.0100 | spread=$0.0100
+[20:39:06.439] 🔄 SELL ARB | YES_sell=$0.760 + NO_sell=$0.260 = $1.0200 | spread=$0.0200
+[20:39:06.547] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:06.681] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:06.792] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:06.916] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:07.020] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:07.136] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:07.248] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:07.358] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:07.469] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:07.597] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:07.709] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:07.814] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:07.926] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:08.038] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:08.164] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:08.287] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:08.401] 🔄 SELL ARB | YES_sell=$0.770 + NO_sell=$0.260 = $1.0300 | spread=$0.0300
+[20:39:08.513] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.260 = $1.0400 | spread=$0.0400
+[20:39:08.630] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.260 = $1.0400 | spread=$0.0400
+[20:39:08.733] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.260 = $1.0400 | spread=$0.0400
+[20:39:08.841] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.260 = $1.0400 | spread=$0.0400
+[20:39:08.946] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.300 = $1.0800 | spread=$0.0800
+[20:39:09.057] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.300 = $1.0500 | spread=$0.0500
+[20:39:09.169] 🔄 SELL ARB | YES_sell=$0.750 + NO_sell=$0.300 = $1.0500 | spread=$0.0500
+[20:39:09.282] 🔄 SELL ARB | YES_sell=$0.730 + NO_sell=$0.300 = $1.0300 | spread=$0.0300
+[20:39:09.390] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100
+[20:39:09.521]    └─ closed after 11467ms
+[20:39:09.521] 🔄 SELL ARB | YES_sell=$0.780 + NO_sell=$0.230 = $1.0100 | spread=$0.0100

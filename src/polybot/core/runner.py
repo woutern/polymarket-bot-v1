@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 
 _TICK_INTERVAL = 1.0   # seconds between engine ticks
 _WINDOW_SECONDS = 300  # 5-minute window duration
+_MAX_LIVE_ORDERS = 4   # max concurrent open GTC orders (prevents stale-reprice flood)
 
 # Extract asset name from pair key, e.g. "BTC_5M" → "BTC"
 def _pair_to_asset(pair: str) -> str:
@@ -231,7 +232,10 @@ class WindowRunner:
             state = self.feed.market_state(seconds=seconds, prob_up=prob_up)
 
             # Engine tick → action
-            action = self.engine.run_tick(state)
+            # In live mode, pass reserved open-order USD so budget isn't overrun
+            # by pending GTC orders that haven't filled yet.
+            reserved = self._order_client.reserved_buy_usd() if self.mode == "live" else 0.0
+            action = self.engine.run_tick(state, reserved_usd=reserved)
 
             # Verbose tick log — shows every decision when debug logging is on
             if logger.isEnabledFor(logging.DEBUG):
@@ -313,6 +317,10 @@ class WindowRunner:
         from polybot.execution.mm_live_client import MMLiveClient
         client: MMLiveClient = self._order_client
 
+        # Throttle: don't flood the CLOB. Wait for existing orders to fill/cancel.
+        if len(client.live_orders()) >= _MAX_LIVE_ORDERS:
+            return
+
         if action.buy_up_shares > 0 and action.buy_up_price > 0:
             oid = client.post_buy("YES", action.buy_up_shares, action.buy_up_price)
             if oid:
@@ -334,19 +342,31 @@ class WindowRunner:
                 logger.info("live_sell_dn oid=%s shares=%d price=%.4f", oid, action.sell_down_shares, action.sell_down_price)
 
     def _sync_live_fills(self) -> None:
-        """Check live orders for fills and apply to engine position."""
+        """Check live orders for fills and apply to engine position.
+
+        Handles both partial fills (status=LIVE, filled_shares > 0) and full fills
+        (status=MATCHED/FILLED). Tracks _synced_shares so partial fills are applied
+        incrementally without double-counting.
+        """
         from polybot.execution.mm_live_client import MMLiveClient, _TERMINAL
         client: MMLiveClient = self._order_client
 
         for order in list(client.orders.values()):
-            if order.status in _TERMINAL and order.filled_shares > 0:
-                if not getattr(order, "_synced", False):
-                    is_up = order.token == "YES"
-                    if order.side == "BUY":
-                        self.engine.position.buy(is_up, order.filled_shares, order.filled_price or order.price)
-                    else:
-                        self.engine.position.sell(is_up, order.filled_shares, order.filled_price or order.price)
-                    order._synced = True
+            # Refresh status from CLOB so fills (partial or full) are detected promptly
+            if order.status not in _TERMINAL:
+                client.get_status(order.order_id)
+
+            # Apply any newly-filled shares not yet reflected in position.
+            # Works for both partial fills (LIVE with filled_shares > 0) and full fills.
+            already_synced = getattr(order, "_synced_shares", 0)
+            newly_filled = order.filled_shares - already_synced
+            if newly_filled > 0:
+                is_up = order.token == "YES"
+                if order.side == "BUY":
+                    self.engine.position.buy(is_up, newly_filled, order.filled_price or order.price)
+                else:
+                    self.engine.position.sell(is_up, newly_filled, order.filled_price or order.price)
+                order._synced_shares = order.filled_shares
 
     # ------------------------------------------------------------------
     # Helpers

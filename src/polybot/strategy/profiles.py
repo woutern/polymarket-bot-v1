@@ -3,12 +3,11 @@
 Each profile is a StrategyProfile instance with pair-specific tuning.
 The strategy logic (MarketMakerStrategy, AccumulateOnlyStrategy) is shared.
 
-Sources:
-- BTC_5m: K9 data — sells actively, high budget
-- SOL_5m: K9 data — zero sells, pure accumulation
-- XRP_5m: K9 data — zero sells, pure accumulation
-- ETH_5m: no K9 data — assume BTC-style
-- *_1h:   K9 data — zero sells, very small open, long commit time
+Sell philosophy (all 5m pairs):
+- Only sell to REDEPLOY capital when direction is near-certain (dead side ≥ 88c)
+- Reversals disabled — too noisy in 5m windows, creates churn losses
+- Unfavored-rich disabled — 55/45 splits are not clear enough to justify friction
+- Late dump only if bid collapses to ≤ 10c very late in window
 """
 
 from __future__ import annotations
@@ -19,13 +18,15 @@ from polybot.strategy.profile import StrategyProfile
 
 BTC_5M_PROFILE = StrategyProfile(
     name="btc_5m",
-    budget=80.0,
+    budget=50.0,
     sells_enabled=True,
-    sell_cooldown=20,             # was 10 — less frequent sells
+    dead_side_threshold=0.75,         # dump losing side when winning side > 75c
+    disable_reversals_seconds=0,      # reversals disabled — too noisy in 5m
+    unfavored_rich_threshold=0.99,    # effectively disabled
+    late_dump_threshold=0.10,         # only late-dump if bid collapses to ≤ 10c
     hard_cap=0.82,
     dying_side_threshold=0.70,
-    dead_side_threshold=0.90,    # was 0.80 — stop-loss only on very hard moves
-    payout_floor_sell_enabled=False,  # disabled — caused sideways churn
+    payout_floor_sell_enabled=False,
     min_hedge_shares=0,
 )
 
@@ -33,10 +34,12 @@ ETH_5M_PROFILE = StrategyProfile(
     name="eth_5m",
     budget=50.0,
     sells_enabled=True,
-    sell_cooldown=20,
+    dead_side_threshold=0.75,
+    disable_reversals_seconds=0,
+    unfavored_rich_threshold=0.99,
+    late_dump_threshold=0.10,
     hard_cap=0.82,
     dying_side_threshold=0.70,
-    dead_side_threshold=0.90,    # same conservative stop-loss as BTC
     payout_floor_sell_enabled=False,
     min_hedge_shares=0,
 )
@@ -44,8 +47,12 @@ ETH_5M_PROFILE = StrategyProfile(
 SOL_5M_PROFILE = StrategyProfile(
     name="sol_5m",
     budget=50.0,
-    sells_enabled=False,      # K9: zero sells on SOL 5m
-    open_budget_pct=0.08,     # SOL moves faster — smaller open
+    sells_enabled=True,
+    open_budget_pct=0.08,             # SOL moves faster — smaller open
+    dead_side_threshold=0.75,
+    disable_reversals_seconds=0,
+    unfavored_rich_threshold=0.99,
+    late_dump_threshold=0.10,
     hard_cap=0.82,
     dying_side_threshold=0.70,
     payout_floor_sell_enabled=False,
@@ -55,7 +62,11 @@ SOL_5M_PROFILE = StrategyProfile(
 XRP_5M_PROFILE = StrategyProfile(
     name="xrp_5m",
     budget=50.0,
-    sells_enabled=False,      # K9: zero sells on XRP 5m
+    sells_enabled=True,
+    dead_side_threshold=0.75,
+    disable_reversals_seconds=0,
+    unfavored_rich_threshold=0.99,
+    late_dump_threshold=0.10,
     hard_cap=0.82,
     dying_side_threshold=0.70,
     payout_floor_sell_enabled=False,

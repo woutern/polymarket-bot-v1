@@ -122,7 +122,7 @@ class MarketMakerStrategy:
         Returns (up_pct, down_pct). More confident = more to the winning side.
         """
         if confidence >= 0.85:
-            win_pct = 0.80
+            win_pct = 0.75  # high conviction → 75% toward winning side
         elif confidence >= 0.70:
             win_pct = 0.70
         elif confidence >= 0.55:
@@ -187,8 +187,8 @@ class MarketMakerStrategy:
             return 0.85
         if edge < 0.10:
             return 0.95
-        if edge >= 0.20:
-            return 1.10
+        if edge >= 0.18:
+            return 1.25  # strong conviction (prob >= 0.68): deploy 25% more budget
         return 1.00
 
     # ── Reversal detection ───────────────────────────────────────────────────
@@ -362,7 +362,9 @@ class MarketMakerStrategy:
         """Decide what to sell this tick.
 
         Priority order:
-        1. DEAD_SIDE — other bid > 80c, this side is going to zero
+        1. DEAD_SIDE — other bid > 75c, dump up to 3 tranches
+        1b. EARLY_REBALANCE — other bid > 65c, sell 1 tranche (on the way down)
+        1c. CONVICTION_DUMP — T+260+, other bid >= 70c, dump ALL losing shares
         2. REVERSAL — direction flipped, exit losing side fast (capped at 25%)
         3. PAYOUT_FLOOR — excess shares above floor where bid > hold_value
         4. UNFAVORED_RICH — losing side avg > 50c and market edge > 10c
@@ -397,10 +399,31 @@ class MarketMakerStrategy:
         sell_price = losing_bid
         reason = ""
 
-        # 1. DEAD_SIDE: other bid > 80c → dump the losing side
+        # 1. DEAD_SIDE: other bid > dead_side_threshold → dump the losing side
         if other_bid > p.dead_side_threshold and losing_shares >= p.shares_per_order:
             shares_to_sell = min(losing_shares, p.shares_per_order * 3)
             reason = "DEAD_SIDE"
+
+        # 1b. EARLY_REBALANCE: sell 1 small tranche on the way down, before full dead-side.
+        # Captures some value when the losing side is still worth 20-40c.
+        elif (
+            other_bid > p.early_rebalance_threshold
+            and losing_bid >= p.early_rebalance_min_bid
+            and losing_shares >= p.shares_per_order
+        ):
+            shares_to_sell = p.shares_per_order  # 1 small tranche only
+            reason = "EARLY_REBALANCE"
+
+        # 1c. CONVICTION_DUMP: last 40s + winning side >= conviction threshold →
+        # dump ALL remaining losing shares. Lower trigger (0.70) than DEAD_SIDE (0.75)
+        # but only fires in the final stretch when there's no time to recover.
+        elif (
+            seconds >= p.conviction_dump_start
+            and other_bid >= p.conviction_dump_threshold
+            and losing_shares >= p.shares_per_order
+        ):
+            shares_to_sell = losing_shares  # full exit
+            reason = "CONVICTION_DUMP"
 
         # 2. REVERSAL: flip detected → exit losing side fast
         elif in_reversal_mode and losing_shares >= p.shares_per_order and seconds >= 20:
@@ -444,8 +467,10 @@ class MarketMakerStrategy:
             shares_to_sell = min(losing_shares, p.shares_per_order)
             reason = "LATE_DUMP"
 
-        # Never sell lottery tickets (price dropped below 15c — not worth posting)
-        if sell_price < 0.15:
+        # Never sell lottery tickets (price dropped below 15c — not worth the friction).
+        # Exception: CONVICTION_DUMP bypasses this floor — in the last 40s with high
+        # conviction, any recovery (even 5c) beats $0 at resolution.
+        if sell_price < 0.15 and reason != "CONVICTION_DUMP":
             shares_to_sell = 0
 
         if shares_to_sell > 0 and sell_price > 0:
@@ -524,14 +549,30 @@ class MarketMakerStrategy:
         total = position.total_shares
 
         # ── Combined avg gate ────────────────────────────────────────────────
-        # If both sides held and combined_avg >= gate, freeze the expensive LOSING side.
-        # The expensive winning side is fine — it pays out. It's the losing side we
-        # keep buying expensively that pushes combined_avg above $1.
-        # Example: DOWN at 73c (winning) + UP at 30c → combined 1.03. Stop buying DOWN.
+        # If combined_avg >= gate, freeze losing-side buys that would worsen it.
+        # Allow buys below current losing-side avg (they lower combined_avg).
+        # Block buys at/above current losing-side avg (they push combined higher).
+        # Example: UP winning at 0.65 avg, DOWN at 0.37 avg → combined 1.02.
+        #   DOWN ask 0.35 (< 0.37 avg) → allowed (lowers combined_avg).
+        #   DOWN ask 0.40 (>= 0.37 avg) → blocked (worsens combined_avg).
         combined_avg = position.combined_avg
         combined_avg_gate_active = (
             combined_avg > 0
             and combined_avg >= p.combined_avg_buy_gate
+        )
+
+        # ── Projected entry combined avg check ──────────────────────────────
+        # Before opening either side on an EMPTY position, check that buying BOTH
+        # sides at current asks would produce combined_avg <= gate.
+        # Prevents starting a window where yes_ask + no_ask > 0.97 (guaranteed loss).
+        # Only applies when position is empty — once we hold shares, the existing
+        # combined_avg gate handles further buys.
+        projected_entry_too_expensive = (
+            position.up_shares == 0
+            and position.down_shares == 0
+            and yes_ask > 0
+            and no_ask > 0
+            and (yes_ask + no_ask) > p.combined_avg_buy_gate
         )
 
         # ── BUY UP ──────────────────────────────────────────────────────────
@@ -544,9 +585,18 @@ class MarketMakerStrategy:
         # Dying side: UP dying if DOWN bid > threshold
         if seconds >= p.dying_side_start and no_bid > p.dying_side_threshold:
             can_buy_up = False
-        # Combined avg gate: block expensive LOSING side when combined already too high
-        if combined_avg_gate_active and yes_ask > 0.50 and not winning_up:
+        # Projected entry: on an empty position, block the LOSING side only.
+        # The winning side is always allowed to open the window.
+        # YES is the LOSING side when winning_up=False (DOWN is winning).
+        if projected_entry_too_expensive and not winning_up:
             can_buy_up = False
+        # Combined avg gate: block losing-side UP buys that worsen combined_avg.
+        # Block if ask >= current up_avg (averages up the losing side).
+        # up_avg=0 means no UP held yet — any buy would start a new expensive position.
+        if combined_avg_gate_active and not winning_up:
+            up_avg_floor = position.up_avg if position.up_shares > 0 else 0.0
+            if yes_ask >= up_avg_floor:
+                can_buy_up = False
         # Balance cap
         if total >= 10:
             up_after = position.up_shares + p.shares_per_order
@@ -573,9 +623,18 @@ class MarketMakerStrategy:
         # Dying side: DOWN dying if UP bid > threshold
         if seconds >= p.dying_side_start and yes_bid > p.dying_side_threshold:
             can_buy_down = False
-        # Combined avg gate: block expensive LOSING side when combined already too high
-        if combined_avg_gate_active and no_ask > 0.50 and winning_up:
+        # Projected entry: on an empty position, block the LOSING side only.
+        # The winning side is always allowed to open the window.
+        # NO is the LOSING side when winning_up=True (UP is winning).
+        if projected_entry_too_expensive and winning_up:
             can_buy_down = False
+        # Combined avg gate: block losing-side DOWN buys that worsen combined_avg.
+        # Block if ask >= current down_avg (averages up the losing side).
+        # down_avg=0 means no DOWN held yet — any buy would start a new expensive position.
+        if combined_avg_gate_active and winning_up:
+            dn_avg_floor = position.down_avg if position.down_shares > 0 else 0.0
+            if no_ask >= dn_avg_floor:
+                can_buy_down = False
         # Balance cap
         if total >= 10:
             dn_after = position.down_shares + p.shares_per_order

@@ -24,6 +24,11 @@ import signal
 import time
 from collections import deque
 
+import boto3
+from botocore.exceptions import ClientError
+
+import httpx
+
 from polybot.core.clock import current_window_open, WINDOW_SECONDS
 from polybot.core.controls import InMemoryControls
 from polybot.core.runner import WindowRunner, make_window_id
@@ -37,6 +42,9 @@ logger = logging.getLogger(__name__)
 # If fewer than this many seconds remain in the current window, skip it and wait
 # for the next one. We need at least a few seconds to resolve the market + connect.
 _MIN_SECONDS_TO_START = 60  # need at least 60s to trade meaningfully
+
+_CLAIM_TABLE = "polymarket-bot-controls"
+_CLAIM_TTL_SECONDS = 400  # slightly longer than a window, auto-expires
 
 
 def _pair_to_asset(pair: str) -> str:
@@ -170,6 +178,31 @@ class MMLoop:
                 await asyncio.sleep(seconds_left + 1.0)
                 continue
 
+            # Wallet balance check — skip window if USDC is too low to trade
+            if self.mode == "live":
+                balance = await _get_usdc_balance(self.settings)
+                min_needed = (self.budget_override or 20.0) * 0.10  # need at least 10% of budget
+                if balance is not None and balance < min_needed:
+                    logger.warning(
+                        "mm_loop_low_balance balance=%.2f min_needed=%.2f — waiting for positions to resolve",
+                        balance, min_needed,
+                    )
+                    await asyncio.sleep(30)
+                    continue
+                if balance is not None:
+                    logger.info("mm_loop_balance usdc=%.2f", balance)
+
+            # Atomic window claim — abort if another runner already owns this window.
+            # Prevents two processes (e.g. overlapping ECS tasks) from double-trading.
+            if self.mode == "live":
+                if not _claim_window(window.slug, self.pair):
+                    logger.warning(
+                        "mm_loop_window_already_claimed slug=%s pair=%s — skipping",
+                        window.slug, self.pair,
+                    )
+                    await asyncio.sleep(seconds_left + 1.0)
+                    continue
+
             # Apply budget override to profile
             if self.budget_override is not None:
                 self._apply_budget_override()
@@ -239,6 +272,41 @@ class MMLoop:
 
 
 # ------------------------------------------------------------------
+# Window claim — atomic dedup across parallel ECS tasks
+# ------------------------------------------------------------------
+
+def _claim_window(slug: str, pair: str) -> bool:
+    """Atomically claim a window in DynamoDB. Returns True if this runner owns it.
+
+    Uses a conditional put so only the first caller wins. Second caller gets
+    ConditionalCheckFailedException and must skip the window entirely.
+    TTL ensures claims auto-expire so the table doesn't grow forever.
+    """
+    try:
+        profile_name = "playground" if not os.getenv("AWS_EXECUTION_ENV") else None
+        session = boto3.Session(profile_name=profile_name, region_name="eu-west-1")
+        table = session.resource("dynamodb").Table(_CLAIM_TABLE)
+        table.put_item(
+            Item={
+                "bot": f"window_claim#{slug}#{pair}",
+                "claimed_at": int(time.time()),
+                "ttl": int(time.time()) + _CLAIM_TTL_SECONDS,
+            },
+            ConditionExpression="attribute_not_exists(bot)",
+        )
+        logger.info("mm_loop_window_claimed slug=%s pair=%s", slug, pair)
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        logger.warning("mm_loop_claim_error slug=%s error=%s", slug, str(exc)[:80])
+        return True  # On unexpected errors, allow trading (fail open, not closed)
+    except Exception as exc:
+        logger.warning("mm_loop_claim_error slug=%s error=%s", slug, str(exc)[:80])
+        return True  # Same: fail open
+
+
+# ------------------------------------------------------------------
 # Minimal settings stub for local use
 # ------------------------------------------------------------------
 
@@ -257,6 +325,25 @@ class _MinimalSettings:
 # ------------------------------------------------------------------
 # Result logging
 # ------------------------------------------------------------------
+
+async def _get_usdc_balance(settings) -> float | None:
+    """Fetch available USDC balance from Polymarket data API. Returns None on failure."""
+    try:
+        wallet = getattr(settings, "polymarket_funder", None) or None
+        if not wallet:
+            return None
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(
+                "https://data-api.polymarket.com/value",
+                params={"user": wallet},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return float(data.get("value", 0))
+    except Exception as exc:
+        logger.debug("mm_loop_balance_check_failed error=%s", str(exc)[:60])
+    return None
+
 
 def _log_result(result, window_id: str) -> None:
     logger.info(

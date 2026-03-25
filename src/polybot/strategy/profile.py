@@ -66,8 +66,19 @@ class StrategyProfile:
     # Dead side: sell ALL if other side bid is above this
     dead_side_threshold: float = 0.80
 
+    # Early rebalance: sell 1 small tranche when winning side > this but < dead_side_threshold.
+    # Captures losing-side value "on the way down" before it falls below the sell floor.
+    # Set >= dead_side_threshold to disable.
+    early_rebalance_threshold: float = 0.65
+    early_rebalance_min_bid: float = 0.20  # don't sell losing side if bid already below this
+
     # Unfavored rich: sell if losing side avg > this AND market edge > 10c
     unfavored_rich_threshold: float = 0.50
+
+    # Conviction dump: in the last ~40s, if winning side bid >= threshold, dump ALL losing shares.
+    # More aggressive than DEAD_SIDE (lower threshold + full exit + time-gated).
+    conviction_dump_start: int = 260      # seconds into window (last ~40s)
+    conviction_dump_threshold: float = 0.70  # winning side bid >= this → full exit
 
     # Late dump: sell losing side shares with bid below this
     late_dump_start: int = 180

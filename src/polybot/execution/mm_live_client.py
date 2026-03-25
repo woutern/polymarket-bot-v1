@@ -36,7 +36,7 @@ Side = Literal["BUY", "SELL"]
 Token = Literal["YES", "NO"]
 
 POLYMARKET_HOST = "https://clob.polymarket.com"
-_STATUS_REFRESH_INTERVAL = 5.0   # seconds between CLOB status polls
+_STATUS_REFRESH_INTERVAL = 1.0   # seconds between CLOB status polls
 _TERMINAL = {"MATCHED", "FILLED", "CANCELLED", "CANCELED", "REJECTED", "EXPIRED"}
 
 
@@ -124,7 +124,13 @@ class MMLiveClient:
         return [o for o in self.orders.values() if o.status not in _TERMINAL]
 
     def reserved_buy_usd(self) -> float:
-        return sum(o.price * o.shares for o in self.live_orders() if o.side == "BUY")
+        # Reserve only the UNFILLED portion of each live buy order.
+        # Partial fills reduce the outstanding reservation so budget is freed immediately.
+        return sum(
+            o.price * max(o.shares - o.filled_shares, 0)
+            for o in self.live_orders()
+            if o.side == "BUY"
+        )
 
     def stats(self) -> dict:
         all_orders = list(self.orders.values())

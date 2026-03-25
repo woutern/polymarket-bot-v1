@@ -311,8 +311,8 @@ class TestEngine:
         for s in range(10, 180, 5):
             engine.run_tick(make_state(
                 seconds=s,
-                yes_bid=0.55, no_bid=0.45,
-                yes_ask=0.55, no_ask=0.45,  # bid == ask → fills
+                yes_bid=0.50, no_bid=0.46,
+                yes_ask=0.50, no_ask=0.46,  # bid == ask → fills, combined 0.96 passes entry gate
                 prob_up=0.60,
             ))
         engine.commit()

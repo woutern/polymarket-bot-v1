@@ -128,8 +128,14 @@ class Engine:
     # Main entry point
     # ------------------------------------------------------------------
 
-    def run_tick(self, state: MarketState) -> StrategyAction:
-        """Process one tick. Returns the action the strategy decided."""
+    def run_tick(self, state: MarketState, reserved_usd: float = 0.0) -> StrategyAction:
+        """Process one tick. Returns the action the strategy decided.
+
+        Args:
+            reserved_usd: USD already reserved in open (unfilled) live orders.
+                          In live mode the runner passes live_client.reserved_buy_usd()
+                          so the budget accounts for pending orders, not just fills.
+        """
         self._tick_count += 1
 
         # Kill switch — caller must handle this
@@ -143,26 +149,36 @@ class Engine:
         if self._phase == WindowPhase.RESOLVED:
             return StrategyAction(reason="RESOLVED")
 
-        # Let paper client fill pending orders against this tick's spread
-        fills = self.client.tick(
-            yes_bid=state.yes_bid,
-            no_bid=state.no_bid,
-            yes_ask=state.yes_ask,
-            no_ask=state.no_ask,
-            seconds=state.seconds,
-        )
+        # Paper mode: simulate fills from pending paper orders.
+        # Live mode: skip — position is updated exclusively by runner._sync_live_fills()
+        # from real on-chain fills. Running the paper simulation in live mode would create
+        # phantom shares (paper-filled but never real-filled) that cause sell failures.
+        if self.mode == "paper":
+            fills = self.client.tick(
+                yes_bid=state.yes_bid,
+                no_bid=state.no_bid,
+                yes_ask=state.yes_ask,
+                no_ask=state.no_ask,
+                seconds=state.seconds,
+            )
+        else:
+            fills = []
 
         # Ask strategy what to do
-        # Use cash-based budget: total bought minus total received from sells.
+        # Use cash-based budget: total bought minus total received from sells,
+        # minus USD reserved in open (unfilled) live orders.
         # net_cost alone is wrong — sells at a loss free up more "cost" than cash actually returned.
+        # reserved_usd prevents over-ordering via GTC ladder before orders fill.
         budget = self.profile.budget - (
             self.position.total_bought_cost - self.position.total_sold_proceeds
-        )
+        ) - reserved_usd
         budget = max(budget, 0.0)
         action = self.strategy.on_tick(state, self.position, budget)
 
-        # Execute the action via the order client
-        self._execute_action(action, state)
+        # Paper mode: post to paper client so it can simulate fills next tick.
+        # Live mode: skip — runner._execute_live() posts directly to CLOB.
+        if self.mode == "paper":
+            self._execute_action(action, state)
 
         # Track sell reasons
         if action.has_action() and action.reason:
