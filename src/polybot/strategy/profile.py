@@ -118,6 +118,11 @@ class StrategyProfile:
     # ── Intra-window sell loss cap ───────────────────────────────────────────
     max_intrawindow_sell_loss: float = -3.0  # stop selling if realized losses exceed $3
 
+    # ── Combined avg gate ────────────────────────────────────────────────────
+    # Freeze buys on the expensive side when combined_avg >= this threshold.
+    # Prevents over-deploying into a losing combined position (>$1 = guaranteed loss).
+    combined_avg_buy_gate: float = 0.97     # stop adding to expensive side above this
+
     # ── Ladder configuration ─────────────────────────────────────────────────
     shares_per_order: int = 5
 

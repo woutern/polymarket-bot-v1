@@ -523,6 +523,17 @@ class MarketMakerStrategy:
         balance_cap = p.late_balance_cap if seconds >= 120 else p.early_balance_cap
         total = position.total_shares
 
+        # ── Combined avg gate ────────────────────────────────────────────────
+        # If both sides held and combined_avg >= gate, freeze the expensive LOSING side.
+        # The expensive winning side is fine — it pays out. It's the losing side we
+        # keep buying expensively that pushes combined_avg above $1.
+        # Example: DOWN at 73c (winning) + UP at 30c → combined 1.03. Stop buying DOWN.
+        combined_avg = position.combined_avg
+        combined_avg_gate_active = (
+            combined_avg > 0
+            and combined_avg >= p.combined_avg_buy_gate
+        )
+
         # ── BUY UP ──────────────────────────────────────────────────────────
         can_buy_up = True
         favored_up = prob_up >= 0.50
@@ -532,6 +543,9 @@ class MarketMakerStrategy:
             can_buy_up = False
         # Dying side: UP dying if DOWN bid > threshold
         if seconds >= p.dying_side_start and no_bid > p.dying_side_threshold:
+            can_buy_up = False
+        # Combined avg gate: block expensive LOSING side when combined already too high
+        if combined_avg_gate_active and yes_ask > 0.50 and not winning_up:
             can_buy_up = False
         # Balance cap
         if total >= 10:
@@ -558,6 +572,9 @@ class MarketMakerStrategy:
             can_buy_down = False
         # Dying side: DOWN dying if UP bid > threshold
         if seconds >= p.dying_side_start and yes_bid > p.dying_side_threshold:
+            can_buy_down = False
+        # Combined avg gate: block expensive LOSING side when combined already too high
+        if combined_avg_gate_active and no_ask > 0.50 and winning_up:
             can_buy_down = False
         # Balance cap
         if total >= 10:

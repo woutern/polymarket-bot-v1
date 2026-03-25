@@ -153,7 +153,12 @@ class Engine:
         )
 
         # Ask strategy what to do
-        budget = self.profile.budget - self.position.net_cost
+        # Use cash-based budget: total bought minus total received from sells.
+        # net_cost alone is wrong — sells at a loss free up more "cost" than cash actually returned.
+        budget = self.profile.budget - (
+            self.position.total_bought_cost - self.position.total_sold_proceeds
+        )
+        budget = max(budget, 0.0)
         action = self.strategy.on_tick(state, self.position, budget)
 
         # Execute the action via the order client
