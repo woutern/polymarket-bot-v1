@@ -303,7 +303,10 @@ class MarketMakerStrategy:
             if in_reversal_mode and seconds >= 30:
                 sell_cooldown_ok = True  # reversal bypasses cooldown
 
-            if sell_cooldown_ok:
+            # Don't keep selling if intra-window realized losses exceed limit
+            realized_loss_ok = position.realized_pnl >= p.max_intrawindow_sell_loss
+
+            if sell_cooldown_ok and realized_loss_ok:
                 action = self._decide_sell(
                     market, position, winning_up, confidence,
                     action, in_reversal_mode, reversal_detected,
@@ -440,6 +443,10 @@ class MarketMakerStrategy:
         ):
             shares_to_sell = min(losing_shares, p.shares_per_order)
             reason = "LATE_DUMP"
+
+        # Never sell lottery tickets (price dropped below 15c — not worth posting)
+        if sell_price < 0.15:
+            shares_to_sell = 0
 
         if shares_to_sell > 0 and sell_price > 0:
             if losing_up:

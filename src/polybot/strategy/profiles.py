@@ -21,24 +21,24 @@ BTC_5M_PROFILE = StrategyProfile(
     name="btc_5m",
     budget=80.0,
     sells_enabled=True,
-    sell_cooldown=10,
+    sell_cooldown=20,             # was 10 — less frequent sells
     hard_cap=0.82,
     dying_side_threshold=0.70,
-    dead_side_threshold=0.80,
-    payout_floor_sell_enabled=True,
-    min_hedge_shares=5,
+    dead_side_threshold=0.90,    # was 0.80 — stop-loss only on very hard moves
+    payout_floor_sell_enabled=False,  # disabled — caused sideways churn
+    min_hedge_shares=0,
 )
 
 ETH_5M_PROFILE = StrategyProfile(
     name="eth_5m",
     budget=50.0,
-    sells_enabled=True,       # no K9 ETH data — assume BTC-style
-    sell_cooldown=10,
+    sells_enabled=True,
+    sell_cooldown=20,
     hard_cap=0.82,
     dying_side_threshold=0.70,
-    dead_side_threshold=0.80,
-    payout_floor_sell_enabled=True,
-    min_hedge_shares=5,
+    dead_side_threshold=0.90,    # same conservative stop-loss as BTC
+    payout_floor_sell_enabled=False,
+    min_hedge_shares=0,
 )
 
 SOL_5M_PROFILE = StrategyProfile(

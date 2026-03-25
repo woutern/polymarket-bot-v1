@@ -8,9 +8,17 @@ set -e
 # Write initial heartbeat so ECS health check passes during startup
 python3 -c "import time; open('/tmp/heartbeat','w').write(str(time.time()))"
 
-echo "Starting MarketMaker Bot (V2 both-sides, live)..."
-PYTHONPATH=/app/src .venv/bin/python scripts/run_mm.py --live --yes --budget "${MM_BUDGET:-80}" --model &
-BOT_PID=$!
+echo "Starting MarketMaker Bot: BTC_5M..."
+PYTHONPATH=/app/src .venv/bin/python scripts/run_mm.py --live --yes --budget "${MM_BUDGET:-80}" --model --pair BTC_5M &
+BTC_PID=$!
+
+echo "Starting MarketMaker Bot: ETH_5M..."
+PYTHONPATH=/app/src .venv/bin/python scripts/run_mm.py --live --yes --budget "${ETH_BUDGET:-50}" --model --pair ETH_5M &
+ETH_PID=$!
+
+echo "Starting MarketMaker Bot: SOL_5M..."
+PYTHONPATH=/app/src .venv/bin/python scripts/run_mm.py --live --yes --budget "${SOL_BUDGET:-50}" --model --pair SOL_5M &
+SOL_PID=$!
 
 echo "Starting Dashboard on port 8888..."
 .venv/bin/python scripts/dashboard.py &
@@ -27,4 +35,4 @@ CLAIM_PID=$!
 # If any process dies, kill the others and exit so ECS restarts the task
 wait -n 2>/dev/null || wait
 echo "A process exited — shutting down."
-kill $BOT_PID $DASH_PID $OPP_PID $CLAIM_PID 2>/dev/null || true
+kill $BTC_PID $ETH_PID $SOL_PID $DASH_PID $OPP_PID $CLAIM_PID 2>/dev/null || true

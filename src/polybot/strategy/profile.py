@@ -115,6 +115,9 @@ class StrategyProfile:
     # ── Window loss limit ───────────────────────────────────────────────────
     window_loss_limit: float = 25.0       # stop increasing exposure if loss > $25
 
+    # ── Intra-window sell loss cap ───────────────────────────────────────────
+    max_intrawindow_sell_loss: float = -3.0  # stop selling if realized losses exceed $3
+
     # ── Ladder configuration ─────────────────────────────────────────────────
     shares_per_order: int = 5
 

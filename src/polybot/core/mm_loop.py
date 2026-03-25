@@ -24,7 +24,7 @@ import signal
 import time
 from collections import deque
 
-from polybot.core.clock import current_window_open, next_window_open, WINDOW_SECONDS
+from polybot.core.clock import current_window_open, WINDOW_SECONDS
 from polybot.core.controls import InMemoryControls
 from polybot.core.runner import WindowRunner, make_window_id
 from polybot.feeds.coinbase_ws import CoinbaseWS
@@ -217,13 +217,9 @@ class MMLoop:
             except OSError:
                 pass
 
-            # Wait until the next 5-min boundary (with a small buffer)
-            now = time.time()
-            next_open = next_window_open()
-            wait = max(0.0, next_open - now + 0.5)
-            if wait > 0:
-                logger.info("mm_loop_waiting_for_next_window wait=%.1fs", wait)
-                await asyncio.sleep(wait)
+            # Brief pause before re-checking — the top-of-loop seconds_left guard
+            # will enter the current window if enough time remains, or skip to next.
+            await asyncio.sleep(0.5)
 
     # ------------------------------------------------------------------
     # Budget override

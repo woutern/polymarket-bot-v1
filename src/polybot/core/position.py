@@ -35,6 +35,9 @@ class Position:
     last_sell_price_up: float = 0.0
     last_sell_price_down: float = 0.0
 
+    # Realized P&L from intra-window sells: positive = locked gains, negative = locked losses
+    realized_pnl: float = 0.0
+
     # ── Derived properties ──────────────────────────────────────────────────
 
     @property
@@ -122,6 +125,7 @@ class Position:
             self.up_cost = max(round(self.up_cost - shares * avg, 2), 0.0)
             if shares > 0:
                 self.last_sell_price_up = price
+                self.realized_pnl += round(shares * (price - avg), 2)
         else:
             shares = min(shares, self.down_shares)
             avg = self.down_avg
@@ -129,6 +133,7 @@ class Position:
             self.down_cost = max(round(self.down_cost - shares * avg, 2), 0.0)
             if shares > 0:
                 self.last_sell_price_down = price
+                self.realized_pnl += round(shares * (price - avg), 2)
         proceeds = round(shares * price, 2)
         self.sells_count += 1
         self.total_sold_proceeds += proceeds

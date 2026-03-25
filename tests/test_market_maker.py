@@ -207,8 +207,9 @@ def test_dead_side_sell():
     pos = Position()
     pos.buy(True, 20, 0.55)   # UP shares
     pos.buy(False, 20, 0.40)  # DOWN shares
-    # no_bid = 0.85 → UP is dying → sell UP
-    m = make_market(seconds=60, yes_bid=0.15, no_bid=0.85)
+    # no_bid = 0.92 > dead_side_threshold=0.90 → UP is dying → sell UP
+    # yes_bid=0.18 >= 0.15 so lottery-ticket guard doesn't block
+    m = make_market(seconds=60, yes_bid=0.18, no_bid=0.92)
     s._detect_reversal(m, False)  # prime direction state
     action = s.on_tick(m, pos, 80.0)
     assert action.sell_up_shares > 0
@@ -303,14 +304,11 @@ def test_reversal_detected_triggers_sell():
 def test_sell_and_rebuy_fires_after_dead_side():
     s = make_strategy()
     pos = Position()
-    # Small position so budget curve (max_deploy ~14 at T+30) > net_cost=4.75 → usable > 0
     pos.buy(True, 5, 0.55)
     pos.buy(False, 5, 0.40)
-    # no_bid=0.82 > dead_side_threshold=0.80 → DEAD_SIDE fires (sell UP)
-    # no_ask=0.81 <= hard_cap=0.82 (price_cap at T+30) → sell-and-rebuy DOWN is valid
-    # (no_bid=0.80 so no_ask=0.81, just under the cap; previously tested at bid=0.82 but
-    #  we now correctly cap at ask price, so ask must be <= 0.82)
-    # Normal buy DOWN blocked by balance_cap: 5+5=10 → dn_after/total=10/15=0.67 > 0.65
+    # dead_side_threshold=0.90: use a lower custom threshold so no_ask stays under hard_cap
+    s.profile.dead_side_threshold = 0.80
+    # no_bid=0.81 > 0.80 → DEAD_SIDE fires; no_ask=0.82 <= hard_cap → rebuy DOWN valid
     m = make_market(seconds=30, yes_bid=0.18, no_bid=0.81, prob_up=0.10)
     s._detect_reversal(m, False)  # prime direction state (DOWN winning)
     action = s.on_tick(m, pos, 80.0)
