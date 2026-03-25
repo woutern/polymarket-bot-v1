@@ -140,36 +140,43 @@ class MarketMakerStrategy:
         """How much of the budget can be deployed at this point in time.
 
         Slow early to avoid over-committing before direction is clear.
-        10% → 22% by T+60 → 60% by T+180 → 85% by T+240.
+        10% → 22% by mid1 → 60% by 3*mid1 → 85% by commit.
+
+        mid1=60  for 5m: checkpoints T+60, T+180
+        mid1=180 for 15m: checkpoints T+180, T+540
         """
         p = self.profile
+        m1 = p.budget_curve_mid1
+        m2 = m1 * 3
         open_pct = p.open_budget_pct
 
         if seconds <= 5:
             return open_pct
-        elif seconds <= 60:
-            progress = (seconds - 5) / 55.0
+        elif seconds <= m1:
+            progress = (seconds - 5) / max(m1 - 5, 1)
             return open_pct + 0.12 * progress       # → 22%
-        elif seconds <= 180:
-            progress = (seconds - 60) / 120.0
+        elif seconds <= m2:
+            progress = (seconds - m1) / max(m2 - m1, 1)
             return 0.22 + 0.38 * progress           # → 60%
         elif seconds <= p.commit_seconds:
-            progress = (seconds - 180) / max(p.commit_seconds - 180, 1)
+            progress = (seconds - m2) / max(p.commit_seconds - m2, 1)
             return 0.60 + 0.25 * progress           # → 85%
         return 0.85
 
     def _expensive_side_cap(self, seconds: int) -> float:
         """Maximum price we'll pay on either side, tightening over time.
 
-        Early: 82c (both sides near 50c, hard cap is enough).
-        Later: tighten to 65c (if you're buying at 65c+, the window is nearly over).
+        Checkpoints at mid1, 2*mid1, 3*mid1.
+        5m:  T+60 → 75c, T+120 → 70c, T+180 → 65c
+        15m: T+180 → 78c, T+360 → 73c, T+540 → 68c
         """
         p = self.profile
-        if seconds >= 180:
+        m1 = p.budget_curve_mid1
+        if seconds >= m1 * 3:
             return p.cap_t180
-        elif seconds >= 120:
+        elif seconds >= m1 * 2:
             return p.cap_t120
-        elif seconds >= 60:
+        elif seconds >= m1:
             return p.cap_t60
         return p.hard_cap
 
@@ -303,13 +310,14 @@ class MarketMakerStrategy:
             if in_reversal_mode and seconds >= 30:
                 sell_cooldown_ok = True  # reversal bypasses cooldown
 
-            # Don't keep selling if intra-window realized losses exceed limit
-            realized_loss_ok = position.realized_pnl >= p.max_intrawindow_sell_loss
-
-            if sell_cooldown_ok and realized_loss_ok:
+            if sell_cooldown_ok:
+                # realized_loss filter applied inside _decide_sell — only blocks
+                # optional recycling sells, never emergency exits (DEAD_SIDE, CONVICTION_DUMP).
+                realized_loss_ok = position.realized_pnl >= p.max_intrawindow_sell_loss
                 action = self._decide_sell(
                     market, position, winning_up, confidence,
                     action, in_reversal_mode, reversal_detected,
+                    realized_loss_ok=realized_loss_ok,
                 )
 
         # ── Budget calculation ────────────────────────────────────────────────
@@ -358,6 +366,7 @@ class MarketMakerStrategy:
         action: StrategyAction,
         in_reversal_mode: bool,
         reversal_detected: bool,
+        realized_loss_ok: bool = True,
     ) -> StrategyAction:
         """Decide what to sell this tick.
 
@@ -466,6 +475,12 @@ class MarketMakerStrategy:
         ):
             shares_to_sell = min(losing_shares, p.shares_per_order)
             reason = "LATE_DUMP"
+
+        # Realized-loss cap: only block optional recycling sells when P&L limit hit.
+        # DEAD_SIDE, EARLY_REBALANCE, CONVICTION_DUMP are emergency exits — always execute.
+        if not realized_loss_ok and reason in ("REVERSAL", "PAYOUT_FLOOR", "UNFAVORED_RICH", "LATE_DUMP"):
+            shares_to_sell = 0
+            reason = ""
 
         # Never sell lottery tickets (price dropped below 15c — not worth the friction).
         # Exception: CONVICTION_DUMP bypasses this floor — in the last 40s with high

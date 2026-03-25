@@ -25,6 +25,10 @@ SLUG_PREFIXES = {
     "ETH_1H": "eth-updown-1h",
     "SOL_1H": "sol-updown-1h",
     "XRP_1H": "xrp-updown-1h",
+    "BTC_15M": "btc-updown-15m",
+    "ETH_15M": "eth-updown-15m",
+    "SOL_15M": "sol-updown-15m",
+    "XRP_15M": "xrp-updown-15m",
 }
 
 
@@ -64,6 +68,9 @@ class Window:
         if window_seconds == 3600:
             key = f"{key}_1H"
             default_prefix = f"{asset.lower()}-updown-1h"
+        elif window_seconds == 900:
+            key = f"{key}_15M"
+            default_prefix = f"{asset.lower()}-updown-15m"
         else:
             default_prefix = f"{asset.lower()}-updown-5m"
         prefix = SLUG_PREFIXES.get(key, default_prefix)

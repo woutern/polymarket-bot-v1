@@ -73,6 +73,51 @@ XRP_5M_PROFILE = StrategyProfile(
     min_hedge_shares=0,
 )
 
+# ── 15-Minute Profiles ──────────────────────────────────────────────────────
+
+BTC_15M_PROFILE = StrategyProfile(
+    name="btc_15m",
+    budget=150.0,
+    open_budget_pct=0.08,         # smaller probe — wait for direction
+    budget_curve_mid1=180,        # T+180 = first ramp milestone (3x of 5m's T+60)
+    # Price caps at T+180, T+360, T+540 (scaled from 5m's T+60, T+120, T+180)
+    cap_t60=0.78,
+    cap_t120=0.73,
+    cap_t180=0.68,
+    hard_cap=0.82,
+    # Sells — active throughout, K9-style recycling
+    sells_enabled=True,
+    sell_cooldown=10,             # K9 rebuys within 10s
+    sell_start=60,                # give the open 1 min before selling
+    sell_end=720,
+    dead_side_threshold=0.78,
+    early_rebalance_threshold=0.65,
+    early_rebalance_min_bid=0.20,
+    conviction_dump_start=780,    # last 2 min
+    conviction_dump_threshold=0.72,
+    # Dying side: wait 3 min before applying
+    dying_side_threshold=0.72,
+    dying_side_start=180,
+    # Payout floor recycling — key for cheap late-window fills (K9 does 49% cheap)
+    payout_floor_sell_enabled=True,
+    payout_floor_min_excess=5,
+    min_hedge_shares=3,
+    # Budget / risk limits scaled for $150
+    window_loss_limit=40.0,
+    max_intrawindow_sell_loss=-8.0,
+    no_new_risk_seconds=690,
+    disable_reversals_seconds=750,
+    soft_stop_start=180,
+    # Late-window: don't dump cheap shares K9 would be buying
+    late_dump_start=540,
+    late_dump_threshold=0.08,
+    late_dump_min_ticks=8,
+    # Chop: more flips tolerated in longer window
+    chop_flip_threshold=6,
+    # Timing
+    commit_seconds=780,
+)
+
 # ── 1-Hour Profiles ─────────────────────────────────────────────────────────
 
 BTC_1H_PROFILE = StrategyProfile(
@@ -134,6 +179,7 @@ ALL_PROFILES: dict[str, StrategyProfile] = {
     "ETH_5M": ETH_5M_PROFILE,
     "SOL_5M": SOL_5M_PROFILE,
     "XRP_5M": XRP_5M_PROFILE,
+    "BTC_15M": BTC_15M_PROFILE,
     "BTC_1H": BTC_1H_PROFILE,
     "ETH_1H": ETH_1H_PROFILE,
     "SOL_1H": SOL_1H_PROFILE,

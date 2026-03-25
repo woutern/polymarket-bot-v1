@@ -152,5 +152,11 @@ class StrategyProfile:
     market_strong_edge: float = 0.20      # very clear market direction
     model_only_edge: float = 0.05         # market unclear, trust model only
 
+    # ── Budget curve milestones ──────────────────────────────────────────────
+    # Controls shape of both the budget ramp and the price-cap tightening schedule.
+    # For 5m: mid1=60 → checkpoints at T+60, T+120, T+180
+    # For 15m: mid1=180 → checkpoints at T+180, T+360, T+540
+    budget_curve_mid1: int = 60
+
     # ── Timing ─────────────────────────────────────────────────────────────
     commit_seconds: int = 250             # stop all trading at this second

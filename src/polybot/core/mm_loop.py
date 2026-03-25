@@ -44,11 +44,20 @@ logger = logging.getLogger(__name__)
 _MIN_SECONDS_TO_START = 60  # need at least 60s to trade meaningfully
 
 _CLAIM_TABLE = "polymarket-bot-controls"
-_CLAIM_TTL_SECONDS = 400  # slightly longer than a window, auto-expires
 
 
 def _pair_to_asset(pair: str) -> str:
     return pair.split("_")[0].upper()
+
+
+def _pair_to_window_seconds(pair: str) -> int:
+    """Return window duration in seconds for a given pair key."""
+    p = pair.upper()
+    if "1H" in p:
+        return 3600
+    if "15M" in p:
+        return 900
+    return 300  # default 5m
 
 
 class MMLoop:
@@ -147,12 +156,15 @@ class MMLoop:
                 await asyncio.sleep(10)
                 continue
 
-            # Determine current window timing
-            window_open_ts = current_window_open()
-            window_close_ts = window_open_ts + WINDOW_SECONDS
+            # Determine current window timing (supports 5m, 15m, 1h)
+            window_secs = _pair_to_window_seconds(self.pair)
+            now = int(time.time())
+            window_open_ts = now - (now % window_secs)
+            window_close_ts = window_open_ts + window_secs
             seconds_left = window_close_ts - time.time()
+            min_seconds_to_start = max(_MIN_SECONDS_TO_START, window_secs // 5)
 
-            if seconds_left < _MIN_SECONDS_TO_START:
+            if seconds_left < min_seconds_to_start:
                 # Too close to the end — wait for the next window
                 wait = seconds_left + 1.0
                 logger.info("mm_loop_skip_window seconds_left=%.1f waiting=%.1f", seconds_left, wait)
@@ -164,6 +176,7 @@ class MMLoop:
                 open_ts=window_open_ts,
                 close_ts=window_close_ts,
                 asset=self._asset,
+                slug=Window.slug_for_ts(window_open_ts, self._asset, window_secs),
             )
             try:
                 window = await resolve_window(window)
@@ -195,7 +208,7 @@ class MMLoop:
             # Atomic window claim — abort if another runner already owns this window.
             # Prevents two processes (e.g. overlapping ECS tasks) from double-trading.
             if self.mode == "live":
-                if not _claim_window(window.slug, self.pair):
+                if not _claim_window(window.slug, self.pair, window_secs):
                     logger.warning(
                         "mm_loop_window_already_claimed slug=%s pair=%s — skipping",
                         window.slug, self.pair,
@@ -275,7 +288,7 @@ class MMLoop:
 # Window claim — atomic dedup across parallel ECS tasks
 # ------------------------------------------------------------------
 
-def _claim_window(slug: str, pair: str) -> bool:
+def _claim_window(slug: str, pair: str, window_secs: int = 300) -> bool:
     """Atomically claim a window in DynamoDB. Returns True if this runner owns it.
 
     Uses a conditional put so only the first caller wins. Second caller gets
@@ -290,7 +303,7 @@ def _claim_window(slug: str, pair: str) -> bool:
             Item={
                 "bot": f"window_claim#{slug}#{pair}",
                 "claimed_at": int(time.time()),
-                "ttl": int(time.time()) + _CLAIM_TTL_SECONDS,
+                "ttl": int(time.time()) + window_secs + 100,
             },
             ConditionExpression="attribute_not_exists(bot)",
         )

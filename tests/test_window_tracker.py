@@ -73,17 +73,6 @@ def test_window_direction_down():
     assert w.resolved_direction.value == "down"
 
 
-# ---------------------------------------------------------------------------
-# 15m removal guard
-# ---------------------------------------------------------------------------
-
-def test_no_15m_windows_created():
-    """Assert 15m windows are never created."""
-    from polybot.models import SLUG_PREFIXES
-    for key in SLUG_PREFIXES:
-        assert "15m" not in key.lower(), f"15m slug prefix found: {key}"
-
-
 def test_window_tracker_5m_unchanged():
     """Existing 5-min tracker behaviour is unchanged."""
     tracker = WindowTracker(entry_seconds=10, asset="BTC", window_seconds=300)
