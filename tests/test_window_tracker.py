@@ -18,6 +18,32 @@ def test_slug_generation():
     assert Window.slug_for_ts(1710000000) == "btc-updown-5m-1710000000"
     # Not divisible — should align down
     assert Window.slug_for_ts(1710000123) == "btc-updown-5m-1710000000"
+    # Non-BTC assets must produce correct slugs (regression: resolver defaulted to BTC)
+    assert Window.slug_for_ts(1710000000, asset="ETH") == "eth-updown-5m-1710000000"
+    assert Window.slug_for_ts(1710000000, asset="SOL") == "sol-updown-5m-1710000000"
+
+
+def test_resolve_window_uses_asset():
+    """resolve_window must pass asset to slug_for_ts — not default to BTC."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    async def run():
+        from polybot.market.market_resolver import resolve_window
+        w = Window(open_ts=1710000000, close_ts=1710000300, asset="ETH")
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = lambda: None
+        mock_resp.json.return_value = []  # no market — slug is set before HTTP call
+
+        mock_get = AsyncMock(return_value=mock_resp)
+        with patch("httpx.AsyncClient.get", mock_get):
+            result = await resolve_window(w)
+
+        # slug must be ETH, not BTC
+        assert result.slug.startswith("eth-"), f"Expected eth- slug, got: {result.slug}"
+
+    import asyncio
+    asyncio.run(run())
 
 
 def test_window_tracker_open():

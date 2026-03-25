@@ -21,7 +21,7 @@ async def resolve_window(window: Window) -> Window:
     """
     slug = window.slug
     if not slug:
-        slug = Window.slug_for_ts(window.open_ts)
+        slug = Window.slug_for_ts(window.open_ts, asset=window.asset)
         window.slug = slug
 
     async with httpx.AsyncClient(timeout=15) as client:
