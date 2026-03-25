@@ -12,7 +12,7 @@ Binary bets: does price close higher or lower than the open at window start?
 
 Owner: Wouter (Scaleflow)
 Stack: Python 3.12, asyncio, uv, AWS (eu-west-1), Polygon blockchain
-Tests: 888 passing
+Tests: 889 passing
 
 ---
 
@@ -22,9 +22,8 @@ Tests: 888 passing
 K9-style market-making strategy. Buys BOTH sides of each 5-minute window, accumulates throughout,
 holds to resolution. If combined average cost < $1.00, the position is guaranteed profitable.
 
-Current live focus: `BTC_5m`. Other pairs enabled only after pair-specific tuning.
-Gated by `EARLY_ENTRY_ENABLED=true` and pair-level `PAIRS`.
-Budget: **$50 per asset per window** (executable USD notional).
+Live pairs: **BTC_5M** ($80/window), **ETH_5M** ($50/window), **SOL_5M** ($50/window), **XRP_5M** ($50/window).
+Auto-claim winnings every 10min via Builder Relayer API.
 
 ### How it trades — 4 phases
 
@@ -57,7 +56,7 @@ Budget: **$50 per asset per window** (executable USD notional).
 - Cancelled orders release reserved budget immediately
 
 ### Pair-quality guards
-- Rich-side buys capped later in the window
+- Rich-side buys capped later in the window (time-varying: 82c → 75c → 70c → 65c)
 - Incomplete pairs don't keep averaging the filled side while missing side drifts expensive
 - New adds blocked when projected combined_avg / payout-floor pressure would worsen state
 
@@ -230,7 +229,11 @@ signal_move_pct, signal_ask_price, signal_seconds, signal_ev
 
 | Guard | Value |
 |-------|-------|
-| V2 per-asset notional cap | $50/window based on executable USD notional |
+| V2 per-asset notional cap | BTC $80, ETH/SOL/XRP $50/window |
+| V2 budget accounting | `total_bought_cost - total_sold_proceeds` (cash-based, not net_cost) |
+| V2 combined avg gate | Freeze expensive losing side when combined_avg >= 0.97 |
+| V2 intra-window sell loss cap | Stop selling if realized P&L < -$3 within window |
+| V2 lottery ticket guard | Never sell shares with bid < 15c |
 | V2 accounting basis | `actual_notional_usd = actual_shares * actual_price` |
 | V2 open position | 70/30 to 50/50 main/hedge split (LGBM-driven) |
 | V2 stale repricing | every 1s tick, stale after 6s, 1c price tolerance |
