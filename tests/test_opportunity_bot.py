@@ -399,7 +399,9 @@ class TestSmoke:
     def test_start_sh(self):
         path = os.path.join(os.path.dirname(__file__), "..", "scripts", "start.sh")
         with open(path) as f:
-            assert "opportunity_bot.py" in f.read()
+            content = f.read()
+        # V3 paper mode: opportunity bot is paused, V3 paper runner is active
+        assert "run_v3_paper.py" in content or "opportunity_bot.py" in content
 
     def test_dashboard_api(self):
         path = os.path.join(os.path.dirname(__file__), "..", "scripts", "dashboard.py")

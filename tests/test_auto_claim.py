@@ -96,19 +96,19 @@ class TestAutoClaimScript:
 class TestAutoClaimInStartSh:
     """Auto-claim must be configured in start.sh."""
 
-    def test_start_sh_has_claim(self):
+    def test_start_sh_has_v3_runner(self):
+        """V3 paper mode: start.sh must launch the V3 paper runner."""
         path = os.path.join(SCRIPTS_DIR, "start.sh")
         with open(path) as f:
             content = f.read()
-        assert "claim_winnings.js" in content
+        assert "run_v3_paper.py" in content
 
-    def test_start_sh_runs_on_loop(self):
-        """Must run on a timer, not just once."""
+    def test_start_sh_has_dashboard(self):
+        """start.sh must launch the dashboard."""
         path = os.path.join(SCRIPTS_DIR, "start.sh")
         with open(path) as f:
             content = f.read()
-        assert "while true" in content
-        assert "sleep" in content
+        assert "dashboard.py" in content
 
 
 class TestAutoClaimNodeDeps:

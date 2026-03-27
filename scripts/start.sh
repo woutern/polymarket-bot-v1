@@ -1,30 +1,20 @@
 #!/bin/sh
-# Start MM bot + dashboard + opportunity scanner together in the same container.
-# MM bot runs V2 both-sides strategy in live mode (credentials from env/Secrets Manager).
-# Dashboard reads from DynamoDB on AWS (auto-detected when no local SQLite).
-
+# V3 Paper Mode — BTC_15M only, paper trading with LightGBM signal + learning loop.
+# Runs until kill_switch or container stop.
 set -e
 
 # Write initial heartbeat so ECS health check passes during startup
 python3 -c "import time; open('/tmp/heartbeat','w').write(str(time.time()))"
 
-echo "Starting MarketMaker Bot: BTC_15M..."
-PYTHONPATH=/app/src .venv/bin/python scripts/run_mm.py --live --yes --budget "${BTC_15M_BUDGET:-150}" --pair BTC_15M &
-BTC_PID=$!
+echo "Starting V3 Paper Trader: BTC_15M (paper, learning loop)..."
+PYTHONPATH=/app/src .venv/bin/python scripts/run_v3_paper.py --budget "${BTC_V3_BUDGET:-80}" &
+V3_PID=$!
 
 echo "Starting Dashboard on port 8888..."
 .venv/bin/python scripts/dashboard.py &
 DASH_PID=$!
 
-echo "Starting Opportunity Scanner (every 30min)..."
-PYTHONPATH=src .venv/bin/python scripts/opportunity_bot.py &
-OPP_PID=$!
-
-echo "Starting Auto-Claim (every 30min)..."
-(while true; do node scripts/claim_winnings.js 2>&1 || true; sleep 1800; done) &
-CLAIM_PID=$!
-
 # If any process dies, kill the others and exit so ECS restarts the task
 wait -n 2>/dev/null || wait
 echo "A process exited — shutting down."
-kill $BTC_PID $DASH_PID $OPP_PID $CLAIM_PID 2>/dev/null || true
+kill $V3_PID $DASH_PID 2>/dev/null || true

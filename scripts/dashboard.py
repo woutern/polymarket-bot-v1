@@ -50,9 +50,11 @@ try:
     _windows_table = _ddb.Table("polymarket-bot-windows")
     _signals_table = _ddb.Table("polymarket-bot-signals")
     _live_table = _ddb.Table("polymarket-bot-live-state")
+    _v3_table = _ddb.Table("polymarket-bot-v2-windows")
     _USE_DYNAMO = True
 except Exception:
     _live_table = None
+    _v3_table = None
     pass
 
 _USE_SQLITE = _os.path.exists(_DB_PATH)
@@ -1510,6 +1512,300 @@ startLive();
 </script>
 </body>
 </html>"""
+
+
+@app.get("/api/v3")
+def api_v3():
+    """V3 paper trading results — per-window P&L and running stats."""
+    if not _v3_table:
+        return {"windows": [], "stats": {}}
+    try:
+        from boto3.dynamodb.conditions import Attr
+        resp = _v3_table.scan(
+            FilterExpression=Attr("strategy").eq("v3_paper"),
+            Limit=500,
+        )
+        items = resp.get("Items", [])
+        while "LastEvaluatedKey" in resp:
+            resp = _v3_table.scan(
+                FilterExpression=Attr("strategy").eq("v3_paper"),
+                ExclusiveStartKey=resp["LastEvaluatedKey"],
+                Limit=500,
+            )
+            items += resp.get("Items", [])
+
+        # Normalize + sort newest first
+        windows = []
+        for it in items:
+            try:
+                windows.append({
+                    "window_number": int(it.get("window_number", 0)),
+                    "timestamp": float(it.get("timestamp", 0)),
+                    "decisions": str(it.get("decisions", "?")),
+                    "went_up": str(it.get("went_up", "?")),
+                    "open_price": float(it.get("open_price", 0)),
+                    "close_price": float(it.get("close_price", 0)),
+                    "pnl": float(it.get("pnl", 0)),
+                    "outcome": str(it.get("outcome", "?")),
+                    "net_cost": float(it.get("net_cost", 0)),
+                    "budget_pct": float(it.get("budget_pct", 0)),
+                    "up_shares": int(it.get("up_shares", 0)),
+                    "down_shares": int(it.get("down_shares", 0)),
+                    "combined_avg": float(it.get("combined_avg", 0)),
+                    "is_guaranteed_profit": bool(it.get("is_guaranteed_profit", False)),
+                    "btc_move_pct": float(it.get("btc_move_pct", 0)),
+                    "avg_prob_up": str(it.get("avg_prob_up", "0.5")),
+                    "min_prob": str(it.get("min_prob", "0.5")),
+                    "max_prob": str(it.get("max_prob", "0.5")),
+                    "rebalance_count": int(it.get("rebalance_count", 3)),
+                    "dump_count": int(it.get("dump_count", 0)),
+                    "neutral_count": int(it.get("neutral_count", 0)),
+                    "rebalance_detail": str(it.get("rebalance_detail", "[]")),
+                    "dump_threshold_up": float(it.get("dump_threshold_up", 0.68)),
+                    "dump_threshold_down": float(it.get("dump_threshold_down", 0.32)),
+                    "rebalance_usd": float(it.get("rebalance_usd", 12)),
+                    "entry_gate": float(it.get("entry_gate", 1.005)),
+                    "analysis": str(it.get("analysis", "")),
+                })
+            except Exception:
+                pass
+
+        windows.sort(key=lambda x: x["timestamp"], reverse=True)
+
+        # Stats
+        total_pnl = sum(w["pnl"] for w in windows)
+        wins = sum(1 for w in windows if w["pnl"] > 0)
+        losses = sum(1 for w in windows if w["pnl"] < 0)
+        n = len(windows)
+        dump_windows = [w for w in windows if "dump" in w["decisions"].lower()]
+        neutral_windows = [w for w in windows if "dump" not in w["decisions"].lower()]
+        gp_count = sum(1 for w in windows if w["is_guaranteed_profit"])
+        avg_deployed = sum(w["net_cost"] for w in windows) / n if n else 0
+        latest = windows[0] if windows else {}
+        stats = {
+            "total_windows": n,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(wins / n, 3) if n else 0,
+            "total_pnl": round(total_pnl, 2),
+            "avg_pnl_per_window": round(total_pnl / n, 2) if n else 0,
+            "gp_count": gp_count,
+            "avg_deployed": round(avg_deployed, 2),
+            "dump_windows": len(dump_windows),
+            "neutral_windows": len(neutral_windows),
+            "dump_win_rate": round(sum(1 for w in dump_windows if w["pnl"] > 0) / len(dump_windows), 3) if dump_windows else None,
+            "neutral_win_rate": round(sum(1 for w in neutral_windows if w["pnl"] > 0) / len(neutral_windows), 3) if neutral_windows else None,
+            "params": {
+                "dump_threshold_up": latest.get("dump_threshold_up", 0.68),
+                "dump_threshold_down": latest.get("dump_threshold_down", 0.32),
+                "rebalance_usd": latest.get("rebalance_usd", 12),
+                "entry_gate": latest.get("entry_gate", 1.005),
+            },
+        }
+        return {"windows": windows[:100], "stats": stats}
+    except Exception as e:
+        return {"windows": [], "stats": {}, "error": str(e)[:120]}
+
+
+_V3_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>V3 BTC_15M Paper Trader</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d1117;color:#e6edf3;padding:12px;font-size:14px;max-width:600px;margin:0 auto}
+h1{font-size:17px;font-weight:700;margin-bottom:2px}
+.sub{color:#7d8590;font-size:11px;margin-bottom:12px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px}
+.kpi{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px;text-align:center}
+.kpi-val{font-size:18px;font-weight:700;margin-bottom:1px}
+.kpi-lbl{font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:.4px}
+.pos{color:#3fb950}.neg{color:#f85149}.neu{color:#d29922}.info{color:#58a6ff}
+.params{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px;margin-bottom:10px;font-size:11px;display:flex;flex-wrap:wrap;gap:6px}
+.param{background:#21262d;border-radius:4px;padding:3px 7px}
+.param b{color:#d2a679}
+.section{font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:.5px;margin:10px 0 5px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px;margin-bottom:6px}
+.card.win-card{border-color:#2d4a2d}
+.card.loss-card{border-color:#4a2d2d}
+.card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px}
+.card-title{font-weight:700;font-size:13px}
+.card-pnl{font-size:16px;font-weight:700;text-align:right}
+.card-pnl-sub{font-size:10px;color:#7d8590;text-align:right}
+.stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:6px}
+.stat{background:#0d1117;border-radius:5px;padding:5px 6px;font-size:11px}
+.stat-l{color:#7d8590;font-size:10px;margin-bottom:1px}
+.rebal-row{display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap}
+.rebal-chip{background:#21262d;border-radius:4px;padding:3px 7px;font-size:10px}
+.rebal-chip.dump-up{background:#1f3a5f;color:#58a6ff}
+.rebal-chip.dump-down{background:#3a1f5f;color:#b08bff}
+.rebal-chip.neutral{background:#1a2a1a;color:#56d364}
+.analysis{background:#0d1117;border-radius:5px;padding:7px;font-size:11px;color:#c9d1d9;line-height:1.5;border-left:2px solid #30363d}
+.analysis p{margin-bottom:4px}
+.analysis p:last-child{margin-bottom:0}
+.badge{display:inline-block;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:600;text-transform:uppercase;margin-left:4px}
+.b-win{background:#1a2e1a;color:#3fb950}
+.b-loss{background:#2d1a1a;color:#f85149}
+.b-gp{background:#1a1a2e;color:#79c0ff}
+.b-dump{background:#1f3a5f;color:#58a6ff}
+.b-neutral{background:#1f2d1f;color:#3fb950}
+.b-onesided{background:#3a2a1a;color:#e3b341}
+.refresh-note{color:#7d8590;font-size:10px;text-align:center;margin-top:12px}
+.pbar-wrap{background:#21262d;border-radius:4px;height:5px;margin-top:3px}
+.pbar{height:5px;border-radius:4px;background:#3fb950}
+</style>
+</head>
+<body>
+<h1>V3 BTC_15M Paper Trader</h1>
+<div class="sub" id="sub">loading…</div>
+
+<div class="kpis">
+  <div class="kpi"><div class="kpi-val" id="kpi-pnl">—</div><div class="kpi-lbl">Total P&amp;L</div></div>
+  <div class="kpi"><div class="kpi-val" id="kpi-wr">—</div><div class="kpi-lbl">Win Rate</div></div>
+  <div class="kpi"><div class="kpi-val" id="kpi-avg">—</div><div class="kpi-lbl">Avg/Window</div></div>
+  <div class="kpi"><div class="kpi-val" id="kpi-n">—</div><div class="kpi-lbl">Windows</div></div>
+</div>
+
+<div class="params" id="params-box">loading params…</div>
+
+<div class="section">Per-window breakdown</div>
+<div id="windows-list"><div style="color:#7d8590;padding:12px">Waiting for first window…</div></div>
+
+<div class="refresh-note">Auto-refreshes every 60s &nbsp;·&nbsp; <span id="last-update">—</span></div>
+
+<script>
+const fmt=n=>n>=0?'+$'+n.toFixed(2):'-$'+Math.abs(n).toFixed(2);
+const pct=n=>n==null?'—':(n*100).toFixed(0)+'%';
+const ts=t=>{const d=new Date(t*1000);return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})};
+
+function chipClass(d){
+  if(d.startsWith('dump_no'))return 'dump-up';
+  if(d.startsWith('dump_yes'))return 'dump-down';
+  return 'neutral';
+}
+function chipLabel(d){
+  if(d==='dump_no')return '⬆ dump NO';
+  if(d==='dump_yes')return '⬇ dump YES';
+  if(d==='neutral_yes')return 'buy YES';
+  if(d==='neutral_no')return 'buy NO';
+  return d;
+}
+
+function buildAnalysis(a){
+  if(!a)return '';
+  return a.split(' | ').map(s=>`<p>• ${s}</p>`).join('');
+}
+
+function buildCard(w){
+  const win=w.pnl>0;
+  const dir=w.went_up==='True'?'↑':'↓';
+  const dirLabel=w.went_up==='True'?'BTC UP':'BTC DN';
+  const btcMove=w.btc_move_pct!=null?(parseFloat(w.btc_move_pct)>=0?'+':'')+parseFloat(w.btc_move_pct).toFixed(2)+'%':'?';
+  const upSh=w.up_shares||0, dnSh=w.down_shares||0;
+  const onesided=upSh===0||dnSh===0;
+  const deployed=parseFloat(w.net_cost||0);
+  const budget=parseFloat(w.budget_pct||0);
+  const avgProb=w.avg_prob_up||'?';
+
+  // Rebalance chips from rebalance_detail string
+  let rebalChips='';
+  try{
+    const rd=w.rebalance_detail||'[]';
+    // Convert Python repr to JSON-ish
+    const fixed=rd.replace(/'/g,'"');
+    const arr=JSON.parse(fixed);
+    rebalChips=arr.map(r=>`<span class="rebal-chip ${chipClass(r.decision)}" title="prob=${r.prob}">T+${r.moment}s: ${chipLabel(r.decision)} (${r.prob})</span>`).join('');
+  }catch(e){
+    rebalChips=`<span class="rebal-chip neutral">${w.decisions}</span>`;
+  }
+
+  const hasDump=w.decisions.toLowerCase().includes('dump');
+
+  return `<div class="card ${win?'win-card':'loss-card'}">
+  <div class="card-header">
+    <div>
+      <span class="card-title">#${w.window_number}</span>
+      <span class="badge ${win?'b-win':'b-loss'}">${win?'WIN':'LOSS'}</span>
+      ${w.is_guaranteed_profit?'<span class="badge b-gp">GP</span>':''}
+      ${hasDump?'<span class="badge b-dump">DUMP</span>':'<span class="badge b-neutral">NEUTRAL</span>'}
+      ${onesided?'<span class="badge b-onesided">ONE-SIDED</span>':''}
+    </div>
+    <div>
+      <div class="card-pnl ${win?'pos':'neg'}">${fmt(w.pnl)}</div>
+      <div class="card-pnl-sub">${dir}${dirLabel} ${btcMove}</div>
+    </div>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat"><div class="stat-l">Deployed</div><b>$${deployed.toFixed(2)}</b> (${budget.toFixed(0)}%)
+      <div class="pbar-wrap"><div class="pbar" style="width:${Math.min(budget,100)}%"></div></div>
+    </div>
+    <div class="stat"><div class="stat-l">Position</div><b>${upSh}↑ ${dnSh}↓</b><br><span style="color:#7d8590;font-size:10px">avg=${parseFloat(w.combined_avg||0).toFixed(3)}</span></div>
+    <div class="stat"><div class="stat-l">Signal</div><b>${avgProb}</b> avg prob<br><span style="color:#7d8590;font-size:10px">${w.rebalance_count||3} rebalances · ${w.dump_count||0} dumps</span></div>
+  </div>
+
+  <div class="rebal-row">${rebalChips}</div>
+
+  <div class="analysis">${buildAnalysis(w.analysis)}</div>
+
+  <div style="color:#7d8590;font-size:10px;margin-top:5px">${ts(w.timestamp)} &nbsp;·&nbsp; BTC $${parseFloat(w.open_price||0).toFixed(0)}→$${parseFloat(w.close_price||0).toFixed(0)} &nbsp;·&nbsp; entry gate ${w.entry_gate||'1.005'} &nbsp;·&nbsp; rebal $${w.rebalance_usd}</div>
+</div>`;
+}
+
+async function load(){
+  try{
+    const r=await fetch('/api/v3?_='+Date.now());
+    const d=await r.json();
+    const s=d.stats||{};
+    const ws=d.windows||[];
+
+    const pnl=s.total_pnl||0;
+    document.getElementById('kpi-pnl').textContent=fmt(pnl);
+    document.getElementById('kpi-pnl').className='kpi-val '+(pnl>=0?'pos':'neg');
+
+    const wr=s.win_rate||0;
+    document.getElementById('kpi-wr').textContent=pct(wr);
+    document.getElementById('kpi-wr').className='kpi-val '+(wr>=0.55?'pos':wr>=0.4?'neu':'neg');
+
+    const avg=s.avg_pnl_per_window||0;
+    document.getElementById('kpi-avg').textContent=fmt(avg);
+    document.getElementById('kpi-avg').className='kpi-val '+(avg>=0?'pos':'neg');
+
+    document.getElementById('kpi-n').textContent=s.total_windows||0;
+    document.getElementById('sub').textContent=`BTC_15M paper · ${s.wins||0}W ${s.losses||0}L · avg ${fmt(avg)}/window`;
+
+    const p=s.params||{};
+    document.getElementById('params-box').innerHTML=[
+      `<span class="param">dump &gt; <b>${p.dump_threshold_up||'0.68'}</b></span>`,
+      `<span class="param">dump &lt; <b>${p.dump_threshold_down||'0.32'}</b></span>`,
+      `<span class="param">rebal <b>$${p.rebalance_usd||'12'}</b></span>`,
+      `<span class="param">entry gate <b>${p.entry_gate||'1.005'}</b></span>`,
+      `<span class="param">tunes every <b>3</b> windows</span>`,
+      `<span class="param">GP windows <b>${s.gp_count||0}/${s.total_windows||0}</b></span>`,
+      `<span class="param">avg deploy <b>$${(s.avg_deployed||0).toFixed(0)}</b></span>`,
+    ].join('');
+
+    const list=document.getElementById('windows-list');
+    if(!ws.length){list.innerHTML='<div style="color:#7d8590;padding:12px">No windows recorded yet — waiting for first 15m window to complete.</div>';return;}
+    list.innerHTML=ws.slice(0,30).map(buildCard).join('');
+
+    document.getElementById('last-update').textContent='Updated '+new Date().toLocaleTimeString();
+  }catch(e){
+    document.getElementById('windows-list').innerHTML='<div style="color:#f85149;padding:8px">Error: '+e.message+'</div>';
+  }
+}
+load();
+setInterval(load,60000);
+</script>
+</body>
+</html>"""
+
+
+@app.get("/v3", response_class=HTMLResponse)
+def v3_dashboard():
+    return _V3_HTML
 
 
 @app.get("/", response_class=HTMLResponse)

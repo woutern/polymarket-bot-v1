@@ -60,7 +60,16 @@ from polybot.strategy.profiles import get_profile
 logger = logging.getLogger(__name__)
 
 _TICK_INTERVAL = 1.0   # seconds between engine ticks
-_WINDOW_SECONDS = 300  # 5-minute window duration
+_WINDOW_SECONDS = 300  # 5-minute window duration (default)
+
+def _window_seconds_for_pair(pair: str) -> int:
+    """Return window duration in seconds based on pair key."""
+    p = pair.upper()
+    if "_15M" in p:
+        return 900
+    if "_1H" in p:
+        return 3600
+    return 300  # 5m default
 _MAX_LIVE_ORDERS = 4   # max concurrent open GTC orders (prevents stale-reprice flood)
 
 # Extract asset name from pair key, e.g. "BTC_5M" → "BTC"
@@ -101,6 +110,7 @@ class WindowRunner:
     prev_window: object = None      # PrevWindow | None
     vol_history: object = None      # deque | None — shared across windows
     coinbase_ws: object = None      # CoinbaseWS | None — injected or auto-created
+    strategy_override: object = None  # V3SimpleStrategy or any on_tick-compatible strategy
 
     def __post_init__(self):
         if self.controls is None:
@@ -133,11 +143,17 @@ class WindowRunner:
         self._fb_initialised = False  # True once first real price arrives
 
         # Engine (always uses paper client internally for position tracking)
+        # strategy_override allows V3SimpleStrategy (or any compatible strategy) to
+        # replace MarketMakerStrategy without changing the rest of the runner lifecycle.
+        strategy_profile = self.strategy_override.params if (
+            self.strategy_override is not None and hasattr(self.strategy_override, "params")
+        ) else profile
         self.engine = Engine(
             pair=self.pair,
             mode=self.mode,
             controls=self.controls,
-            profile=profile,
+            profile=strategy_profile,
+            strategy=self.strategy_override,
         )
 
         # Order client — swap paper/live
@@ -200,6 +216,7 @@ class WindowRunner:
 
     async def _tick_loop(self) -> None:
         """Tick every second until the window ends or kill switch fires."""
+        window_duration = _window_seconds_for_pair(self.pair)
         while True:
             # Kill switch check
             if self.controls.kill_switch:
@@ -210,7 +227,7 @@ class WindowRunner:
             seconds = int(now - self.window_open_ts)
 
             # Window over
-            if seconds >= _WINDOW_SECONDS:
+            if seconds >= window_duration:
                 break
 
             # Feed latest Coinbase price into FeatureBuilder
@@ -390,7 +407,9 @@ class WindowRunner:
                 current_ask=current_ask,
                 seconds=seconds,
             )
-            prob = self.model_server.predict(self.pair, features)
+            # Normalize pair key: "BTC_5M" → "BTC_5m" to match model storage format
+            model_key = self.pair.replace("_5M", "_5m").replace("_15M", "_15m").replace("_1H", "_1h")
+            prob = self.model_server.predict(model_key, features)
             return prob
         except Exception as exc:
             logger.debug("runner_predict_failed %s", str(exc)[:60])
